@@ -182,7 +182,41 @@ kubectl describe ingress respondr-ingress
 
 ## Updates and Scaling
 
-### Update the Application
+### Upgrading the Application
+
+For production upgrades with new code changes:
+
+```powershell
+# Full upgrade with new version (builds and pushes new container)
+./upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr-rg"
+
+# Upgrade with automatic rollback on failure
+./upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName "respondr-rg" -RollbackOnFailure
+
+# Use existing image (skip build)
+./upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr-rg" -SkipBuild
+
+# Dry run to see what would happen
+./upgrade-k8s.ps1 -Version "v1.3" -ResourceGroupName "respondr-rg" -DryRun
+```
+
+### Quick Redeploy Options
+
+For common redeployment scenarios:
+
+```powershell
+# Build new image with timestamp and deploy
+./redeploy.ps1 -Action "build" -ResourceGroupName "respondr-rg"
+
+# Restart existing deployment (same image, fresh pods)
+./redeploy.ps1 -Action "restart"
+
+# Update configuration (apply new secrets and restart)
+./redeploy.ps1 -Action "update-config"
+```
+
+### Manual Update Commands
+
 ```bash
 # Build new image with a tag
 docker build -t respondr:v1.1 .
@@ -201,6 +235,19 @@ kubectl scale deployment respondr-deployment --replicas=3
 
 # Check scaling status
 kubectl get pods -l app=respondr
+```
+
+### Rollback if Needed
+
+```bash
+# Rollback to previous version
+kubectl rollout undo deployment/respondr-deployment
+
+# Rollback to specific revision
+kubectl rollout undo deployment/respondr-deployment --to-revision=2
+
+# Check rollout history
+kubectl rollout history deployment/respondr-deployment
 ```
 
 ## Troubleshooting
@@ -244,10 +291,13 @@ deployment/
 ├── respondr-k8s-template.yaml   # Kubernetes manifests (safe to commit)
 ├── secrets-template.yaml        # Secret template (safe to commit)
 ├── secrets.yaml                 # Actual secrets (DO NOT COMMIT - gitignored)
-├── deploy-to-k8s.ps1           # Deployment script
+├── deploy-to-k8s.ps1           # Initial deployment script
+├── upgrade-k8s.ps1             # Production upgrade script
+├── redeploy.ps1                # Quick redeploy script
 ├── .gitignore                   # Prevents committing secrets
 ├── main.bicep                   # Azure infrastructure (if using Azure)
 ├── post-deploy.ps1              # Post-deployment script
+├── cleanup.ps1                  # Resource cleanup script
 ├── test-pod.yaml                # Test pod configuration
 └── respondr-k8s.yaml            # Legacy file (contains placeholder secrets)
 ```
