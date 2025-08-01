@@ -42,7 +42,7 @@ param(
     [string]$ResourceGroupName,
     
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "default",
+    [string]$Namespace = "respondr",
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipBuild = $false,
