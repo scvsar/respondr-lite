@@ -32,7 +32,7 @@ az login
 az account set --subscription <your-subscription-id>
 
 # Create resource group
-az group create --name responseinfra --location westus
+az group create --name respondr --location westus
 ```
 
 ### 2. Deploy Azure Resources
@@ -41,14 +41,14 @@ Deploy all required infrastructure using the Bicep template:
 
 ```powershell
 # Deploy the Bicep template
-az deployment group create --resource-group responseinfra --template-file deployment/main.bicep
+az deployment group create --resource-group respondr --template-file deployment/main.bicep
 ```
 
 You can customize deployment parameters as needed:
 
 ```powershell
 # Example with custom parameters
-az deployment group create --resource-group responseinfra --template-file deployment/main.bicep --parameters resourcePrefix=response-prod location=eastus
+az deployment group create --resource-group respondr --template-file deployment/main.bicep --parameters resourcePrefix=response-prod location=eastus
 ```
 
 ### 3. Run Post-Deployment Configuration
@@ -57,7 +57,7 @@ Execute the post-deployment script to configure resources:
 
 ```powershell
 # Execute post-deployment script
-.\deployment\post-deploy.ps1 -ResourceGroupName responseinfra
+.\deployment\post-deploy.ps1 -ResourceGroupName respondr
 ```
 
 This script will:
@@ -73,7 +73,7 @@ When you need to tear down the infrastructure:
 
 ```powershell
 # Clean up all resources
-.\deployment\cleanup.ps1 -ResourceGroupName responseinfra
+.\deployment\cleanup.ps1 -ResourceGroupName respondr
 ```
 
 This will delete both the main resource group and the AKS-created resource group.
@@ -100,19 +100,19 @@ You can customize the prefix by setting the `resourcePrefix` parameter during de
 
 2. **Storage Account Name Already Taken**: The storage account has a unique suffix based on the resource group ID. If you still encounter a name conflict, you can specify a custom name during deployment:
    ```powershell
-   az deployment group create --resource-group responseinfra --template-file deployment/main.bicep --parameters storageAccountName=mycustomname
+   az deployment group create --resource-group respondr --template-file deployment/main.bicep --parameters storageAccountName=mycustomname
    ```
 
 3. **ACR Access Issues**: If you see `ImagePullBackOff` errors in your pods, ensure ACR is properly attached to AKS:
    ```powershell
-   az aks update --name response-aks-cluster --resource-group responseinfra --attach-acr responseacr
+   az aks update --name response-aks-cluster --resource-group respondr --attach-acr responseacr
    ```
 
 4. **Image Already Exists Error**: When running the post-deployment script, you might see an error about "Tag nginx:test already exists in target registry". This is normal if you've run the script before and simply means the test image is already in your ACR.
 
 5. **AKS Credential Issues**: If kubectl commands fail, refresh your credentials:
    ```powershell
-   az aks get-credentials --resource-group responseinfra --name response-aks-cluster --overwrite-existing
+   az aks get-credentials --resource-group respondr --name response-aks-cluster --overwrite-existing
    ```
 
 3. **Resource Deletion Hangs**: AKS resource groups can sometimes take a long time to delete. Monitor in the Azure portal and retry if needed.

@@ -3,7 +3,7 @@
 
 param (
     [Parameter(Mandatory=$false)]
-    [string]$ResourceGroupName = "responseinfra",
+    [string]$ResourceGroupName = "respondr",
     
     [Parameter(Mandatory=$false)]
     [string]$Location = "westus",

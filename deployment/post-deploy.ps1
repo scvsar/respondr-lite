@@ -1,78 +1,119 @@
-# Post-deployment script for the response-tracking-render application
-# This script performs necessary configuration tasks after deploying the Azure resources
+<#
+.SYNOPSIS
+    Post-deployment configuration for the response-tracking-render app.
+
+.DESCRIPTION
+    - Fetches deployment outputs (AKS cluster name, ACR name, OpenAI account name)
+    - Gets AKS credentials
+    - Attaches ACR to AKS (if present)
+    - Imports a test image into ACR
+    - Deploys a test pod in AKS to verify ACR integration
+    - Checks the provisioning state of OpenAI & Storage accounts
+#>
 
 param (
-    [Parameter(Mandatory=$true)]
-    [string]$ResourceGroupName,
-
-    [Parameter(Mandatory=$false)]
-    [string]$Location = "westus"
+    [Parameter(Mandatory)][string]$ResourceGroupName,
+    [Parameter()][string]$Location = "westus"
 )
 
 Write-Host "Starting post-deployment configuration..." -ForegroundColor Green
 
-# Get deployment outputs
-Write-Host "Retrieving resource information..." -ForegroundColor Yellow
-$aksClusterName = "response-aks-cluster"
-$acrName = "responseacr"
-$openAiAccountName = "response-openai-account"
-$storageAccountName = (az storage account list --resource-group $ResourceGroupName --query "[0].name" -o tsv)
+# 1) Retrieve deployment outputs
+Write-Host "Retrieving deployment outputs..." -ForegroundColor Yellow
+$deploy = az deployment group show `
+    --resource-group $ResourceGroupName `
+    --name main -o json | ConvertFrom-Json
 
-# Get AKS credentials
-Write-Host "Getting AKS credentials..." -ForegroundColor Yellow
-az aks get-credentials --resource-group $ResourceGroupName --name $aksClusterName --overwrite-existing
+# Assumes your Bicep defines outputs: aksClusterName, acrName, openAiAccountName
+$aksClusterName     = $deploy.properties.outputs.aksClusterName.value
+$acrName            = $deploy.properties.outputs.acrName.value
+$openAiAccountName  = $deploy.properties.outputs.openAiAccountName.value
 
-# Attach ACR to AKS
-Write-Host "Attaching ACR to AKS cluster..." -ForegroundColor Yellow
-az aks update --name $aksClusterName --resource-group $ResourceGroupName --attach-acr $acrName
+if (-not $aksClusterName)    { throw "❌ Missing aksClusterName output!" }
+if (-not $openAiAccountName) { throw "❌ Missing openAiAccountName output!" }
 
-# Import a test image to verify ACR functionality
-Write-Host "Importing test image to ACR..." -ForegroundColor Yellow
-$importResult = az acr import --name $acrName --source docker.io/library/nginx:latest --image nginx:test 2>&1
-if ($LASTEXITCODE -ne 0) {
-    if ($importResult -like "*already exists*") {
-        Write-Host "Image nginx:test already exists in ACR, continuing..." -ForegroundColor Cyan
+# 2) Get Storage account name dynamically (if you didn’t output it)
+$storageAccountName = az storage account list `
+    --resource-group $ResourceGroupName `
+    --query "[0].name" -o tsv
+
+Write-Host "  AKS Cluster:  $aksClusterName"
+Write-Host "  ACR:          $($acrName  -or '<none found>')"
+Write-Host "  OpenAIAcct:   $openAiAccountName"
+Write-Host "  StorageAcct:  $storageAccountName"
+
+# 3) AKS credentials
+Write-Host "`nGetting AKS credentials..." -ForegroundColor Yellow
+az aks get-credentials `
+    --resource-group $ResourceGroupName `
+    --name $aksClusterName `
+    --overwrite-existing
+
+# 4) Attach ACR (if one exists)
+if ($acrName) {
+    Write-Host "`nAttaching ACR '$acrName' to AKS cluster..." -ForegroundColor Yellow
+    az aks update `
+        --name $aksClusterName `
+        --resource-group $ResourceGroupName `
+        --attach-acr $acrName
+} else {
+    Write-Host "`nℹ️  No ACR name found—skipping attach step." -ForegroundColor Cyan
+}
+
+# 5) Import test image into ACR
+if ($acrName) {
+    Write-Host "`nImporting test image to ACR..." -ForegroundColor Yellow
+    $importResult = az acr import `
+        --name $acrName `
+        --source docker.io/library/nginx:latest `
+        --image nginx:test 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        if ($importResult -match 'already exists') {
+            Write-Host "✔ nginx:test already exists in ACR." -ForegroundColor Green
+        } else {
+            Write-Host "⚠️  Import failed: $importResult" -ForegroundColor Yellow
+        }
     } else {
-        Write-Host "Warning: Failed to import test image: $importResult" -ForegroundColor Yellow
+        Write-Host "✔ Successfully imported nginx:test" -ForegroundColor Green
+    }
+}
+
+# 6) Deploy and validate a test pod
+Write-Host "`nDeploying test pod to verify AKS & ACR integration..." -ForegroundColor Yellow
+$testPodYaml = Join-Path $PSScriptRoot "test-pod.yaml"
+
+if (Test-Path $testPodYaml) {
+    if (Get-Command kubectl -ErrorAction SilentlyContinue) {
+        kubectl apply -f $testPodYaml
+        Write-Host "Waiting for nginx-test pod to be ready..." -ForegroundColor Yellow
+        kubectl wait --for=condition=Ready pod/nginx-test --timeout=120s
+        Write-Host "✔ Test pod is running." -ForegroundColor Green
+    } else {
+        Write-Host "⚠️  kubectl not installed—skip pod deployment." -ForegroundColor Yellow
+        Write-Host "   To test manually, install kubectl and run:" -ForegroundColor Cyan
+        Write-Host "     kubectl apply -f $testPodYaml"
     }
 } else {
-    Write-Host "Successfully imported nginx:test to ACR" -ForegroundColor Green
+    Write-Host "⚠️  test-pod.yaml not found at $testPodYaml" -ForegroundColor Red
 }
 
-# Deploy a test pod to verify AKS and ACR integration
-Write-Host "Deploying test pod to verify AKS and ACR integration..." -ForegroundColor Yellow
-$testPodYamlPath = Join-Path $PSScriptRoot "test-pod.yaml"
+# 7) Check OpenAI account provisioning state
+Write-Host "`nChecking OpenAI account status..." -ForegroundColor Yellow
+$openAiState = az cognitiveservices account show `
+    --name $openAiAccountName `
+    --resource-group $ResourceGroupName `
+    --query "properties.provisioningState" -o tsv
+Write-Host "✔ OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
 
-# Check if kubectl is installed
-$kubectlInstalled = $null -ne (Get-Command kubectl -ErrorAction SilentlyContinue)
-
-if ($kubectlInstalled) {
-    # Use kubectl directly
-    kubectl apply -f $testPodYamlPath
-    
-    # Verify the pod is running
-    Write-Host "Waiting for test pod to be ready..." -ForegroundColor Yellow
-    kubectl wait --for=condition=Ready pod/nginx-test --timeout=120s
-} else {
-    # Use az aks command as an alternative
-    Write-Host "kubectl not found, we'll skip the test pod deployment." -ForegroundColor Yellow
-    Write-Host "To manually test the deployment later, install kubectl and run:" -ForegroundColor Cyan
-    Write-Host "kubectl apply -f $testPodYamlPath" -ForegroundColor Cyan
+# 8) Check Storage account provisioning state
+if ($storageAccountName) {
+    Write-Host "`nChecking Storage account status..." -ForegroundColor Yellow
+    $storageState = az storage account show `
+        --name $storageAccountName `
+        --resource-group $ResourceGroupName `
+        --query "provisioningState" -o tsv
+    Write-Host "✔ Storage provisioningState: $storageState" -ForegroundColor Cyan
 }
 
-# Check OpenAI account status
-Write-Host "Checking OpenAI account status..." -ForegroundColor Yellow
-$openAiStatus = az cognitiveservices account show --name $openAiAccountName --resource-group $ResourceGroupName --query "properties.provisioningState" -o tsv
-Write-Host "OpenAI account status: $openAiStatus" -ForegroundColor Cyan
-
-# Check Storage account status
-Write-Host "Checking Storage account status..." -ForegroundColor Yellow
-$storageStatus = az storage account show --name $storageAccountName --resource-group $ResourceGroupName --query "provisioningState" -o tsv
-Write-Host "Storage account status: $storageStatus" -ForegroundColor Cyan
-
-Write-Host "Post-deployment configuration completed successfully!" -ForegroundColor Green
-Write-Host "Resources deployed:"
-Write-Host "  - AKS Cluster: $aksClusterName"
-Write-Host "  - Azure Container Registry: $acrName"
-Write-Host "  - OpenAI Account: $openAiAccountName"
-Write-Host "  - Storage Account: $storageAccountName"
+Write-Host "`n🎉 Post-deployment configuration completed successfully!" -ForegroundColor Green
