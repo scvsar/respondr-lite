@@ -2,14 +2,14 @@
 
 This directory contains all the necessary files to deploy the Respondr application to a Kubernetes cluster.
 
-## 📋 Prerequisites
+## Prerequisites
 
 - Docker installed and running
 - Kubernetes cluster access (kubectl configured)
 - NGINX Ingress Controller installed in your cluster
 - Azure OpenAI API credentials
 
-## 🏗️ Architecture
+## Architecture
 
 The deployment includes:
 - **Deployment**: 2 replicas of the Respondr application
@@ -17,7 +17,7 @@ The deployment includes:
 - **Ingress**: NGINX ingress for external access
 - **Secret**: Secure storage for Azure OpenAI credentials
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Build the Docker Image
 
@@ -59,7 +59,7 @@ cp secrets-template.yaml secrets.yaml
 # Replace YOUR_AZURE_OPENAI_API_KEY_HERE with your actual API key
 ```
 
-**⚠️ SECURITY NOTE**: The `secrets.yaml` file is gitignored and should NEVER be committed to version control!
+**SECURITY NOTE**: The `secrets.yaml` file is gitignored and should NEVER be committed to version control!
 
 ### 4. Deploy to Kubernetes
 
@@ -107,7 +107,7 @@ Add the following to your `/etc/hosts` file (or equivalent):
 
 Or configure your DNS to point `respondr.local` to your ingress controller's IP.
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -126,7 +126,7 @@ Default resource configuration:
 
 Adjust these in `respondr-k8s.yaml` based on your cluster capacity and requirements.
 
-## 🌐 Accessing the Application
+## Accessing the Application
 
 Once deployed, you can access:
 
@@ -135,7 +135,7 @@ Once deployed, you can access:
 - **Webhook**: http://respondr.local/webhook
 - **Dashboard**: http://respondr.local/dashboard
 
-## 🧪 Testing the Deployment
+## Testing the Deployment
 
 ### Test the API
 ```bash
@@ -160,7 +160,7 @@ cd ../backend
 python test_webhook.py
 ```
 
-## 📊 Monitoring
+## Monitoring
 
 ### Check Pod Status
 ```bash
@@ -180,7 +180,7 @@ kubectl get ingress respondr-ingress
 kubectl describe ingress respondr-ingress
 ```
 
-## 🔄 Updates and Scaling
+## Updates and Scaling
 
 ### Update the Application
 ```bash
@@ -203,7 +203,7 @@ kubectl scale deployment respondr-deployment --replicas=3
 kubectl get pods -l app=respondr
 ```
 
-## 🛠️ Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -224,7 +224,7 @@ kubectl get events --sort-by=.metadata.creationTimestamp
 kubectl port-forward service/respondr-service 8080:80
 ```
 
-## 🧹 Cleanup
+## Cleanup
 
 To remove the deployment:
 ```bash
@@ -236,7 +236,7 @@ Or if deployed to a specific namespace:
 kubectl delete namespace respondr
 ```
 
-## 📁 File Structure
+## File Structure
 
 ```
 deployment/
@@ -252,14 +252,14 @@ deployment/
 └── respondr-k8s.yaml            # Legacy file (contains placeholder secrets)
 ```
 
-## 🔐 Security Considerations
+## Security Considerations
 
 - Azure OpenAI credentials are stored in Kubernetes secrets
 - The application runs as a non-root user in the container
 - Resource limits are configured to prevent resource exhaustion
 - Health checks ensure only healthy pods receive traffic
 
-## 📈 Production Recommendations
+## Production Recommendations
 
 1. **Use a proper image registry** (Azure Container Registry, Docker Hub, etc.)
 2. **Configure persistent storage** if you need data persistence

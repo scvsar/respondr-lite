@@ -1,28 +1,38 @@
-# Mission Response Tracker
+# SCVSAR Response Tracker
 
-Tracks responses to mission call-outs. Goal is that Rave alert triggers monitoring of GroupMe responses, aggregating the response details into something useful for support/command.
+A web application that tracks responses to Search and Rescue mission call-outs. The system monitors GroupMe responses and uses Azure OpenAI to extract and aggregate response details into a useful dashboard for command and support staff.
 
-## Infrastructure Overview
+## Project Overview
 
-This project deploys the following Azure resources:
+This application processes incoming webhook notifications from GroupMe messages, extracts responder information (vehicle assignments and ETAs) using Azure OpenAI, and displays the information in a real-time dashboard.
 
-- **Azure Kubernetes Service (AKS)**: Hosts the application containers
-- **Azure Container Registry (ACR)**: Stores container images
-- **Azure OpenAI Service**: Provides AI capabilities for the application
-- **Azure Storage Account**: Stores response data and other application files
+### Key Features
 
-## Prerequisites
+- **Real-time Response Tracking**: Processes GroupMe webhook messages in real-time
+- **AI-powered Information Extraction**: Uses Azure OpenAI to parse vehicle assignments and ETAs from natural language messages
+- **Live Dashboard**: React-based frontend showing responder status and metrics
+- **Container-ready**: Full Docker containerization with multi-stage builds
+- **Kubernetes Deployment**: Production-ready Kubernetes manifests with Azure integration
+
+## Architecture
+
+The application consists of:
+
+- **Frontend**: React application served statically
+- **Backend**: FastAPI Python application with Azure OpenAI integration
+- **Infrastructure**: Azure Kubernetes Service (AKS), Azure Container Registry (ACR), Azure OpenAI Service, and Azure Storage
+
+## Complete End-to-End Deployment Guide
+
+### Prerequisites
 
 - [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (latest version)
-- [PowerShell](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell) (version 7.0 or higher)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) (latest version)
-- An active Azure subscription
-- Contributor role or higher on your Azure subscription
-- Docker Desktop installed
+- [PowerShell](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell) (version 7.0 or higher)
+- An active Azure subscription with Contributor role or higher
 
-## Deployment Instructions
-
-### 1. Prepare Environment
+### Step 1: Prepare Your Environment
 
 ```powershell
 # Login to Azure
@@ -32,94 +42,285 @@ az login
 az account set --subscription <your-subscription-id>
 
 # Create resource group
-az group create --name respondr --location westus
+az group create --name respondr-rg --location westus
+
+# Clone the repository (if not already done)
+git clone <repository-url>
+cd respondr
 ```
 
-### 2. Deploy Azure Resources
+### Step 2: Deploy Azure Infrastructure
 
-Deploy all required infrastructure using the Bicep template:
+Deploy all required Azure resources using the Bicep template:
 
 ```powershell
-# Deploy the Bicep template
-az deployment group create --resource-group respondr --template-file deployment/main.bicep
+# Deploy the infrastructure
+az deployment group create `
+    --resource-group respondr-rg `
+    --template-file deployment/main.bicep `
+    --parameters resourcePrefix=respondr location=westus
 ```
 
-You can customize deployment parameters as needed:
+This creates:
+- Azure Kubernetes Service (AKS) cluster: `respondr-aks-cluster`
+- Azure Container Registry (ACR): `respondracr`
+- Azure OpenAI Service: `respondr-openai-account`
+- Azure Storage Account: `resp<uniqueid>store`
+
+### Step 3: Configure Post-Deployment Settings
+
+Run the post-deployment script to configure the infrastructure:
 
 ```powershell
-# Example with custom parameters
-az deployment group create --resource-group respondr --template-file deployment/main.bicep --parameters resourcePrefix=response-prod location=eastus
+# Configure AKS and ACR integration
+.\deployment\post-deploy.ps1 -ResourceGroupName respondr-rg
 ```
 
-### 3. Run Post-Deployment Configuration
+This script:
+- Configures kubectl with AKS credentials
+- Attaches ACR to AKS for seamless image pulling
+- Imports a test image and validates the setup
+- Verifies all service provisioning states
 
-Execute the post-deployment script to configure resources:
+### Step 4: Build and Push Container Image
+
+Build the application container and push it to your Azure Container Registry:
 
 ```powershell
-# Execute post-deployment script
-.\deployment\post-deploy.ps1 -ResourceGroupName respondr
+# Get ACR login server name
+$acrName = "respondracr"  # or use: az acr list -g respondr-rg --query "[0].name" -o tsv
+$acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
+
+# Login to ACR
+az acr login --name $acrName
+
+# Build the container image
+docker build -t respondr:latest .
+
+# Tag for ACR
+docker tag respondr:latest "$acrLoginServer/respondr:latest"
+docker tag respondr:latest "$acrLoginServer/respondr:v1.0"
+
+# Push to ACR
+docker push "$acrLoginServer/respondr:latest"
+docker push "$acrLoginServer/respondr:v1.0"
+
+# Verify the image was pushed
+az acr repository list --name $acrName --output table
 ```
 
-This script will:
-- Configure AKS credentials
-- Attach ACR to AKS
-- Import a test image to ACR
-- Deploy a test pod to verify configuration
-- Check status of deployed resources
+### Step 5: Configure Application Secrets
 
-### 4. Cleanup Resources
-
-When you need to tear down the infrastructure:
+You'll need Azure OpenAI credentials for the application to function:
 
 ```powershell
-# Clean up all resources
-.\deployment\cleanup.ps1 -ResourceGroupName respondr
+# Get Azure OpenAI details from the deployment
+$resourceGroup = "respondr-rg"
+$openAIName = az cognitiveservices account list -g $resourceGroup --query "[?kind=='OpenAI'].name" -o tsv
+$openAIEndpoint = az cognitiveservices account show -n $openAIName -g $resourceGroup --query "properties.endpoint" -o tsv
+$openAIKey = az cognitiveservices account keys list -n $openAIName -g $resourceGroup --query "key1" -o tsv
+
+# Display the values you'll need
+Write-Host "Azure OpenAI Endpoint: $openAIEndpoint"
+Write-Host "Azure OpenAI Key: $openAIKey"
+Write-Host "Azure OpenAI Deployment: gpt-4o-mini"  # Default from template
+Write-Host "Azure OpenAI API Version: 2025-01-01-preview"  # Default from template
 ```
 
-This will delete both the main resource group and the AKS-created resource group.
+### Step 6: Deploy Application to Kubernetes
 
-## Resource Naming
+Navigate to the deployment directory and deploy the application:
 
-All resources are named deterministically to ensure idempotent deployments:
+```powershell
+cd deployment
 
-- AKS Cluster: `response-aks-cluster`
-- ACR: `responseacr`
-- OpenAI Account: `response-openai-account`
-- Storage Account: `resp{uniqueString}store` (with a unique suffix based on resource group ID)
+# Update the Kubernetes manifest with your ACR image
+$acrLoginServer = az acr show --name respondracr --query loginServer -o tsv
+(Get-Content respondr-k8s-template.yaml) -replace 'respondr:latest', "$acrLoginServer/respondr:latest" | Set-Content respondr-k8s-deployment.yaml
 
-You can customize the prefix by setting the `resourcePrefix` parameter during deployment.
+# Deploy using the PowerShell script with your Azure OpenAI key
+.\deploy-to-k8s.ps1 -AzureOpenAIApiKey $openAIKey
+```
 
-## Troubleshooting
+Alternatively, deploy manually:
+
+```powershell
+# Create secrets file
+cp secrets-template.yaml secrets.yaml
+# Edit secrets.yaml with your actual Azure OpenAI credentials
+
+# Deploy to Kubernetes
+kubectl apply -f secrets.yaml
+kubectl apply -f respondr-k8s-deployment.yaml
+
+# Wait for deployment
+kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment
+
+# Check status
+kubectl get pods -l app=respondr
+kubectl get services -l app=respondr
+kubectl get ingress respondr-ingress
+```
+
+### Step 7: Configure Access
+
+Add an entry to your hosts file for local access:
+
+```powershell
+# Windows (run as Administrator)
+Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "127.0.0.1 respondr.local"
+
+# Or manually add this line to your hosts file:
+# 127.0.0.1 respondr.local
+```
+
+### Step 8: Test the Deployment
+
+Test that everything is working:
+
+```powershell
+# Test the API endpoint
+curl http://respondr.local/api/responders
+
+# Send a test webhook
+$testPayload = @{
+    name = "Test User"
+    text = "I am responding with SAR78, ETA 15 minutes"
+    created_at = [int][double]::Parse((Get-Date -UFormat %s))
+} | ConvertTo-Json
+
+Invoke-RestMethod -Uri "http://respondr.local/webhook" -Method POST -Body $testPayload -ContentType "application/json"
+
+# Check the results
+curl http://respondr.local/api/responders
+```
+
+Visit http://respondr.local in your browser to see the dashboard.
+
+### Step 9: Run Comprehensive Tests
+
+```powershell
+# Run the test suite from the backend directory
+cd ../backend
+python test_webhook.py
+
+# This will send multiple test messages and verify the system is working
+```
+
+## Application Endpoints
+
+Once deployed, the application provides:
+
+- **Frontend Dashboard**: http://respondr.local
+- **API Endpoint**: http://respondr.local/api/responders
+- **Webhook Endpoint**: http://respondr.local/webhook
+- **Simple Dashboard**: http://respondr.local/dashboard
+
+## Development and Local Testing
+
+For local development:
+
+```powershell
+# Backend development
+cd backend
+# Create .env file with Azure OpenAI credentials
+python -m uvicorn main:app --reload
+
+# Frontend development (separate terminal)
+cd frontend
+npm install
+npm start
+```
+
+## Cleanup and Resource Management
+
+To completely clean up the deployment:
+
+```powershell
+# Remove Kubernetes resources
+kubectl delete -f respondr-k8s-deployment.yaml
+kubectl delete -f secrets.yaml
+
+# Clean up Azure resources (WARNING: This deletes everything)
+.\deployment\cleanup.ps1 -ResourceGroupName respondr-rg -Force
+```
+
+## Container Registry Management
+
+Useful commands for managing your container images:
+
+```powershell
+# List all repositories in ACR
+az acr repository list --name respondracr --output table
+
+# List tags for the respondr repository
+az acr repository show-tags --name respondracr --repository respondr --output table
+
+# Delete old image versions
+az acr repository delete --name respondracr --image respondr:v1.0 --yes
+
+# Build and push new versions
+docker build -t respondr:v1.1 .
+docker tag respondr:v1.1 "$acrLoginServer/respondr:v1.1"
+docker push "$acrLoginServer/respondr:v1.1"
+
+# Update deployment with new image
+kubectl set image deployment/respondr-deployment respondr="$acrLoginServer/respondr:v1.1"
+kubectl rollout status deployment/respondr-deployment
+```
+
+## Monitoring and Troubleshooting
+
+### Common Commands
+
+```powershell
+# Check pod status and logs
+kubectl get pods -l app=respondr
+kubectl logs -l app=respondr --tail=100 -f
+
+# Check service and ingress
+kubectl get svc,ingress
+kubectl describe ingress respondr-ingress
+
+# Port forward for direct access (bypass ingress)
+kubectl port-forward service/respondr-service 8080:80
+```
 
 ### Common Issues
 
-1. **OpenAI Account Soft-Deleted**: If you encounter an error about a soft-deleted OpenAI account, the deployment will automatically attempt to restore it. If this fails, you can purge the soft-deleted resource manually:
-   ```powershell
-   az resource delete --ids "/subscriptions/{subscription-id}/providers/Microsoft.CognitiveServices/locations/{location}/resourceGroups/{resource-group}/deletedAccounts/{account-name}" --api-version 2023-05-01
-   ```
+1. **Image Pull Errors**: Ensure ACR is properly attached to AKS
+2. **DNS Resolution**: Verify hosts file or configure proper DNS
+3. **Azure OpenAI Errors**: Check credentials and deployment name
+4. **Pod Startup Issues**: Check resource limits and quotas
 
-2. **Storage Account Name Already Taken**: The storage account has a unique suffix based on the resource group ID. If you still encounter a name conflict, you can specify a custom name during deployment:
-   ```powershell
-   az deployment group create --resource-group respondr --template-file deployment/main.bicep --parameters storageAccountName=mycustomname
-   ```
+## Resource Naming Convention
 
-3. **ACR Access Issues**: If you see `ImagePullBackOff` errors in your pods, ensure ACR is properly attached to AKS:
-   ```powershell
-   az aks update --name response-aks-cluster --resource-group respondr --attach-acr responseacr
-   ```
+All resources follow a consistent naming pattern:
 
-4. **Image Already Exists Error**: When running the post-deployment script, you might see an error about "Tag nginx:test already exists in target registry". This is normal if you've run the script before and simply means the test image is already in your ACR.
+- Resource Group: `respondr-rg`
+- AKS Cluster: `respondr-aks-cluster`
+- ACR: `respondracr`
+- OpenAI Account: `respondr-openai-account`
+- Storage Account: `resp<uniqueString>store`
 
-5. **AKS Credential Issues**: If kubectl commands fail, refresh your credentials:
-   ```powershell
-   az aks get-credentials --resource-group respondr --name response-aks-cluster --overwrite-existing
-   ```
+You can customize the prefix by modifying the `resourcePrefix` parameter in the Bicep deployment.
 
-3. **Resource Deletion Hangs**: AKS resource groups can sometimes take a long time to delete. Monitor in the Azure portal and retry if needed.
+## Security Considerations
 
-### Additional Resources
+- All secrets are stored in Kubernetes secrets, not in configuration files
+- The application runs as a non-root user in containers
+- ACR integration uses managed identity for secure image pulls
+- Resource limits prevent resource exhaustion
+- Network policies can be applied for additional security
 
-- [AKS Documentation](https://docs.microsoft.com/en-us/azure/aks/)
-- [ACR Documentation](https://docs.microsoft.com/en-us/azure/container-registry/)
-- [Azure OpenAI Documentation](https://docs.microsoft.com/en-us/azure/cognitive-services/openai/)
-- [Azure Storage Documentation](https://docs.microsoft.com/en-us/azure/storage/)
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test locally and in a development AKS cluster
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

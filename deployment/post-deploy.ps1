@@ -29,8 +29,8 @@ $aksClusterName     = $deploy.properties.outputs.aksClusterName.value
 $acrName            = $deploy.properties.outputs.acrName.value
 $openAiAccountName  = $deploy.properties.outputs.openAiAccountName.value
 
-if (-not $aksClusterName)    { throw "❌ Missing aksClusterName output!" }
-if (-not $openAiAccountName) { throw "❌ Missing openAiAccountName output!" }
+if (-not $aksClusterName)    { throw "Missing aksClusterName output!" }
+if (-not $openAiAccountName) { throw "Missing openAiAccountName output!" }
 
 # 2) Get Storage account name dynamically (if you didn’t output it)
 $storageAccountName = az storage account list `
@@ -57,7 +57,7 @@ if ($acrName) {
         --resource-group $ResourceGroupName `
         --attach-acr $acrName
 } else {
-    Write-Host "`nℹ️  No ACR name found—skipping attach step." -ForegroundColor Cyan
+    Write-Host "`nNo ACR name found—skipping attach step." -ForegroundColor Cyan
 }
 
 # 5) Import test image into ACR
@@ -66,16 +66,14 @@ if ($acrName) {
     $importResult = az acr import `
         --name $acrName `
         --source docker.io/library/nginx:latest `
-        --image nginx:test 2>&1
-
-    if ($LASTEXITCODE -ne 0) {
+        --image nginx:test 2>&1    if ($LASTEXITCODE -ne 0) {
         if ($importResult -match 'already exists') {
-            Write-Host "✔ nginx:test already exists in ACR." -ForegroundColor Green
+            Write-Host "nginx:test already exists in ACR." -ForegroundColor Green
         } else {
-            Write-Host "⚠️  Import failed: $importResult" -ForegroundColor Yellow
+            Write-Host "Import failed: $importResult" -ForegroundColor Yellow
         }
     } else {
-        Write-Host "✔ Successfully imported nginx:test" -ForegroundColor Green
+        Write-Host "Successfully imported nginx:test" -ForegroundColor Green
     }
 }
 
@@ -94,7 +92,7 @@ if (Test-Path $testPodYaml) {
             # Replace the placeholder with the actual ACR login server
             $yamlContent = $yamlContent -replace 'ACR_PLACEHOLDER', $acrLoginServer
             Set-Content -Path $tempYamlPath -Value $yamlContent
-            Write-Host "✔ Created test pod manifest with ACR: $acrLoginServer" -ForegroundColor Green
+            Write-Host "Created test pod manifest with ACR: $acrLoginServer" -ForegroundColor Green
             
             # Ensure AKS has proper access to ACR (re-verify)
             Write-Host "`nVerifying ACR access for AKS..." -ForegroundColor Yellow
@@ -125,42 +123,39 @@ if (Test-Path $testPodYaml) {
                 if ($podStatus.status.phase -eq "Running" -and 
                     $podStatus.status.containerStatuses.ready -contains $true) {
                     $podReady = $true
-                    Write-Host "✔ Test pod is running successfully." -ForegroundColor Green
+                    Write-Host "Test pod is running successfully." -ForegroundColor Green
                 } elseif ($podStatus.status.phase -eq "Pending") {
                     # Check for image pull issues
                     $events = kubectl get events --field-selector involvedObject.name=nginx-test --sort-by='.lastTimestamp' -o json | 
                               ConvertFrom-Json
-                    
-                    foreach ($event in $events.items | Where-Object { $_.type -eq "Warning" }) {
-                        Write-Host "⚠️  Pod warning: $($event.message)" -ForegroundColor Yellow
+                      foreach ($event in $events.items | Where-Object { $_.type -eq "Warning" }) {
+                        Write-Host "Pod warning: $($event.message)" -ForegroundColor Yellow
                     }
                     
                     # Check if we're having image pull issues
-                    $containerStatus = $podStatus.status.containerStatuses
-                    if ($containerStatus.state.waiting.reason -in @("ImagePullBackOff", "ErrImagePull", "InvalidImageName")) {
-                        Write-Host "⚠️  Image pull issue detected: $($containerStatus.state.waiting.reason)" -ForegroundColor Red
+                    $containerStatus = $podStatus.status.containerStatuses                    if ($containerStatus.state.waiting.reason -in @("ImagePullBackOff", "ErrImagePull", "InvalidImageName")) {
+                        Write-Host "Image pull issue detected: $($containerStatus.state.waiting.reason)" -ForegroundColor Red
                         Write-Host "    - Verifying ACR authentication..." -ForegroundColor Yellow
                         
                         # Verify we can access the ACR
                         $acrLoginCheck = az acr login --name $acrName 2>&1
                         if ($LASTEXITCODE -ne 0) {
-                            Write-Host "❌ ACR login failed: $acrLoginCheck" -ForegroundColor Red
+                            Write-Host "ACR login failed: $acrLoginCheck" -ForegroundColor Red
                         } else {
-                            Write-Host "✅ ACR login successful" -ForegroundColor Green
+                            Write-Host "ACR login successful" -ForegroundColor Green
                         }
                         
                         # List repositories in ACR to verify access and content
                         Write-Host "    - Checking ACR repositories..." -ForegroundColor Yellow
                         $repos = az acr repository list --name $acrName -o json | ConvertFrom-Json
                         Write-Host "      Repositories in ACR: $($repos -join ', ')" -ForegroundColor Cyan
-                        
-                        # Check if our image exists
+                          # Check if our image exists
                         $imageExists = az acr repository show --name $acrName --image nginx:test 2>&1
                         if ($LASTEXITCODE -ne 0) {
-                            Write-Host "❌ Image 'nginx:test' not found in ACR - reimporting..." -ForegroundColor Red
+                            Write-Host "Image 'nginx:test' not found in ACR - reimporting..." -ForegroundColor Red
                             az acr import --name $acrName --source docker.io/library/nginx:latest --image nginx:test
                         } else {
-                            Write-Host "✅ Image 'nginx:test' exists in ACR" -ForegroundColor Green
+                            Write-Host "Image 'nginx:test' exists in ACR" -ForegroundColor Green
                         }
                     }
                 }
@@ -183,20 +178,18 @@ if (Test-Path $testPodYaml) {
                 # Wait a moment for port-forwarding to establish
                 Start-Sleep -Seconds 3
                 
-                # Test HTTP connection
-                try {
+                # Test HTTP connection                try {
                     $response = Invoke-WebRequest -Uri http://localhost:8080 -TimeoutSec 5
-                    Write-Host "✔ Successfully connected to pod - HTTP Status: $($response.StatusCode)" -ForegroundColor Green
+                    Write-Host "Successfully connected to pod - HTTP Status: $($response.StatusCode)" -ForegroundColor Green
                 } catch {
-                    Write-Host "⚠️  Could not connect to pod: $_" -ForegroundColor Yellow
+                    Write-Host "Could not connect to pod: $_" -ForegroundColor Yellow
                 } finally {
                     # Clean up
                     Stop-Job -Job $job
                     Remove-Job -Job $job
-                }
-            } else {
+                }            } else {
                 # If pod not ready, provide detailed diagnostics
-                Write-Host "`n❌ Test pod failed to start within timeout period." -ForegroundColor Red
+                Write-Host "`nTest pod failed to start within timeout period." -ForegroundColor Red
                 Write-Host "Pod status:" -ForegroundColor Yellow
                 kubectl get pod nginx-test -o wide
                 kubectl describe pod nginx-test
@@ -211,17 +204,15 @@ if (Test-Path $testPodYaml) {
             kubectl delete pod nginx-test --ignore-not-found
             
             # Clean up temp file
-            Remove-Item -Path $tempYamlPath -Force
-        } else {
-            Write-Host "❌ Cannot deploy test pod - ACR name is missing." -ForegroundColor Red
+            Remove-Item -Path $tempYamlPath -Force        } else {
+            Write-Host "Cannot deploy test pod - ACR name is missing." -ForegroundColor Red
         }
     } else {
-        Write-Host "⚠️  kubectl not installed—skip pod deployment." -ForegroundColor Yellow
+        Write-Host "kubectl not installed—skip pod deployment." -ForegroundColor Yellow
         Write-Host "   To test manually, install kubectl and run:" -ForegroundColor Cyan
         Write-Host "     kubectl apply -f $testPodYaml"
     }
-} else {
-    Write-Host "⚠️  test-pod.yaml not found at $testPodYaml" -ForegroundColor Red
+} else {    Write-Host "test-pod.yaml not found at $testPodYaml" -ForegroundColor Red
 }
 
 # 7) Check OpenAI account provisioning state
@@ -230,7 +221,7 @@ $openAiState = az cognitiveservices account show `
     --name $openAiAccountName `
     --resource-group $ResourceGroupName `
     --query "properties.provisioningState" -o tsv
-Write-Host "✔ OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
+Write-Host "OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
 
 # 8) Check Storage account provisioning state
 if ($storageAccountName) {
@@ -239,7 +230,7 @@ if ($storageAccountName) {
         --name $storageAccountName `
         --resource-group $ResourceGroupName `
         --query "provisioningState" -o tsv
-    Write-Host "✔ Storage provisioningState: $storageState" -ForegroundColor Cyan
+    Write-Host "Storage provisioningState: $storageState" -ForegroundColor Cyan
 }
 
-Write-Host "`n🎉 Post-deployment configuration completed successfully!" -ForegroundColor Green
+Write-Host "`nPost-deployment configuration completed successfully!" -ForegroundColor Green

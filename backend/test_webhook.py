@@ -65,19 +65,19 @@ def send_webhook_message(message_data):
     try:
         response = requests.post(WEBHOOK_URL, json=message_data)
         if response.status_code == 200:
-            print(f"✅ Sent message from {message_data['name']}: {message_data['text'][:50]}...")
+            print(f"Sent message from {message_data['name']}: {message_data['text'][:50]}...")
             return True
         else:
-            print(f"❌ Failed to send message from {message_data['name']}: {response.status_code}")
+            print(f"Failed to send message from {message_data['name']}: {response.status_code}")
             return False
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error sending message from {message_data['name']}: {e}")
+        print(f"Error sending message from {message_data['name']}: {e}")
         return False
 
 def test_webhook_endpoint():
     """Send all test messages to the webhook endpoint"""
-    print("🚀 Starting webhook test with synthetic SAR responder data...")
-    print(f"📡 Sending {len(test_messages)} messages to {WEBHOOK_URL}")
+    print("Starting webhook test with synthetic SAR responder data...")
+    print(f"Sending {len(test_messages)} messages to {WEBHOOK_URL}")
     print("-" * 60)
     
     successful_sends = 0
@@ -91,16 +91,16 @@ def test_webhook_endpoint():
         time.sleep(0.5)
     
     print("-" * 60)
-    print(f"✅ Test completed: {successful_sends}/{len(test_messages)} messages sent successfully")
+    print(f"Test completed: {successful_sends}/{len(test_messages)} messages sent successfully")
     
     if successful_sends == len(test_messages):
-        print("🎉 All messages sent successfully!")
-        print("🌐 You can now view the results at:")
+        print("All messages sent successfully!")
+        print("You can now view the results at:")
         print("   - Frontend: http://localhost:8000")
         print("   - API: http://localhost:8000/api/responders")
         print("   - Dashboard: http://localhost:8000/dashboard")
     else:
-        print("⚠️  Some messages failed to send. Check if the server is running.")
+        print("Some messages failed to send. Check if the server is running.")
 
 if __name__ == "__main__":
     test_webhook_endpoint()
