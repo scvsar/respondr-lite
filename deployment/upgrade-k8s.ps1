@@ -123,10 +123,7 @@ function Get-AcrDetails {
 
 # Function to build and push new image
 function Build-AndPushImage {
-    param($AcrDetails)
-    
-    Write-Host "Building new container image..." -ForegroundColor Yellow
-    
+    param($AcrDetails)    Write-Host "Building new container image..." -ForegroundColor Yellow
     # Navigate to project root
     $projectRoot = Split-Path $PSScriptRoot -Parent
     Push-Location $projectRoot
@@ -144,9 +141,15 @@ function Build-AndPushImage {
         if ($DryRun) {
             Write-Host "DRY RUN: Would build docker image" -ForegroundColor Yellow
         } else {
-            docker build -t $fullImageName -t $latestImageName .
+            # Build with clean output - suppress progress
+            docker build -t $fullImageName -t $latestImageName . --quiet
             if ($LASTEXITCODE -ne 0) {
-                throw "Docker build failed"
+                # If quiet fails, try without quiet but capture output properly
+                Write-Host "Quiet build failed, retrying with full output..." -ForegroundColor Yellow
+                docker build -t $fullImageName -t $latestImageName .
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Docker build failed"
+                }
             }
         }
         
@@ -155,10 +158,16 @@ function Build-AndPushImage {
         if ($DryRun) {
             Write-Host "DRY RUN: Would push images to ACR" -ForegroundColor Yellow
         } else {
+            # Push the versioned image
             docker push $fullImageName
+            if ($LASTEXITCODE -ne 0) {
+                throw "Docker push failed for versioned image"
+            }
+            
+            # Push the latest image
             docker push $latestImageName
             if ($LASTEXITCODE -ne 0) {
-                throw "Docker push failed"
+                throw "Docker push failed for latest image"
             }
         }
         

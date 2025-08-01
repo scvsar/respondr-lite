@@ -207,6 +207,56 @@ python test_webhook.py
 # This will send multiple test messages and verify the system is working
 ```
 
+## Upgrading and Redeployment
+
+### Production Upgrades
+
+For production environments, use the upgrade script that handles versioning, container builds, and rollback capabilities:
+
+```powershell
+cd deployment
+
+# Full upgrade with new version
+.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr-rg
+
+# Upgrade with automatic rollback on failure
+.\upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName respondr-rg -RollbackOnFailure
+
+# Use existing container image (skip build)
+.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr-rg -SkipBuild
+```
+
+### Quick Redeployment
+
+For development or quick fixes:
+
+```powershell
+cd deployment
+
+# Build and deploy with timestamp version
+.\redeploy.ps1 -Action "build" -ResourceGroupName respondr-rg
+
+# Restart deployment (same image, fresh pods)
+.\redeploy.ps1 -Action "restart"
+
+# Update configuration and restart
+.\redeploy.ps1 -Action "update-config"
+```
+
+### Manual Commands
+
+```powershell
+# Quick restart without new build
+kubectl rollout restart deployment/respondr-deployment
+
+# Rollback to previous version
+kubectl rollout undo deployment/respondr-deployment
+
+# Check deployment status
+kubectl get pods -l app=respondr
+kubectl rollout status deployment/respondr-deployment
+```
+
 ## Application Endpoints
 
 Once deployed, the application provides:
