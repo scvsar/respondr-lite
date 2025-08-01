@@ -24,22 +24,22 @@ spec:
           valueFrom:
             secretKeyRef:
               name: respondr-secrets
-              key: azure-openai-api-key
+              key: AZURE_OPENAI_API_KEY
         - name: AZURE_OPENAI_ENDPOINT
           valueFrom:
             secretKeyRef:
               name: respondr-secrets
-              key: azure-openai-endpoint
+              key: AZURE_OPENAI_ENDPOINT
         - name: AZURE_OPENAI_DEPLOYMENT
           valueFrom:
             secretKeyRef:
               name: respondr-secrets
-              key: azure-openai-deployment
+              key: AZURE_OPENAI_DEPLOYMENT
         - name: AZURE_OPENAI_API_VERSION
           valueFrom:
             secretKeyRef:
               name: respondr-secrets
-              key: azure-openai-api-version
+              key: AZURE_OPENAI_API_VERSION
         resources:
           requests:
             memory: "256Mi"
@@ -106,7 +106,7 @@ metadata:
   name: respondr-secrets
 type: Opaque
 stringData:
-  azure-openai-api-key: "REPLACE_WITH_YOUR_API_KEY"
-  azure-openai-endpoint: "https://westus.api.cognitive.microsoft.com/"
-  azure-openai-deployment: "gpt-4o-mini"
-  azure-openai-api-version: "2025-01-01-preview"
+  AZURE_OPENAI_API_KEY: "REPLACE_WITH_YOUR_API_KEY"
+  AZURE_OPENAI_ENDPOINT: "https://westus.api.cognitive.microsoft.com/"
+  AZURE_OPENAI_DEPLOYMENT: "gpt-4o-mini"
+  AZURE_OPENAI_API_VERSION: "2025-01-01-preview"
