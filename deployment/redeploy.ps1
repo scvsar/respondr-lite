@@ -2,7 +2,7 @@
 
 <#
 .SYNOPSIS
-    Quick redeploy script for Respondr application
+    Quick redeploy script for respondr application
 
 .DESCRIPTION
     Simple script for common redeployment scenarios:
@@ -20,7 +20,7 @@
     Kubernetes namespace (default: "default")
 
 .EXAMPLE
-    .\redeploy.ps1 -Action "build" -ResourceGroupName "respondr-rg"
+    .\redeploy.ps1 -Action "build" -ResourceGroupName "respondr"
     
 .EXAMPLE
     .\redeploy.ps1 -Action "restart"
@@ -39,6 +39,7 @@ param(
 )
 
 $deploymentName = "respondr-deployment"
+$containerName = "respondr"  # Container name for image updates
 
 Write-Host "Respondr Quick Redeploy" -ForegroundColor Green
 Write-Host "======================" -ForegroundColor Green
@@ -55,8 +56,35 @@ switch ($Action) {
         $version = "v$(Get-Date -Format 'yyyy.MM.dd-HHmm')"
         Write-Host "Building and deploying version: $version" -ForegroundColor Yellow
         
-        # Call the main upgrade script
-        & "$PSScriptRoot\upgrade-k8s.ps1" -Version $version -ResourceGroupName $ResourceGroupName -Namespace $Namespace
+        try {
+            # Call the main upgrade script
+            & "$PSScriptRoot\upgrade-k8s.ps1" -Version $version -ResourceGroupName $ResourceGroupName -Namespace $Namespace
+            
+            # If the upgrade script failed, we can manually try to fix the deployment
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Upgrade script reported an error. Attempting manual recovery..." -ForegroundColor Yellow
+                
+                # Get ACR details directly
+                $acrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv
+                $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
+                
+                # Format image name properly
+                $fullImageName = "$acrLoginServer/$containerName" + ":" + "$version"
+                
+                Write-Host "Manually updating deployment with image: $fullImageName" -ForegroundColor Cyan
+                kubectl set image "deployment/$deploymentName" "$containerName=$fullImageName" -n $Namespace
+                
+                if ($LASTEXITCODE -eq 0) {
+                    # Wait for rollout
+                    kubectl rollout status deployment/$deploymentName -n $Namespace --timeout=300s
+                } else {
+                    Write-Host "Failed to update deployment image manually" -ForegroundColor Red
+                }
+            }
+        }
+        catch {
+            Write-Host "Error during build action: $_" -ForegroundColor Red
+        }
     }
     
     "restart" {
@@ -98,3 +126,12 @@ switch ($Action) {
 Write-Host "`nCurrent deployment status:" -ForegroundColor Green
 kubectl get deployment $deploymentName -n $Namespace
 kubectl get pods -l app=respondr -n $Namespace
+
+# Helper to debug failing pods if needed
+if ($Action -eq "build") {
+    $failingPods = kubectl get pods -l app=respondr -n $Namespace | Select-String "InvalidImageName|ImagePullBackOff|ErrImagePull"
+    if ($failingPods) {
+        Write-Host "`nDetected pods with image issues. Detailed information:" -ForegroundColor Red
+        kubectl describe pods -l app=respondr -n $Namespace | Select-String -Context 10 "InvalidImageName|ImagePullBackOff|ErrImagePull"
+    }
+}

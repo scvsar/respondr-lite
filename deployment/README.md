@@ -188,16 +188,16 @@ For production upgrades with new code changes:
 
 ```powershell
 # Full upgrade with new version (builds and pushes new container)
-./upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr-rg"
+./upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr"
 
 # Upgrade with automatic rollback on failure
-./upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName "respondr-rg" -RollbackOnFailure
+./upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName "respondr" -RollbackOnFailure
 
 # Use existing image (skip build)
-./upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr-rg" -SkipBuild
+./upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr" -SkipBuild
 
 # Dry run to see what would happen
-./upgrade-k8s.ps1 -Version "v1.3" -ResourceGroupName "respondr-rg" -DryRun
+./upgrade-k8s.ps1 -Version "v1.3" -ResourceGroupName "respondr" -DryRun
 ```
 
 ### Quick Redeploy Options
@@ -206,7 +206,7 @@ For common redeployment scenarios:
 
 ```powershell
 # Build new image with timestamp and deploy
-./redeploy.ps1 -Action "build" -ResourceGroupName "respondr-rg"
+./redeploy.ps1 -Action "build" -ResourceGroupName "respondr"
 
 # Restart existing deployment (same image, fresh pods)
 ./redeploy.ps1 -Action "restart"
