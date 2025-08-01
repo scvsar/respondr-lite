@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Post-deployment configuration for the response-tracking-render app.
+    Post-deployment configuration for the respondr app.
 
 .DESCRIPTION
     - Fetches deployment outputs (AKS cluster name, ACR name, OpenAI account name)

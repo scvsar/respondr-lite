@@ -10,7 +10,7 @@ Required: Azure CLI ≥ 2.60 (GA purge command).
 param(
     [Parameter(Mandatory)][string]$ResourceGroupName,
     [switch]$Force,
-    [string]$PurgeSoftDeleted = $null,   # prefix, e.g. "response-"
+    [string]$PurgeSoftDeleted = $null,   # prefix, e.g. "respondr-"
     [int]   $TimeoutSeconds    = 0,      # 0 = wait forever
     [switch]$DeleteTempRgAfterPurge      # remove helper RG after purge
 )

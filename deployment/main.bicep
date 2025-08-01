@@ -2,7 +2,7 @@
 param location string = resourceGroup().location
 
 @description('A prefix for resource names to ensure uniqueness')
-param resourcePrefix string = 'response'
+param resourcePrefix string = 'respondr'
 
 @description('The name of the AKS cluster.')
 param aksClusterName string = '${resourcePrefix}-aks-cluster'
