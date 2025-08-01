@@ -1,0 +1,38 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Environment files (will be provided at runtime)
+backend/.env
+
+# Node modules (will be installed during build)
+frontend/node_modules
+frontend/build
+
+# Python cache
+backend/__pycache__
+backend/*.pyc
+backend/.pytest_cache
+
+# IDE files
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test files
+backend/test_*.py
+
+# Deployment files
+deployment/

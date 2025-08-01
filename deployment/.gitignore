@@ -1,0 +1,11 @@
+# Kubernetes secrets - DO NOT COMMIT
+secrets.yaml
+respondr-k8s-temp.yaml
+
+# Environment files with secrets
+.env
+*.env
+
+# Generated files
+*.tmp
+*.temp
