@@ -35,7 +35,7 @@ param(
     [string]$ResourceGroupName,
     
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "default"
+    [string]$Namespace = "respondr"
 )
 
 $deploymentName = "respondr-deployment"

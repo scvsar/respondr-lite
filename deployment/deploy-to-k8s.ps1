@@ -5,13 +5,16 @@
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "default",
+    [string]$Namespace = "respondr",
     
     [Parameter(Mandatory=$false)]
     [string]$ImageTag = "latest",
     
     [Parameter(Mandatory=$false)]
     [string]$AzureOpenAIApiKey,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$ResourceGroupName = "respondr",
     
     [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
@@ -61,12 +64,27 @@ if (-not (Test-Path $secretsFile)) {
     }
 }
 
-# Update the image tag in the deployment template
+# Get ACR details
+Write-Host "Getting Azure Container Registry details..." -ForegroundColor Yellow
+$acrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv
+if (-not $acrName) {
+    Write-Error "No Azure Container Registry found in resource group '$ResourceGroupName'"
+    exit 1
+}
+
+$acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
+$fullImageName = "$acrLoginServer/respondr:$ImageTag"
+
+Write-Host "ACR Name: $acrName" -ForegroundColor Cyan
+Write-Host "ACR Login Server: $acrLoginServer" -ForegroundColor Cyan
+Write-Host "Using image: $fullImageName" -ForegroundColor Cyan
+
+# Update the image in the deployment template
 $deploymentFile = "respondr-k8s-template.yaml"
 $tempFile = "respondr-k8s-temp.yaml"
 
 Write-Host "Preparing deployment configuration..." -ForegroundColor Yellow
-(Get-Content $deploymentFile) -replace 'image: respondr:latest', "image: respondr:$ImageTag" | Set-Content $tempFile
+(Get-Content $deploymentFile) -replace '{{ACR_IMAGE_PLACEHOLDER}}', $fullImageName | Set-Content $tempFile
 
 # Deploy secrets first
 Write-Host "Deploying secrets..." -ForegroundColor Yellow
@@ -119,4 +137,4 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Update your /etc/hosts file: echo '127.0.0.1 respondr.local' >> /etc/hosts" -ForegroundColor White
 Write-Host "2. Test the application: curl http://respondr.local/api/responders" -ForegroundColor White
-Write-Host "3. Send test webhook: curl -X POST http://respondr.local/webhook -H 'Content-Type: application/json' -d '{\"name\":\"Test\",\"text\":\"SAR1 ETA 15 min\",\"created_at\":$(date +%s)}'" -ForegroundColor White
+Write-Host "3. Send test webhook: curl -X POST http://respondr.local/webhook -H 'Content-Type: application/json' -d '{`"name`":`"Test`",`"text`":`"SAR1 ETA 15 min`",`"created_at`":1234567890}'" -ForegroundColor White

@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
       - name: respondr
-        image: respondr:latest
+        image: {{ACR_IMAGE_PLACEHOLDER}}
         ports:
         - containerPort: 8000
         env:
