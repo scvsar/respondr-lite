@@ -1,21 +1,63 @@
 import os
 import json
+import logging
 from datetime import datetime
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import AzureOpenAI
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file
 load_dotenv()
 
-app = FastAPI()
+# Validate environment variables
+azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+azure_openai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
+
+logger.info(f"Azure OpenAI Endpoint: {azure_openai_endpoint}")
+logger.info(f"Azure OpenAI Deployment: {azure_openai_deployment}")
+logger.info(f"Azure OpenAI API Version: {azure_openai_api_version}")
+
+if not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment:
+    logger.error("Missing required Azure OpenAI configuration")
+    raise ValueError("AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in the .env file")
+
+app = FastAPI(
+    title="Respondr API",
+    description="API for tracking responder information",
+    version="1.0.0",
+)
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Starting Respondr API application")
+    logger.info(f"Using Azure OpenAI API at: {azure_openai_endpoint}")
+    logger.info(f"Using deployment: {azure_openai_deployment}")
+
 messages = []
 
-client = OpenAI()
+# Initialize the Azure OpenAI client with credentials from .env
+logger.info("Initializing Azure OpenAI client")
+client = AzureOpenAI(
+    api_key=azure_openai_api_key,
+    azure_endpoint=azure_openai_endpoint,
+    api_version=azure_openai_api_version,
+)
 
 def extract_details_from_text(text: str) -> dict:
     try:
+        logger.info(f"Extracting details from text: {text[:50]}...")
+        
         prompt = (
             "Extract responder information from the following message.\n"
             "- If the responder is taking a SAR vehicle (e.g., SAR78, SAR rig, SAR-4), return the vehicle as-is (e.g., 'SAR78').\n"
@@ -28,17 +70,34 @@ def extract_details_from_text(text: str) -> dict:
             "Output:"
         )
 
+        logger.info(f"Calling Azure OpenAI with deployment: {azure_openai_deployment}")
+        
+        # Prepare the messages in the format expected by Azure OpenAI
+        messages = [
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        # Call the Azure OpenAI API with the correct parameters
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
+            model=azure_openai_deployment,
+            messages=messages,
             temperature=0,
+            max_tokens=1000,
+            top_p=0.95,
+            frequency_penalty=0,
+            presence_penalty=0,
+            stop=None
         )
 
-        reply = response.choices[0].message.content.strip()
+        reply = response.choices[0].message.content
+        logger.info(f"Received response: {reply}")
         return json.loads(reply)
 
     except Exception as e:
-        print("OpenAI extraction error:", e)
+        logger.error(f"Azure OpenAI extraction error: {e}", exc_info=True)
         return {
             "vehicle": "Unknown",
             "eta": "Unknown"
@@ -47,6 +106,7 @@ def extract_details_from_text(text: str) -> dict:
 @app.post("/webhook")
 async def receive_webhook(request: Request):
     data = await request.json()
+    logger.info(f"Received webhook data from: {data.get('name', 'Unknown')}")
 
     name = data.get("name", "Unknown")
     text = data.get("text", "")
@@ -54,6 +114,7 @@ async def receive_webhook(request: Request):
     timestamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
 
     parsed = extract_details_from_text(text)
+    logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}")
 
     message_record = {
         "name": name,
