@@ -14,7 +14,7 @@ param openAiAccountName string = '${resourcePrefix}-openai-account'
 param openAiSku string = 'S0'
 
 @description('The name of the Azure Container Registry.')
-param acrName string = '${resourcePrefix}${uniqueString(resourceGroup().id)}acr'
+param acrName string = '${resourcePrefix}acr'
 
 @description('The name of the Azure Storage Account.')
 param storageAccountName string = 'resp${uniqueString(resourceGroup().id)}store'

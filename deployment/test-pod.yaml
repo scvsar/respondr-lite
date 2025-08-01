@@ -5,6 +5,6 @@ metadata:
 spec:
   containers:
   - name: nginx
-    image: responseacr.azurecr.io/nginx:test
+    image: ACR_PLACEHOLDER/nginx:test
     ports:
     - containerPort: 80
