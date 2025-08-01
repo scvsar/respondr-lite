@@ -66,7 +66,9 @@ if ($acrName) {
     $importResult = az acr import `
         --name $acrName `
         --source docker.io/library/nginx:latest `
-        --image nginx:test 2>&1    if ($LASTEXITCODE -ne 0) {
+        --image nginx:test 2>&1
+    
+    if ($LASTEXITCODE -ne 0) {
         if ($importResult -match 'already exists') {
             Write-Host "nginx:test already exists in ACR." -ForegroundColor Green
         } else {
@@ -133,7 +135,9 @@ if (Test-Path $testPodYaml) {
                     }
                     
                     # Check if we're having image pull issues
-                    $containerStatus = $podStatus.status.containerStatuses                    if ($containerStatus.state.waiting.reason -in @("ImagePullBackOff", "ErrImagePull", "InvalidImageName")) {
+                    $containerStatus = $podStatus.status.containerStatuses
+                    
+                    if ($containerStatus.state.waiting.reason -in @("ImagePullBackOff", "ErrImagePull", "InvalidImageName")) {
                         Write-Host "Image pull issue detected: $($containerStatus.state.waiting.reason)" -ForegroundColor Red
                         Write-Host "    - Verifying ACR authentication..." -ForegroundColor Yellow
                         
@@ -178,7 +182,8 @@ if (Test-Path $testPodYaml) {
                 # Wait a moment for port-forwarding to establish
                 Start-Sleep -Seconds 3
                 
-                # Test HTTP connection                try {
+                # Test HTTP connection
+                try {
                     $response = Invoke-WebRequest -Uri http://localhost:8080 -TimeoutSec 5
                     Write-Host "Successfully connected to pod - HTTP Status: $($response.StatusCode)" -ForegroundColor Green
                 } catch {
@@ -187,7 +192,8 @@ if (Test-Path $testPodYaml) {
                     # Clean up
                     Stop-Job -Job $job
                     Remove-Job -Job $job
-                }            } else {
+                }
+            } else {
                 # If pod not ready, provide detailed diagnostics
                 Write-Host "`nTest pod failed to start within timeout period." -ForegroundColor Red
                 Write-Host "Pod status:" -ForegroundColor Yellow
@@ -204,7 +210,8 @@ if (Test-Path $testPodYaml) {
             kubectl delete pod nginx-test --ignore-not-found
             
             # Clean up temp file
-            Remove-Item -Path $tempYamlPath -Force        } else {
+            Remove-Item -Path $tempYamlPath -Force
+        } else {
             Write-Host "Cannot deploy test pod - ACR name is missing." -ForegroundColor Red
         }
     } else {
