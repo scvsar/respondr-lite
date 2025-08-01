@@ -111,7 +111,18 @@ az acr repository list --name $acrName --output table
 
 ### Step 5: Configure Application Secrets
 
-You'll need Azure OpenAI credentials for the application to function:
+You'll need Azure OpenAI credentials for the application to function. Use the `create-secrets.ps1` script to automatically generate your Kubernetes secrets file:
+
+```powershell
+# Create the secrets.yaml file with your Azure OpenAI credentials
+cd deployment
+.\create-secrets.ps1 -ResourceGroupName respondr
+
+# Verify the secrets were created correctly
+# The script will show you the endpoint and deployment settings (but not the key value)
+```
+
+Alternatively, you can manually retrieve the credentials and create the file:
 
 ```powershell
 # Get Azure OpenAI details from the deployment
@@ -134,20 +145,19 @@ Navigate to the deployment directory and deploy the application:
 ```powershell
 cd deployment
 
-# Update the Kubernetes manifest with your ACR image
-$acrLoginServer = az acr show --name respondracr --query loginServer -o tsv
-(Get-Content respondr-k8s-template.yaml) -replace 'respondr:latest', "$acrLoginServer/respondr:latest" | Set-Content respondr-k8s-deployment.yaml
+# Deploy the application (automatically creates secrets.yaml from Azure)
+.\deploy-to-k8s.ps1 -ResourceGroupName respondr -ImageTag "latest"
 
-# Deploy using the PowerShell script with your Azure OpenAI key
-.\deploy-to-k8s.ps1 -AzureOpenAIApiKey $openAIKey
+# If you want to use an existing secrets file, you can skip secrets creation:
+# .\deploy-to-k8s.ps1 -ResourceGroupName respondr -ImageTag "latest" -SkipSecretsCreation
 ```
 
 Alternatively, deploy manually:
 
 ```powershell
-# Create secrets file
-cp secrets-template.yaml secrets.yaml
-# Edit secrets.yaml with your actual Azure OpenAI credentials
+# Create secrets file (now built into deploy-to-k8s.ps1)
+# This step is now optional as deploy-to-k8s.ps1 will handle it automatically
+.\create-secrets.ps1 -ResourceGroupName respondr
 
 # Deploy to Kubernetes
 kubectl apply -f secrets.yaml

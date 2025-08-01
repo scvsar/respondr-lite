@@ -17,6 +17,15 @@ param(
     [string]$ResourceGroupName = "respondr",
     
     [Parameter(Mandatory=$false)]
+    [string]$OpenAIDeploymentName = "gpt-4o-mini",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$ApiVersion = "2025-01-01-preview",
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$SkipSecretsCreation = $false,
+    
+    [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
 )
 
@@ -51,17 +60,75 @@ if ($Namespace -ne "default") {
 
 # Check for secrets file
 $secretsFile = "secrets.yaml"
-if (-not (Test-Path $secretsFile)) {
+$templatePath = "secrets-template.yaml"
+
+if (-not (Test-Path $secretsFile) -and -not $SkipSecretsCreation) {
+    Write-Host "No secrets.yaml file found. Creating secrets..." -ForegroundColor Yellow
+    
     if ($AzureOpenAIApiKey) {
-        Write-Host "Creating secrets file from template..." -ForegroundColor Yellow
-        (Get-Content "secrets-template.yaml") -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $AzureOpenAIApiKey | Set-Content $secretsFile
+        # Use provided API key directly
+        Write-Host "Creating secrets file from template using provided API key..." -ForegroundColor Yellow
+        (Get-Content $templatePath) -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $AzureOpenAIApiKey | Set-Content $secretsFile
+        Write-Host "Secrets file created successfully using provided API key." -ForegroundColor Green
     } else {
-        Write-Host "No secrets.yaml file found and no API key provided!" -ForegroundColor Red
-        Write-Host "Please either:" -ForegroundColor Yellow
-        Write-Host "  1. Copy secrets-template.yaml to secrets.yaml and fill in your values" -ForegroundColor White
-        Write-Host "  2. Provide -AzureOpenAIApiKey parameter" -ForegroundColor White
-        exit 1
+        # Auto-generate secrets from Azure
+        Write-Host "Auto-generating secrets from Azure resources..." -ForegroundColor Yellow
+        
+        try {
+            # Get OpenAI account name with more robust handling
+            $openAIListCommand = "az cognitiveservices account list -g `"$ResourceGroupName`" --query `"[?kind=='OpenAI']`" -o json"
+            $openAIAccountsJson = Invoke-Expression $openAIListCommand
+            $openAIAccounts = $openAIAccountsJson | ConvertFrom-Json
+            
+            if (-not $openAIAccounts -or @($openAIAccounts).Count -eq 0) {
+                Write-Error "No Azure OpenAI account found in resource group $ResourceGroupName"
+                exit 1
+            }
+            
+            # Take the first account if multiple are returned
+            $openAIAccount = $openAIAccounts[0]
+            $openAIName = $openAIAccount.name
+            
+            Write-Host "  Found Azure OpenAI account: $openAIName" -ForegroundColor Cyan
+            
+            # Get endpoint and key with more robust handling
+            $endpointCommand = "az cognitiveservices account show -n `"$openAIName`" -g `"$ResourceGroupName`" --query `"properties.endpoint`" -o tsv"
+            $openAIEndpoint = (Invoke-Expression $endpointCommand).Trim()
+            
+            $keyCommand = "az cognitiveservices account keys list -n `"$openAIName`" -g `"$ResourceGroupName`" --query `"key1`" -o tsv"
+            $openAIKey = (Invoke-Expression $keyCommand).Trim()
+            
+            if (-not $openAIEndpoint -or -not $openAIKey) {
+                Write-Error "Failed to retrieve endpoint or key for Azure OpenAI account"
+                exit 1
+            }
+            
+            # Create secrets.yaml from template
+            Copy-Item -Path $templatePath -Destination $secretsFile -Force
+            
+            # Read the template content
+            $secretsContent = Get-Content -Path $secretsFile -Raw
+            
+            # Replace placeholders with actual values
+            $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
+            $secretsContent = $secretsContent -replace 'https://westus.api.cognitive.microsoft.com/', $openAIEndpoint
+            $secretsContent = $secretsContent -replace 'gpt-4o-mini', $OpenAIDeploymentName
+            $secretsContent = $secretsContent -replace '2025-01-01-preview', $ApiVersion
+            
+            # Write the updated content
+            Set-Content -Path $secretsFile -Value $secretsContent
+            
+            Write-Host "  Secrets file created successfully!" -ForegroundColor Green
+        }
+        catch {
+            Write-Error "Error creating secrets file: $_"
+            exit 1
+        }
     }
+} elseif (Test-Path $secretsFile) {
+    Write-Host "Using existing secrets file: $secretsFile" -ForegroundColor Cyan
+} elseif ($SkipSecretsCreation) {
+    Write-Host "Skipping secrets creation as requested" -ForegroundColor Yellow
 }
 
 # Get ACR details
