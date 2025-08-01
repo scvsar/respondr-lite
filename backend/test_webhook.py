@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 
 # Base URL for the webhook endpoint
-WEBHOOK_URL = "http://localhost:8000/webhook"
+WEBHOOK_URL = "http://localhost:8080/webhook"
 
 # Synthetic test data simulating GroupMe messages from SAR responders
 test_messages = [
@@ -86,8 +86,7 @@ def test_webhook_endpoint():
         print(f"[{i}/{len(test_messages)}] ", end="")
         if send_webhook_message(message):
             successful_sends += 1
-        
-        # Small delay between messages to simulate real-world timing
+          # Small delay between messages to simulate real-world timing
         time.sleep(0.5)
     
     print("-" * 60)
@@ -96,9 +95,9 @@ def test_webhook_endpoint():
     if successful_sends == len(test_messages):
         print("All messages sent successfully!")
         print("You can now view the results at:")
-        print("   - Frontend: http://localhost:8000")
-        print("   - API: http://localhost:8000/api/responders")
-        print("   - Dashboard: http://localhost:8000/dashboard")
+        print("   - Frontend: http://localhost:8001")
+        print("   - API: http://localhost:8001/api/responders")
+        print("   - Dashboard: http://localhost:8001/dashboard")
     else:
         print("Some messages failed to send. Check if the server is running.")
 
