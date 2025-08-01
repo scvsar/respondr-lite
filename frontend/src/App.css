@@ -1,0 +1,48 @@
+.App {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background-color: #121212;
+  color: #e0e0e0;
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.App-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.logo {
+  width: 100px;
+  margin-bottom: 1rem;
+}
+
+.metrics {
+  margin-top: 1rem;
+  font-size: 1.2rem;
+  display: flex;
+  justify-content: center;
+  gap: 2rem;
+}
+
+.dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  background-color: #1e1e1e;
+  border: 1px solid #333;
+}
+
+.dashboard-table th,
+.dashboard-table td {
+  border: 1px solid #444;
+  padding: 0.75rem;
+  text-align: left;
+}
+
+.dashboard-table th {
+  background-color: #222;
+  color: #ffa726;
+}
+
+.dashboard-table tr:nth-child(even) {
+  background-color: #1a1a1a;
+}
