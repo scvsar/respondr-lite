@@ -1,0 +1,112 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: respondr-deployment
+  labels:
+    app: respondr
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: respondr
+  template:
+    metadata:
+      labels:
+        app: respondr
+    spec:
+      containers:
+      - name: respondr
+        image: respondr:latest
+        ports:
+        - containerPort: 8000
+        env:
+        - name: AZURE_OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: respondr-secrets
+              key: azure-openai-api-key
+        - name: AZURE_OPENAI_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              name: respondr-secrets
+              key: azure-openai-endpoint
+        - name: AZURE_OPENAI_DEPLOYMENT
+          valueFrom:
+            secretKeyRef:
+              name: respondr-secrets
+              key: azure-openai-deployment
+        - name: AZURE_OPENAI_API_VERSION
+          valueFrom:
+            secretKeyRef:
+              name: respondr-secrets
+              key: azure-openai-api-version
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/responders
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /api/responders
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        imagePullPolicy: IfNotPresent
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: respondr-service
+  labels:
+    app: respondr
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 8000
+    protocol: TCP
+  selector:
+    app: respondr
+
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: respondr-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: respondr.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: respondr-service
+            port:
+              number: 80
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: respondr-secrets
+type: Opaque
+stringData:
+  azure-openai-api-key: "REPLACE_WITH_YOUR_API_KEY"
+  azure-openai-endpoint: "https://westus.api.cognitive.microsoft.com/"
+  azure-openai-deployment: "gpt-4o-mini"
+  azure-openai-api-version: "2025-01-01-preview"

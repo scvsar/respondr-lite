@@ -139,7 +139,14 @@ def display_dashboard():
     html += "</table>"
     return html
 
-frontend_build = os.path.join(os.path.dirname(__file__), "../frontend/build")
+# Determine frontend build path - works for both development and Docker
+if os.path.exists(os.path.join(os.path.dirname(__file__), "frontend/build")):
+    # Docker environment - frontend build is copied to ./frontend/build
+    frontend_build = os.path.join(os.path.dirname(__file__), "frontend/build")
+else:
+    # Development environment - frontend build is at ../frontend/build
+    frontend_build = os.path.join(os.path.dirname(__file__), "../frontend/build")
+
 app.mount("/static", StaticFiles(directory=os.path.join(frontend_build, "static")), name="static")
 
 @app.get("/")
