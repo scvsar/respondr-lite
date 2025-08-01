@@ -28,10 +28,10 @@
     Automatically rollback if deployment fails
 
 .EXAMPLE
-    .\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr-rg"
+    .\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName "respondr"
 
 .EXAMPLE
-    .\upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName "respondr-rg" -SkipBuild -RollbackOnFailure
+    .\upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName "respondr" -SkipBuild -RollbackOnFailure
 #>
 
 param(
@@ -123,7 +123,9 @@ function Get-AcrDetails {
 
 # Function to build and push new image
 function Build-AndPushImage {
-    param($AcrDetails)    Write-Host "Building new container image..." -ForegroundColor Yellow
+    param($AcrDetails)
+    
+    Write-Host "Building new container image..." -ForegroundColor Yellow
     # Navigate to project root
     $projectRoot = Split-Path $PSScriptRoot -Parent
     Push-Location $projectRoot
@@ -131,7 +133,7 @@ function Build-AndPushImage {
     try {
         # Login to ACR
         Write-Host "Logging into ACR..." -ForegroundColor Yellow
-        az acr login --name $AcrDetails.Name
+        az acr login --name $AcrDetails.Name | Out-Null
         
         # Build image with version tag
         $fullImageName = "$($AcrDetails.LoginServer)/respondr:$Version"
@@ -142,11 +144,11 @@ function Build-AndPushImage {
             Write-Host "DRY RUN: Would build docker image" -ForegroundColor Yellow
         } else {
             # Build with clean output - suppress progress
-            docker build -t $fullImageName -t $latestImageName . --quiet
+            docker build -t $fullImageName -t $latestImageName . --quiet | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 # If quiet fails, try without quiet but capture output properly
                 Write-Host "Quiet build failed, retrying with full output..." -ForegroundColor Yellow
-                docker build -t $fullImageName -t $latestImageName .
+                docker build -t $fullImageName -t $latestImageName . | Out-Null
                 if ($LASTEXITCODE -ne 0) {
                     throw "Docker build failed"
                 }
@@ -159,13 +161,13 @@ function Build-AndPushImage {
             Write-Host "DRY RUN: Would push images to ACR" -ForegroundColor Yellow
         } else {
             # Push the versioned image
-            docker push $fullImageName
+            docker push $fullImageName | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 throw "Docker push failed for versioned image"
             }
             
             # Push the latest image
-            docker push $latestImageName
+            docker push $latestImageName | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 throw "Docker push failed for latest image"
             }
@@ -186,8 +188,10 @@ function Update-KubernetesDeployment {
     Write-Host "Updating Kubernetes deployment..." -ForegroundColor Yellow
     
     # Get current image for potential rollback
-    $currentImage = kubectl get deployment $deploymentName -n $Namespace -o jsonpath='{.spec.template.spec.containers[0].image}'
-    Write-Host "Current image: $currentImage" -ForegroundColor Cyan
+    $currentImage = kubectl get deployment $deploymentName -n $Namespace -o jsonpath='{.spec.template.spec.containers[0].image}' 2>$null
+    if ($currentImage) {
+        Write-Host "Current image: $currentImage" -ForegroundColor Cyan
+    }
     Write-Host "New image: $ImageName" -ForegroundColor Cyan
       # Update deployment image
     if ($DryRun) {

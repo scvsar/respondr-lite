@@ -42,7 +42,7 @@ az login
 az account set --subscription <your-subscription-id>
 
 # Create resource group
-az group create --name respondr-rg --location westus
+az group create --name respondr --location westus
 
 # Clone the repository (if not already done)
 git clone <repository-url>
@@ -56,7 +56,7 @@ Deploy all required Azure resources using the Bicep template:
 ```powershell
 # Deploy the infrastructure
 az deployment group create `
-    --resource-group respondr-rg `
+    --resource-group respondr `
     --template-file deployment/main.bicep `
     --parameters resourcePrefix=respondr location=westus
 ```
@@ -73,7 +73,7 @@ Run the post-deployment script to configure the infrastructure:
 
 ```powershell
 # Configure AKS and ACR integration
-.\deployment\post-deploy.ps1 -ResourceGroupName respondr-rg
+.\deployment\post-deploy.ps1 -ResourceGroupName respondr
 ```
 
 This script:
@@ -88,7 +88,7 @@ Build the application container and push it to your Azure Container Registry:
 
 ```powershell
 # Get ACR login server name
-$acrName = "respondracr"  # or use: az acr list -g respondr-rg --query "[0].name" -o tsv
+$acrName = "respondracr"  # or use: az acr list -g respondr --query "[0].name" -o tsv
 $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
 
 # Login to ACR
@@ -115,7 +115,7 @@ You'll need Azure OpenAI credentials for the application to function:
 
 ```powershell
 # Get Azure OpenAI details from the deployment
-$resourceGroup = "respondr-rg"
+$resourceGroup = "respondr"
 $openAIName = az cognitiveservices account list -g $resourceGroup --query "[?kind=='OpenAI'].name" -o tsv
 $openAIEndpoint = az cognitiveservices account show -n $openAIName -g $resourceGroup --query "properties.endpoint" -o tsv
 $openAIKey = az cognitiveservices account keys list -n $openAIName -g $resourceGroup --query "key1" -o tsv
@@ -217,13 +217,13 @@ For production environments, use the upgrade script that handles versioning, con
 cd deployment
 
 # Full upgrade with new version
-.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr-rg
+.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr
 
 # Upgrade with automatic rollback on failure
-.\upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName respondr-rg -RollbackOnFailure
+.\upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName respondr -RollbackOnFailure
 
 # Use existing container image (skip build)
-.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr-rg -SkipBuild
+.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr -SkipBuild
 ```
 
 ### Quick Redeployment
@@ -234,7 +234,7 @@ For development or quick fixes:
 cd deployment
 
 # Build and deploy with timestamp version
-.\redeploy.ps1 -Action "build" -ResourceGroupName respondr-rg
+.\redeploy.ps1 -Action "build" -ResourceGroupName respondr
 
 # Restart deployment (same image, fresh pods)
 .\redeploy.ps1 -Action "restart"
@@ -292,7 +292,7 @@ kubectl delete -f respondr-k8s-deployment.yaml
 kubectl delete -f secrets.yaml
 
 # Clean up Azure resources (WARNING: This deletes everything)
-.\deployment\cleanup.ps1 -ResourceGroupName respondr-rg -Force
+.\deployment\cleanup.ps1 -ResourceGroupName respondr -Force
 ```
 
 ## Container Registry Management
@@ -347,7 +347,7 @@ kubectl port-forward service/respondr-service 8080:80
 
 All resources follow a consistent naming pattern:
 
-- Resource Group: `respondr-rg`
+- Resource Group: `respondr`
 - AKS Cluster: `respondr-aks-cluster`
 - ACR: `respondracr`
 - OpenAI Account: `respondr-openai-account`
