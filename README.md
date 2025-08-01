@@ -292,6 +292,23 @@ npm install
 npm start
 ```
 
+### Running Tests
+
+The project includes both backend (pytest) and frontend (Jest) tests.
+
+```powershell
+# Run all tests (backend and frontend)
+.\run-tests.ps1
+
+# Run just backend tests
+cd backend
+python run_tests.py
+
+# Run just frontend tests
+cd frontend
+npm test
+```
+
 ## Cleanup and Resource Management
 
 To completely clean up the deployment:

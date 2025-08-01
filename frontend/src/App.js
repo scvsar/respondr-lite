@@ -1,24 +1,24 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import "./App.css";
 
 function App() {
   const [data, setData] = useState([]);
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const res = await fetch("/api/responders");
-        const json = await res.json();
-        setData(json);
-      } catch (err) {
-        console.error("Failed to fetch responder data:", err);
-      }
-    };
+  const fetchData = useCallback(async () => {
+    try {
+      const res = await fetch("/api/responders");
+      const json = await res.json();
+      setData(json);
+    } catch (err) {
+      console.error("Failed to fetch responder data:", err);
+    }
+  }, []);
 
+  useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [fetchData]);
 
   const totalResponders = data.length;
 
