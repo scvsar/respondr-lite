@@ -11,13 +11,12 @@ def test_azure_openai_connection():
     endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
     api_version = os.getenv("AZURE_OPENAI_API_VERSION")
-    
     if not api_key or not endpoint or not deployment or not api_version:
         print("Error: Missing required environment variables.")
-        print(f"API Key: {'✓' if api_key else '✗'}")
-        print(f"Endpoint: {'✓' if endpoint else '✗'}")
-        print(f"Deployment: {'✓' if deployment else '✗'}")
-        print(f"API Version: {'✓' if api_version else '✗'}")
+        print(f"API Key: {'Yes' if api_key else 'No'}")
+        print(f"Endpoint: {'Yes' if endpoint else 'No'}")
+        print(f"Deployment: {'Yes' if deployment else 'No'}")
+        print(f"API Version: {'Yes' if api_version else 'No'}")
         return False
     
     print(f"Using Azure OpenAI endpoint: {endpoint}")
@@ -36,18 +35,17 @@ def test_azure_openai_connection():
         response = client.chat.completions.create(
             model=deployment,
             messages=[{"role": "user", "content": "Hello! Can you confirm this connection is working?"}],
-            temperature=0,
-        )
+            temperature=0,        )
         
         # Print the response
         reply = response.choices[0].message.content.strip()
         print("\nResponse from Azure OpenAI:")
         print(reply)
-        print("\n✓ Connection test successful!")
+        print("\nConnection test successful!")
         return True
         
     except Exception as e:
-        print("\n✗ Error testing Azure OpenAI connection:")
+        print("\nError testing Azure OpenAI connection:")
         print(f"Error details: {e}")
         return False
 
