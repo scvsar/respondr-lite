@@ -230,6 +230,48 @@ $openAiState = az cognitiveservices account show `
     --query "properties.provisioningState" -o tsv
 Write-Host "OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
 
+# 7.5) Deploy gpt-4o-mini model if OpenAI account is ready
+if ($openAiState -eq "Succeeded") {
+    Write-Host "`nDeploying gpt-4o-mini model..." -ForegroundColor Yellow
+    
+    # Check if deployment already exists
+    $existingDeployment = az cognitiveservices account deployment list `
+        --name $openAiAccountName `
+        --resource-group $ResourceGroupName `
+        --query "[?name=='gpt-4o-mini']" -o json | ConvertFrom-Json
+    
+    if ($existingDeployment.Count -eq 0) {
+        # Create the model deployment
+        $deploymentResult = az cognitiveservices account deployment create `
+            --name $openAiAccountName `
+            --resource-group $ResourceGroupName `
+            --deployment-name "gpt-4o-mini" `
+            --model-name "gpt-4o-mini" `
+            --model-version "2024-07-18" `
+            --model-format "OpenAI" `
+            --sku-capacity 10 `
+            --sku-name "Standard" 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "Successfully deployed gpt-4o-mini model" -ForegroundColor Green
+        } else {
+            Write-Host "Failed to deploy gpt-4o-mini model: $deploymentResult" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "gpt-4o-mini model deployment already exists" -ForegroundColor Green
+    }
+    
+    # List all deployments for verification
+    Write-Host "`nCurrent model deployments:" -ForegroundColor Yellow
+    az cognitiveservices account deployment list `
+        --name $openAiAccountName `
+        --resource-group $ResourceGroupName `
+        --query "[].{Name:name, Model:properties.model.name, Version:properties.model.version, Status:properties.provisioningState}" `
+        --output table
+} else {
+    Write-Host "`nSkipping model deployment - OpenAI account not ready (state: $openAiState)" -ForegroundColor Yellow
+}
+
 # 8) Check Storage account provisioning state
 if ($storageAccountName) {
     Write-Host "`nChecking Storage account status..." -ForegroundColor Yellow

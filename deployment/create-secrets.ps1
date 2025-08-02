@@ -29,7 +29,7 @@ param(
     [string]$OpenAIDeploymentName = "gpt-4o-mini",
     
     [Parameter(Mandatory=$false)]
-    [string]$ApiVersion = "2025-01-01-preview"
+    [string]$ApiVersion = "2024-12-01-preview"
 )
 
 Write-Host "Respondr - Creating Kubernetes Secrets File" -ForegroundColor Green
@@ -101,7 +101,7 @@ try {
     $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
     $secretsContent = $secretsContent -replace 'https://westus.api.cognitive.microsoft.com/', $openAIEndpoint
     $secretsContent = $secretsContent -replace 'gpt-4o-mini', $OpenAIDeploymentName
-    $secretsContent = $secretsContent -replace '2025-01-01-preview', $ApiVersion
+    $secretsContent = $secretsContent -replace '2024-12-01-preview', $ApiVersion
     
     # Write the updated content
     Set-Content -Path $secretsPath -Value $secretsContent
