@@ -1,6 +1,7 @@
-# Getting Started with Create React App
+# Respondr Frontend
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This directory contains the React application that renders the responder dashboard.
+It communicates with the FastAPI backend to display current responder status and was originally bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
 
 ## Available Scripts
 
