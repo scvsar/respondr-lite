@@ -20,10 +20,13 @@ param(
     [string]$OpenAIDeploymentName = "gpt-4o-mini",
     
     [Parameter(Mandatory=$false)]
-    [string]$ApiVersion = "2025-01-01-preview",
+    [string]$ApiVersion = "2024-12-01-preview",
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipSecretsCreation = $false,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$SkipImageBuild = $false,
     
     [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
@@ -32,9 +35,24 @@ param(
 Write-Host "Respondr Kubernetes Deployment Script" -ForegroundColor Green
 Write-Host "=========================================" -ForegroundColor Green
 
+# Check prerequisites
+Write-Host "Checking prerequisites..." -ForegroundColor Yellow
+
 # Check if kubectl is available
 if (-not (Get-Command kubectl -ErrorAction SilentlyContinue)) {
     Write-Error "kubectl is not installed or not in PATH. Please install kubectl first."
+    exit 1
+}
+
+# Check if Docker is available (only if not skipping build)
+if (-not $SkipImageBuild -and -not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Error "Docker is not installed or not in PATH. Please install Docker first."
+    exit 1
+}
+
+# Check if Azure CLI is available
+if (-not (Get-Command az -ErrorAction SilentlyContinue)) {
+    Write-Error "Azure CLI is not installed or not in PATH. Please install Azure CLI first."
     exit 1
 }
 
@@ -113,7 +131,7 @@ if (-not (Test-Path $secretsFile) -and -not $SkipSecretsCreation) {
             $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
             $secretsContent = $secretsContent -replace 'https://westus.api.cognitive.microsoft.com/', $openAIEndpoint
             $secretsContent = $secretsContent -replace 'gpt-4o-mini', $OpenAIDeploymentName
-            $secretsContent = $secretsContent -replace '2025-01-01-preview', $ApiVersion
+            $secretsContent = $secretsContent -replace '2024-12-01-preview', $ApiVersion
             
             # Write the updated content
             Set-Content -Path $secretsFile -Value $secretsContent
@@ -145,6 +163,84 @@ $fullImageName = "$acrLoginServer/respondr:$ImageTag"
 Write-Host "ACR Name: $acrName" -ForegroundColor Cyan
 Write-Host "ACR Login Server: $acrLoginServer" -ForegroundColor Cyan
 Write-Host "Using image: $fullImageName" -ForegroundColor Cyan
+
+# Build and push Docker image (unless skipped)
+if (-not $SkipImageBuild) {
+    Write-Host "Building and pushing Docker image..." -ForegroundColor Yellow
+    
+    # Navigate to project root (parent of deployment folder)
+    $projectRoot = Split-Path $PSScriptRoot -Parent
+    $originalLocation = Get-Location
+    
+    try {
+        Set-Location $projectRoot
+        Write-Host "Building from: $projectRoot" -ForegroundColor Cyan
+        
+        # Login to ACR
+        Write-Host "Logging into ACR..." -ForegroundColor Yellow
+        if (-not $DryRun) {
+            az acr login --name $acrName | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to login to ACR"
+                exit 1
+            }
+        }
+        
+        # Build Docker image
+        Write-Host "Building Docker image..." -ForegroundColor Yellow
+        if (-not $DryRun) {
+            docker build -t respondr:$ImageTag -t $fullImageName .
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Docker build failed"
+                exit 1
+            }
+            Write-Host "Docker image built successfully" -ForegroundColor Green
+        } else {
+            Write-Host "DRY RUN: Would build Docker image" -ForegroundColor Cyan
+        }
+        
+        # Push to ACR
+        Write-Host "Pushing image to ACR..." -ForegroundColor Yellow
+        if (-not $DryRun) {
+            docker push $fullImageName
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Docker push failed"
+                exit 1
+            }
+            Write-Host "Image pushed to ACR successfully" -ForegroundColor Green
+        } else {
+            Write-Host "DRY RUN: Would push image to ACR" -ForegroundColor Cyan
+        }
+        
+        # Verify image exists in ACR
+        if (-not $DryRun) {
+            Write-Host "Verifying image in ACR..." -ForegroundColor Yellow
+            $repositories = az acr repository list --name $acrName -o json | ConvertFrom-Json
+            if ($repositories -contains "respondr") {
+                Write-Host "Image verified in ACR" -ForegroundColor Green
+            } else {
+                Write-Error "Image not found in ACR after push"
+                exit 1
+            }
+        }
+        
+    } finally {
+        Set-Location $originalLocation
+    }
+} else {
+    Write-Host "Skipping Docker image build (using existing image)" -ForegroundColor Yellow
+    
+    # Verify image exists in ACR if not building
+    if (-not $DryRun) {
+        Write-Host "Verifying existing image in ACR..." -ForegroundColor Yellow
+        $repositories = az acr repository list --name $acrName -o json | ConvertFrom-Json
+        if ($repositories -notcontains "respondr") {
+            Write-Error "Image 'respondr' not found in ACR. Please build the image first or remove -SkipImageBuild flag."
+            exit 1
+        }
+        Write-Host "Existing image verified in ACR" -ForegroundColor Green
+    }
+}
 
 # Update the image in the deployment template
 $deploymentFile = "respondr-k8s-template.yaml"
@@ -200,6 +296,17 @@ Remove-Item $tempFile -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Deployment script completed!" -ForegroundColor Green
+Write-Host ""
+Write-Host "Summary of actions performed:" -ForegroundColor Yellow
+if (-not $SkipImageBuild) {
+    Write-Host "✅ Built Docker image: respondr:$ImageTag" -ForegroundColor Green
+    Write-Host "✅ Pushed image to ACR: $fullImageName" -ForegroundColor Green
+} else {
+    Write-Host "⏭️  Skipped Docker image build (used existing)" -ForegroundColor Yellow
+}
+Write-Host "✅ Created/updated Kubernetes secrets" -ForegroundColor Green
+Write-Host "✅ Deployed application to Kubernetes" -ForegroundColor Green
+Write-Host "✅ Created namespace: $Namespace" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Update your /etc/hosts file: echo '127.0.0.1 respondr.local' >> /etc/hosts" -ForegroundColor White
