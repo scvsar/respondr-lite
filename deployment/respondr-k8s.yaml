@@ -98,15 +98,3 @@ spec:
             name: respondr-service
             port:
               number: 80
-
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: respondr-secrets
-type: Opaque
-stringData:
-  AZURE_OPENAI_API_KEY: "REPLACE_WITH_YOUR_API_KEY"
-  AZURE_OPENAI_ENDPOINT: "https://westus.api.cognitive.microsoft.com/"
-  AZURE_OPENAI_DEPLOYMENT: "gpt-4o-mini"
-  AZURE_OPENAI_API_VERSION: "2025-01-01-preview"
