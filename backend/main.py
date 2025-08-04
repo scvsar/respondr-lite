@@ -1,8 +1,10 @@
 import os
+import sys
 import json
 import logging
 import re
 from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -25,22 +27,41 @@ azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 azure_openai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 
+# Check if we're running in test mode
+is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
 
-if not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment:
+if not is_testing and (not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment):
     logger.error("Missing required Azure OpenAI configuration")
     raise ValueError("AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in the .env file")
+elif is_testing:
+    logger.info("Running in test mode - using mock Azure OpenAI configuration")
+    # Set default test values if not provided
+    azure_openai_api_key = azure_openai_api_key or "test-key"
+    azure_openai_endpoint = azure_openai_endpoint or "https://test-endpoint.openai.azure.com/"
+    azure_openai_deployment = azure_openai_deployment or "test-deployment"
+    azure_openai_api_version = azure_openai_api_version or "2025-01-01-preview"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan context manager"""
+    # Startup
+    logger.info("Starting Respondr API application")
+    logger.info(f"Using Azure OpenAI API at: {azure_openai_endpoint}")
+    logger.info(f"Using deployment: {azure_openai_deployment}")
+    yield
+    # Shutdown
+    logger.info("Shutting down Respondr API application")
+
+from contextlib import asynccontextmanager
+
 
 app = FastAPI(
     title="Respondr API",
     description="API for tracking responder information",
     version="1.0.0",
+    lifespan=lifespan,
 )
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting Respondr API application")
-    logger.info(f"Using Azure OpenAI API at: {azure_openai_endpoint}")
-    logger.info(f"Using deployment: {azure_openai_deployment}")
 
 messages = []
 
@@ -385,8 +406,17 @@ else:
     # Development environment - frontend build is at ../frontend/build
     frontend_build = os.path.join(os.path.dirname(__file__), "../frontend/build")
 
-app.mount("/static", StaticFiles(directory=os.path.join(frontend_build, "static")), name="static")
+# Only mount static files if the directory exists (not in test mode)
+static_dir = os.path.join(frontend_build, "static")
+if not is_testing and os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/")
 def serve_frontend():
-    return FileResponse(os.path.join(frontend_build, "index.html"))
+    if is_testing:
+        return {"message": "Test mode - frontend not available"}
+    index_path = os.path.join(frontend_build, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    else:
+        return {"message": "Frontend not built - run 'npm run build' in frontend directory"}
