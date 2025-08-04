@@ -1,4 +1,5 @@
 import os
+import time
 from dotenv import load_dotenv
 from openai import AzureOpenAI
 
@@ -22,7 +23,7 @@ def test_azure_openai_connection():
     print(f"Using Azure OpenAI endpoint: {endpoint}")
     print(f"Using deployment: {deployment}")
     print(f"Using API version: {api_version}")
-      # Initialize Azure OpenAI client
+    # Initialize Azure OpenAI client
     client = AzureOpenAI(
         api_key=api_key,
         azure_endpoint=endpoint,
@@ -30,12 +31,15 @@ def test_azure_openai_connection():
     )
     
     try:
-        # Test simple completion
+        # Time the API call
+        start_time = time.time()
         response = client.chat.completions.create(
             model=deployment,
             messages=[{"role": "user", "content": "Hello! Can you confirm this connection is working?"}],
             temperature=0,
         )
+        elapsed = time.time() - start_time
+        print(f"\nAPI call took {elapsed:.2f} seconds.")
         
         # Print the response
         reply = response.choices[0].message.content.strip()

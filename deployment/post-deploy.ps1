@@ -65,7 +65,7 @@ if ($acrName) {
     Write-Host "`nImporting test image to ACR..." -ForegroundColor Yellow
     $importResult = az acr import `
         --name $acrName `
-        --source docker.io/library/nginx:latest `
+        --source mcr.microsoft.com/oss/nginx/nginx:1.21.6 `
         --image nginx:test 2>&1
     
     if ($LASTEXITCODE -ne 0) {
@@ -230,35 +230,37 @@ $openAiState = az cognitiveservices account show `
     --query "properties.provisioningState" -o tsv
 Write-Host "OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
 
-# 7.5) Deploy gpt-4o-mini model if OpenAI account is ready
+# 7.5) Deploy gpt-4.1-nano model if OpenAI account is ready
 if ($openAiState -eq "Succeeded") {
-    Write-Host "`nDeploying gpt-4o-mini model..." -ForegroundColor Yellow
+    Write-Host "`nDeploying gpt-4.1-nano model..." -ForegroundColor Yellow
     
     # Check if deployment already exists
     $existingDeployment = az cognitiveservices account deployment list `
         --name $openAiAccountName `
         --resource-group $ResourceGroupName `
-        --query "[?name=='gpt-4o-mini']" -o json | ConvertFrom-Json
+        --query "[?name=='gpt-4-1-nano']" -o json | ConvertFrom-Json
     
     if ($existingDeployment.Count -eq 0) {
-        # Create the model deployment
+        # Create the model deployment using new SKU-based approach
+        # GPT-4.1-nano uses GlobalStandard SKU (serverless/pay-per-token)
+        # Set capacity to 250 to get 250K TPM (tokens per minute) and 250 RPM (requests per minute)
         $deploymentResult = az cognitiveservices account deployment create `
             --name $openAiAccountName `
             --resource-group $ResourceGroupName `
-            --deployment-name "gpt-4o-mini" `
-            --model-name "gpt-4o-mini" `
-            --model-version "2024-07-18" `
+            --deployment-name "gpt-4-1-nano" `
+            --model-name "gpt-4.1-nano" `
+            --model-version "2025-04-14" `
             --model-format "OpenAI" `
-            --sku-capacity 10 `
-            --sku-name "Standard" 2>&1
+            --sku-name "GlobalStandard" `
+            --sku-capacity 250 2>&1
         
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Successfully deployed gpt-4o-mini model" -ForegroundColor Green
+            Write-Host "Successfully deployed gpt-4.1-nano model" -ForegroundColor Green
         } else {
-            Write-Host "Failed to deploy gpt-4o-mini model: $deploymentResult" -ForegroundColor Red
+            Write-Host "Failed to deploy gpt-4.1-nano model: $deploymentResult" -ForegroundColor Red
         }
     } else {
-        Write-Host "gpt-4o-mini model deployment already exists" -ForegroundColor Green
+        Write-Host "gpt-4.1-nano model deployment already exists" -ForegroundColor Green
     }
     
     # List all deployments for verification
