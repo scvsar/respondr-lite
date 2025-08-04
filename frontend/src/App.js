@@ -24,12 +24,8 @@ function App() {
 
   const avgMinutes = () => {
     const times = data
-      .map((entry) => {
-        const match = entry.eta.match(/(\d+)\s*min/);
-        if (match) return parseInt(match[1], 10);
-        return null;
-      })
-      .filter((x) => x !== null);
+      .map((entry) => entry.minutes_until_arrival)
+      .filter((x) => typeof x === "number");
 
     if (times.length === 0) return "N/A";
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
@@ -67,7 +63,7 @@ function App() {
               <td>{entry.name}</td>
               <td>{entry.text}</td>
               <td>{entry.vehicle}</td>
-              <td>{entry.eta}</td>
+              <td>{entry.eta_timestamp || entry.eta || "Unknown"}</td>
             </tr>
           ))}
         </tbody>

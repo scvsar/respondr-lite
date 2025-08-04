@@ -25,9 +25,6 @@ azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 azure_openai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 
-logger.info(f"Azure OpenAI Endpoint: {azure_openai_endpoint}")
-logger.info(f"Azure OpenAI Deployment: {azure_openai_deployment}")
-logger.info(f"Azure OpenAI API Version: {azure_openai_api_version}")
 
 if not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment:
     logger.error("Missing required Azure OpenAI configuration")
@@ -179,7 +176,6 @@ def extract_details_from_text(text: str) -> dict:
         )
 
         reply = response.choices[0].message.content
-        logger.info(f"Raw Azure OpenAI response: '{reply}'")
         
         # Try to clean up the response if it has extra text
         reply = reply.strip()
@@ -197,7 +193,6 @@ def extract_details_from_text(text: str) -> dict:
                 logger.warning(f"No valid JSON found in response: '{reply}'")
                 raise ValueError(f"Invalid response format: {reply}")
         
-        logger.info(f"Parsed JSON: {parsed_json}")
         
         # Validate the required fields exist
         if 'vehicle' not in parsed_json or 'eta' not in parsed_json:
@@ -339,7 +334,7 @@ def display_dashboard():
     for msg in sorted_messages:
         # Color coding based on status
         vehicle = msg.get('vehicle', 'Unknown')
-        eta = msg.get('eta', 'Unknown')
+        eta_display = msg.get('eta_timestamp') or msg.get('eta', 'Unknown')
         minutes_out = msg.get('minutes_until_arrival')
         status = msg.get('arrival_status', 'Unknown')
         
@@ -362,7 +357,7 @@ def display_dashboard():
             <td>{msg['timestamp']}</td>
             <td><strong>{msg['name']}</strong></td>
             <td>{vehicle}</td>
-            <td>{eta}</td>
+            <td>{eta_display}</td>
             <td>{minutes_display}</td>
             <td>{status}</td>
             <td style='max-width: 300px; word-wrap: break-word;'>{msg['text']}</td>
