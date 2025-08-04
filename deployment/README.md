@@ -115,7 +115,7 @@ The application requires these Azure OpenAI configuration values:
 
 - `AZURE_OPENAI_API_KEY`: Your Azure OpenAI API key
 - `AZURE_OPENAI_ENDPOINT`: Your Azure OpenAI endpoint URL
-- `AZURE_OPENAI_DEPLOYMENT`: The deployment name (e.g., "gpt-4o-mini")
+- `AZURE_OPENAI_DEPLOYMENT`: The deployment name (e.g., "gpt-4.1-mini")
 - `AZURE_OPENAI_API_VERSION`: API version (e.g., "2025-01-01-preview")
 
 ### Resource Limits
