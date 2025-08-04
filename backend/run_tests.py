@@ -11,14 +11,23 @@ def main():
     print("Running Respondr backend tests...")
     
     # Use subprocess for better compatibility
-    # Add coverage and verbose flags
-    cmd = [
-        "pytest",
-        "-v",  # Verbose
-        "--cov=.",  # Coverage for all files
-        "--cov-report=term",  # Show coverage in terminal
-        "test_main.py"  # Main test file
-    ]
+    # Try to use coverage if available, otherwise run basic pytest
+    try:
+        import pytest_cov
+        cmd = [
+            "pytest",
+            "-v",  # Verbose
+            "--cov=.",  # Coverage for all files
+            "--cov-report=term",  # Show coverage in terminal
+            "test_main.py"  # Main test file
+        ]
+    except ImportError:
+        print("pytest-cov not available, running basic tests...")
+        cmd = [
+            "pytest",
+            "-v",  # Verbose
+            "test_main.py"  # Main test file
+        ]
     
     # Run the tests
     result = subprocess.run(cmd, capture_output=True, text=True)
