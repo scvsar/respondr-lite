@@ -12,7 +12,7 @@
     Name of the Azure resource group where resources are deployed
     
 .PARAMETER OpenAIDeploymentName
-    Name of the Azure OpenAI deployment model (default: gpt-4o-mini)
+    Name of the Azure OpenAI deployment model (optional - will auto-detect if not specified)
     
 .PARAMETER ApiVersion
     API version to use for Azure OpenAI (default: 2025-01-01-preview)
@@ -26,7 +26,7 @@ param(
     [string]$ResourceGroupName,
     
     [Parameter(Mandatory=$false)]
-    [string]$OpenAIDeploymentName = "gpt-4o-mini",
+    [string]$OpenAIDeploymentName,
     
     [Parameter(Mandatory=$false)]
     [string]$ApiVersion = "2024-12-01-preview"
@@ -81,6 +81,70 @@ try {
     }
     
     Write-Host "  Retrieved Azure OpenAI endpoint and key successfully" -ForegroundColor Green
+    
+    # Step 1.5: Check for actual model deployments
+    Write-Host "  Checking for available model deployments..." -ForegroundColor Yellow
+    
+    $actualDeploymentName = $OpenAIDeploymentName
+    $deploymentValidated = $false
+    
+    try {
+        # Get list of deployed models
+        $deploymentsCommand = "az cognitiveservices account deployment list -n `"$openAIName`" -g `"$ResourceGroupName`" --query `"[].name`" -o json"
+        $deploymentsJson = Invoke-Expression $deploymentsCommand
+        $deployments = $deploymentsJson | ConvertFrom-Json
+        
+        # Ensure $deployments is always treated as an array
+        if ($deployments -is [string]) {
+            $deployments = @($deployments)
+        } elseif ($deployments -and -not ($deployments -is [array])) {
+            $deployments = @($deployments)
+        }
+        
+        if ($deployments -and @($deployments).Count -gt 0) {
+            Write-Host "  Found deployments: $($deployments -join ', ')" -ForegroundColor Cyan
+            Write-Host "  Deployment count: $(@($deployments).Count)" -ForegroundColor Gray
+            
+            if ($OpenAIDeploymentName) {
+                # Check if the specified deployment exists
+                if ($deployments -contains $OpenAIDeploymentName) {
+                    Write-Host "  ✅ Specified deployment '$OpenAIDeploymentName' found" -ForegroundColor Green
+                    $deploymentValidated = $true
+                } else {
+                    Write-Host "  ⚠️  Specified deployment '$OpenAIDeploymentName' not found in deployed models" -ForegroundColor Yellow
+                    $actualDeploymentName = "YOUR_DEPLOYMENT_NAME_HERE"
+                }
+            } else {
+                # No deployment specified, try to find a reasonable default
+                $preferredModels = @("gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-35-turbo")
+                $foundModel = $null
+                
+                foreach ($preferred in $preferredModels) {
+                    if ($deployments -contains $preferred) {
+                        $foundModel = $preferred
+                        break
+                    }
+                }
+                
+                if ($foundModel) {
+                    $actualDeploymentName = $foundModel
+                    $deploymentValidated = $true
+                    Write-Host "  ✅ Using found deployment: '$foundModel'" -ForegroundColor Green
+                } else {
+                    # Use the first available deployment
+                    $actualDeploymentName = $deployments[0]
+                    $deploymentValidated = $true
+                    Write-Host "  ✅ Using first available deployment: '$actualDeploymentName'" -ForegroundColor Green
+                }
+            }
+        } else {
+            Write-Host "  ⚠️  No model deployments found in OpenAI account" -ForegroundColor Yellow
+            $actualDeploymentName = "YOUR_DEPLOYMENT_NAME_HERE"
+        }
+    } catch {
+        Write-Host "  ⚠️  Could not retrieve model deployments: $_" -ForegroundColor Yellow
+        $actualDeploymentName = "YOUR_DEPLOYMENT_NAME_HERE"
+    }
 }
 catch {
     Write-Error "Error retrieving Azure OpenAI credentials: $_"
@@ -99,9 +163,9 @@ try {
     
     # Replace placeholders with actual values
     $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
-    $secretsContent = $secretsContent -replace 'https://westus.api.cognitive.microsoft.com/', $openAIEndpoint
-    $secretsContent = $secretsContent -replace 'gpt-4o-mini', $OpenAIDeploymentName
-    $secretsContent = $secretsContent -replace '2024-12-01-preview', $ApiVersion
+    $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_ENDPOINT_HERE', $openAIEndpoint
+    $secretsContent = $secretsContent -replace 'YOUR_DEPLOYMENT_NAME_HERE', $actualDeploymentName
+    $secretsContent = $secretsContent -replace 'YOUR_API_VERSION_HERE', $ApiVersion
     
     # Write the updated content
     Set-Content -Path $secretsPath -Value $secretsContent
@@ -117,9 +181,11 @@ catch {
 Write-Host "`nVerifying secrets file..." -ForegroundColor Yellow
 
 $keyStatus = if ($openAIKey) { "Valid key found" } else { "MISSING" }
+$deploymentStatus = if ($deploymentValidated) { "✅ Validated" } else { "⚠️  Placeholder (manual setup required)" }
+
 Write-Host "  Azure OpenAI Endpoint: $openAIEndpoint" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI API Key: $keyStatus" -ForegroundColor Cyan
-Write-Host "  Azure OpenAI Deployment: $OpenAIDeploymentName" -ForegroundColor Cyan
+Write-Host "  Azure OpenAI Deployment: $actualDeploymentName ($deploymentStatus)" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI API Version: $ApiVersion" -ForegroundColor Cyan
 
 # Validate the secrets.yaml file was created with the correct format
@@ -127,12 +193,22 @@ if (Test-Path $secretsPath) {
     $yamlContent = Get-Content -Path $secretsPath -Raw
     if ($yamlContent -match "AZURE_OPENAI_API_KEY" -and 
         $yamlContent -match $openAIEndpoint -and
-        $yamlContent -match $OpenAIDeploymentName) {
+        $yamlContent -match $actualDeploymentName) {
         Write-Host "  Secrets file validation passed" -ForegroundColor Green
     }
     else {
         Write-Host "  Warning: Secrets file may not contain all expected values" -ForegroundColor Yellow
     }
+}
+
+# Provide additional guidance if deployment wasn't validated
+if (-not $deploymentValidated) {
+    Write-Host "`n⚠️  IMPORTANT: Manual setup required!" -ForegroundColor Yellow
+    Write-Host "The deployment name 'YOUR_DEPLOYMENT_NAME_HERE' is a placeholder." -ForegroundColor Yellow
+    Write-Host "Please:" -ForegroundColor Yellow
+    Write-Host "1. Deploy a model in your Azure OpenAI account" -ForegroundColor White
+    Write-Host "2. Edit secrets.yaml and replace 'YOUR_DEPLOYMENT_NAME_HERE' with your actual deployment name" -ForegroundColor White
+    Write-Host "3. Or re-run this script with -OpenAIDeploymentName parameter" -ForegroundColor White
 }
 
 Write-Host "`nSecrets file created successfully!" -ForegroundColor Green

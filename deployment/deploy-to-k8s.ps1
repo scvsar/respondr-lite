@@ -17,7 +17,7 @@ param(
     [string]$ResourceGroupName = "respondr",
     
     [Parameter(Mandatory=$false)]
-    [string]$OpenAIDeploymentName = "gpt-4o-mini",
+    [string]$OpenAIDeploymentName = "gpt-4.1-mini",
     
     [Parameter(Mandatory=$false)]
     [string]$ApiVersion = "2024-12-01-preview",
@@ -130,7 +130,7 @@ if (-not (Test-Path $secretsFile) -and -not $SkipSecretsCreation) {
             # Replace placeholders with actual values
             $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
             $secretsContent = $secretsContent -replace 'https://westus.api.cognitive.microsoft.com/', $openAIEndpoint
-            $secretsContent = $secretsContent -replace 'gpt-4o-mini', $OpenAIDeploymentName
+            $secretsContent = $secretsContent -replace 'gpt-4.1-mini', $OpenAIDeploymentName
             $secretsContent = $secretsContent -replace '2024-12-01-preview', $ApiVersion
             
             # Write the updated content

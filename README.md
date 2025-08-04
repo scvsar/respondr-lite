@@ -134,7 +134,7 @@ $openAIKey = az cognitiveservices account keys list -n $openAIName -g $resourceG
 # Display the values you'll need
 Write-Host "Azure OpenAI Endpoint: $openAIEndpoint"
 Write-Host "Azure OpenAI Key: $openAIKey"
-Write-Host "Azure OpenAI Deployment: gpt-4o-mini"  # Default from template
+Write-Host "Azure OpenAI Deployment: gpt-4.1-mini"  # Default from template
 Write-Host "Azure OpenAI API Version: 2025-01-01-preview"  # Default from template
 ```
 
