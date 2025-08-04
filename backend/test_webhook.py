@@ -234,7 +234,7 @@ def test_webhook_endpoint():
         time.sleep(0.3)
     
     print("\n" + "="*60)
-    print(f"📊 Test Results: {successful_sends}/{len(test_messages)} messages sent successfully")
+    print(f"Test Results: {successful_sends}/{len(test_messages)} messages sent successfully")
     
     if successful_sends == len(test_messages):
         print("\n🎉 All messages sent successfully!")
@@ -242,7 +242,7 @@ def test_webhook_endpoint():
         print("   - API endpoint: http://localhost:8001/api/responders")
         print("   - Dashboard: http://localhost:8001/dashboard") 
         print("   - Frontend: http://localhost:8001")
-        print("\n💡 Check how the AI handled:")
+        print("\nCheck how the AI handled:")
         print("   • Valid responses vs. non-response messages")
         print("   • Unclear vehicle assignments")
         print("   • Missing or vague ETA information")
@@ -251,7 +251,7 @@ def test_webhook_endpoint():
         # Analyze the results
         validate_api_responses()
     else:
-        print(f"\n⚠️  {len(test_messages) - successful_sends} messages failed to send.")
+        print(f"\nWarning: {len(test_messages) - successful_sends} messages failed to send.")
         print("Check if the server is running on the correct port.")
         print("Expected server: http://localhost:8001")
 

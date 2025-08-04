@@ -87,7 +87,7 @@ function App() {
         )}
         {isLoading && !error && (
           <div className="loading-message" style={{color: '#666'}}>
-            📡 Loading responder data...
+            Loading responder data...
           </div>
         )}
         {!isLoading && !error && (
