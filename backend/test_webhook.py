@@ -4,7 +4,7 @@ import time
 from datetime import datetime, timedelta
 
 # Base URL for the webhook endpoint
-WEBHOOK_URL = "http://localhost:8000/webhook"
+WEBHOOK_URL = "http://localhost:8001/webhook"
 
 # Synthetic test data simulating GroupMe messages from SAR responders
 # Including both valid responses and edge cases with realistic timing
@@ -152,7 +152,7 @@ def send_webhook_message(message_data):
 def validate_api_responses():
     """Fetch and analyze the API responses after sending test data"""
     try:
-        response = requests.get("http://localhost:8000/api/responders")
+        response = requests.get("http://localhost:8001/api/responders")
         if response.status_code == 200:
             responders = response.json()
             print(f"\n📋 Analysis of {len(responders)} processed messages:")
@@ -239,9 +239,9 @@ def test_webhook_endpoint():
     if successful_sends == len(test_messages):
         print("\n🎉 All messages sent successfully!")
         print("\n📋 Review the parsed results:")
-        print("   - API endpoint: http://localhost:8000/api/responders")
-        print("   - Dashboard: http://localhost:8000/dashboard") 
-        print("   - Frontend: http://localhost:8000")
+        print("   - API endpoint: http://localhost:8001/api/responders")
+        print("   - Dashboard: http://localhost:8001/dashboard") 
+        print("   - Frontend: http://localhost:8001")
         print("\n💡 Check how the AI handled:")
         print("   • Valid responses vs. non-response messages")
         print("   • Unclear vehicle assignments")
@@ -253,7 +253,7 @@ def test_webhook_endpoint():
     else:
         print(f"\n⚠️  {len(test_messages) - successful_sends} messages failed to send.")
         print("Check if the server is running on the correct port.")
-        print("Expected server: http://localhost:8000")
+        print("Expected server: http://localhost:8001")
 
 if __name__ == "__main__":
     test_webhook_endpoint()
