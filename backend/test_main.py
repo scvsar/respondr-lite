@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from fastapi.staticfiles import StaticFiles
 from unittest.mock import patch, MagicMock
 import os
+import re
 from main import app, extract_details_from_text
 
 client = TestClient(app)
@@ -66,11 +67,12 @@ def test_webhook_endpoint(mock_openai_response):
         
         # Find the test user's message (might not be the only one due to test isolation issues)
         test_user_message = next((msg for msg in response_data if msg["name"] == "Test User"), None)
-        
+
         # If we found the test user's message, verify its contents
         if test_user_message:
             assert test_user_message["vehicle"] == "SAR78"
-            assert test_user_message["eta"] == "15 minutes"
+            assert re.match(r"\d{2}:\d{2}", test_user_message["eta"])
+            assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])
 
 def test_extract_details_with_vehicle_and_eta():
     """Test extracting details with both vehicle and ETA present"""
@@ -86,7 +88,8 @@ def test_extract_details_with_vehicle_and_eta():
         mock_create.return_value = mock_response
         
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
-        assert result == {"vehicle": "SAR78", "eta": "15 minutes"}
+        assert result["vehicle"] == "SAR78"
+        assert re.match(r"\d{2}:\d{2}", result["eta"])
 
 def test_extract_details_with_pov():
     """Test extracting details with POV vehicle"""
@@ -118,7 +121,10 @@ def test_dashboard_endpoint():
         "text": "Test message",
         "timestamp": "2025-08-01 12:00:00",
         "vehicle": "SAR78",
-        "eta": "15 minutes"
+        "eta": "12:15",
+        "eta_timestamp": "2025-08-01 12:15:00",
+        "minutes_until_arrival": 15,
+        "arrival_status": "On Route"
     }
     
     # Patch the messages list with our test data
@@ -129,7 +135,7 @@ def test_dashboard_endpoint():
         assert "Responder Dashboard" in response.text
         assert "Test User" in response.text
         assert "SAR78" in response.text
-        assert "15 minutes" in response.text
+        assert "2025-08-01 12:15:00" in response.text
 
 def test_static_files():
     """Test that static files are correctly mounted"""
