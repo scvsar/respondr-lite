@@ -11,14 +11,18 @@ beforeEach(() => {
           text: "Taking SAR78, ETA 15 minutes",
           timestamp: "2025-08-01 12:00:00",
           vehicle: "SAR78",
-          eta: "15 minutes"
+          eta: "15 minutes",
+          eta_timestamp: "2025-08-01 12:15:00",
+          minutes_until_arrival: 15
         },
         {
           name: "Jane Doe",
           text: "Responding with POV, ETA 23:30",
           timestamp: "2025-08-01 12:05:00",
           vehicle: "POV",
-          eta: "23:30"
+          eta: "23:30",
+          eta_timestamp: "2025-08-01 23:30:00",
+          minutes_until_arrival: 690
         }
       ])
     })
@@ -67,8 +71,8 @@ test('fetches and displays responder data', async () => {
   expect(await screen.findByText('Jane Doe')).toBeInTheDocument();
   expect(await screen.findByText('SAR78')).toBeInTheDocument();
   expect(await screen.findByText('POV')).toBeInTheDocument();
-  expect(await screen.findByText('15 minutes')).toBeInTheDocument();
-  expect(await screen.findByText('23:30')).toBeInTheDocument();
+  expect(await screen.findByText('2025-08-01 12:15:00')).toBeInTheDocument();
+  expect(await screen.findByText('2025-08-01 23:30:00')).toBeInTheDocument();
 });
 
 test('shows correct metrics for responders', async () => {
