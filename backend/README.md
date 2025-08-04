@@ -9,7 +9,7 @@ This application uses Azure OpenAI for text processing. To configure the applica
 ```env
 AZURE_OPENAI_API_KEY=your-api-key-here
 AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
-AZURE_OPENAI_DEPLOYMENT=gpt-4.1-mini
+AZURE_OPENAI_DEPLOYMENT=gpt-4-1-nano
 AZURE_OPENAI_API_VERSION=2025-01-01-preview
 ```
 

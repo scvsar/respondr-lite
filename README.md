@@ -61,9 +61,11 @@ az deployment group create `
     --parameters resourcePrefix=respondr location=westus
 ```
 
+> **Note:** If you encounter an error about the Azure Container Registry name being already in use, this is expected behavior. The template automatically generates unique names for globally unique resources like ACR and Storage Accounts. Simply retry the deployment command.
+
 This creates:
 - Azure Kubernetes Service (AKS) cluster: `respondr-aks-cluster`
-- Azure Container Registry (ACR): `respondracr`
+- Azure Container Registry (ACR): `respondr<uniqueid>acr`
 - Azure OpenAI Service: `respondr-openai-account`
 - Azure Storage Account: `resp<uniqueid>store`
 
@@ -88,7 +90,7 @@ Build the application container and push it to your Azure Container Registry:
 
 ```powershell
 # Get ACR login server name
-$acrName = "respondracr"  # or use: az acr list -g respondr --query "[0].name" -o tsv
+$acrName = az acr list -g respondr --query "[0].name" -o tsv
 $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
 
 # Login to ACR
@@ -134,7 +136,7 @@ $openAIKey = az cognitiveservices account keys list -n $openAIName -g $resourceG
 # Display the values you'll need
 Write-Host "Azure OpenAI Endpoint: $openAIEndpoint"
 Write-Host "Azure OpenAI Key: $openAIKey"
-Write-Host "Azure OpenAI Deployment: gpt-4.1-mini"  # Default from template
+Write-Host "Azure OpenAI Deployment: gpt-4-1-nano"  # Default from template
 Write-Host "Azure OpenAI API Version: 2025-01-01-preview"  # Default from template
 ```
 
@@ -328,13 +330,14 @@ Useful commands for managing your container images:
 
 ```powershell
 # List all repositories in ACR
-az acr repository list --name respondracr --output table
+$acrName = az acr list -g respondr --query "[0].name" -o tsv
+az acr repository list --name $acrName --output table
 
 # List tags for the respondr repository
-az acr repository show-tags --name respondracr --repository respondr --output table
+az acr repository show-tags --name $acrName --repository respondr --output table
 
 # Delete old image versions
-az acr repository delete --name respondracr --image respondr:v1.0 --yes
+az acr repository delete --name $acrName --image respondr:v1.0 --yes
 
 # Build and push new versions
 docker build -t respondr:v1.1 .
@@ -376,7 +379,7 @@ All resources follow a consistent naming pattern:
 
 - Resource Group: `respondr`
 - AKS Cluster: `respondr-aks-cluster`
-- ACR: `respondracr`
+- ACR: `respondr<uniqueString>acr`
 - OpenAI Account: `respondr-openai-account`
 - Storage Account: `resp<uniqueString>store`
 
