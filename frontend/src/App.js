@@ -28,9 +28,15 @@ function App() {
     
     let pollInterval = 5000; // Start with 5 seconds
     const maxInterval = 60000; // Max 60 seconds
+    let currentTimeoutId = null;
+    let isCancelled = false;
     
     const pollData = () => {
-      const intervalId = setTimeout(async () => {
+      if (isCancelled) return;
+      
+      currentTimeoutId = setTimeout(async () => {
+        if (isCancelled) return;
+        
         try {
           await fetchData();
           pollInterval = 5000; // Reset to normal interval on success
@@ -38,15 +44,21 @@ function App() {
           // Exponential backoff on error
           pollInterval = Math.min(pollInterval * 2, maxInterval);
         }
-        pollData(); // Schedule next poll
+        
+        if (!isCancelled) {
+          pollData(); // Schedule next poll
+        }
       }, pollInterval);
-      
-      return intervalId;
     };
     
-    const intervalId = pollData();
+    pollData();
     
-    return () => clearTimeout(intervalId);
+    return () => {
+      isCancelled = true;
+      if (currentTimeoutId) {
+        clearTimeout(currentTimeoutId);
+      }
+    };
   }, [fetchData]);
 
   const totalResponders = data.length;

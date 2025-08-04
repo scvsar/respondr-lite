@@ -5,7 +5,7 @@
     Run all tests for the Respondr application
     
 .DESCRIPTION
-    This script runs both backend (pytest) and frontend (jest) tests
+    This script runs both backend (pytest) and frontend (jest) tests with comprehensive prerequisite checks
     
 .EXAMPLE
     .\run-tests.ps1
@@ -16,25 +16,107 @@ $ErrorActionPreference = "Stop"
 Write-Host "Respondr Test Runner" -ForegroundColor Green
 Write-Host "===================" -ForegroundColor Green
 
-# Check if Python is installed
-try {
-    $pythonVersion = python --version
-    Write-Host "Using $pythonVersion" -ForegroundColor Cyan
+# Function to check prerequisites
+function Test-Prerequisites {
+    $allGood = $true
+    
+    Write-Host "Checking prerequisites..." -ForegroundColor Yellow
+    
+    # Check if Python is installed
+    try {
+        $pythonVersion = python --version
+        Write-Host "✅ Using $pythonVersion" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "❌ Python not found. Please install Python 3.8 or later." -ForegroundColor Red
+        $allGood = $false
+    }
+
+    # Check if Node.js is installed
+    try {
+        $nodeVersion = node --version
+        Write-Host "✅ Using Node.js $nodeVersion" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "❌ Node.js not found. Please install Node.js 14 or later." -ForegroundColor Red
+        $allGood = $false
+    }
+
+    # Check if we're in the right directory
+    if (!(Test-Path "backend") -or !(Test-Path "frontend")) {
+        Write-Host "❌ Backend or frontend directory not found. Make sure you're in the respondr project root." -ForegroundColor Red
+        $allGood = $false
+    } else {
+        Write-Host "✅ Project structure found" -ForegroundColor Green
+    }
+
+    # Check backend virtual environment and dependencies
+    if (Test-Path "backend") {
+        Push-Location "backend"
+        try {
+            # Check if virtual environment is active or available
+            if ($env:VIRTUAL_ENV) {
+                Write-Host "✅ Virtual environment active: $env:VIRTUAL_ENV" -ForegroundColor Green
+            } elseif (Test-Path ".venv") {
+                Write-Host "⚠️  Virtual environment found but not active. Activating..." -ForegroundColor Yellow
+                & ".\.venv\Scripts\Activate.ps1"
+                Write-Host "✅ Virtual environment activated" -ForegroundColor Green
+            } else {
+                Write-Host "⚠️  No virtual environment found. Please run setup_local_env.py first." -ForegroundColor Yellow
+            }
+
+            # Check if FastAPI can be imported (indicating dependencies are installed)
+            python -c "import fastapi" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "✅ Backend dependencies installed" -ForegroundColor Green
+            } else {
+                Write-Host "⚠️  Backend dependencies may need to be installed" -ForegroundColor Yellow
+            }
+
+            # Check if .env file exists
+            if (Test-Path ".env") {
+                Write-Host "✅ Backend .env file found" -ForegroundColor Green
+            } else {
+                Write-Host "⚠️  Backend .env file not found. Some tests may use default values." -ForegroundColor Yellow
+            }
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    # Check frontend dependencies
+    if (Test-Path "frontend") {
+        Push-Location "frontend"
+        try {
+            if (Test-Path "node_modules") {
+                Write-Host "✅ Frontend dependencies installed" -ForegroundColor Green
+            } else {
+                Write-Host "⚠️  Frontend dependencies need to be installed" -ForegroundColor Yellow
+            }
+
+            if (Test-Path "package.json") {
+                Write-Host "✅ Frontend package.json found" -ForegroundColor Green
+            } else {
+                Write-Host "❌ Frontend package.json not found" -ForegroundColor Red
+                $allGood = $false
+            }
+        }
+        finally {
+            Pop-Location
+        }
+    }
+
+    return $allGood
 }
-catch {
-    Write-Error "Python not found. Please install Python 3.8 or later."
+
+# Run prerequisite checks
+if (!(Test-Prerequisites)) {
+    Write-Host "`n❌ Prerequisites not met. Please fix the issues above before running tests." -ForegroundColor Red
     exit 1
 }
 
-# Check if Node.js is installed
-try {
-    $nodeVersion = node --version
-    Write-Host "Using Node.js $nodeVersion" -ForegroundColor Cyan
-}
-catch {
-    Write-Error "Node.js not found. Please install Node.js 14 or later."
-    exit 1
-}
+Write-Host "`n✅ All prerequisites met. Starting tests..." -ForegroundColor Green
 
 # Function to run tests with proper error handling
 function Run-Tests {
