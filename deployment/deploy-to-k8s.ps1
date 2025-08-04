@@ -302,7 +302,7 @@ if (-not $SkipImageBuild) {
     Write-Host "✅ Built Docker image: respondr:$ImageTag" -ForegroundColor Green
     Write-Host "✅ Pushed image to ACR: $fullImageName" -ForegroundColor Green
 } else {
-    Write-Host "⏭️  Skipped Docker image build (used existing)" -ForegroundColor Yellow
+    Write-Host "Skipped Docker image build (used existing)" -ForegroundColor Yellow
 }
 Write-Host "✅ Created/updated Kubernetes secrets" -ForegroundColor Green
 Write-Host "✅ Deployed application to Kubernetes" -ForegroundColor Green

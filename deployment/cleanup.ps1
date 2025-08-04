@@ -1,6 +1,10 @@
 <#
 cleanup.ps1
-Fully deletes an application RG, waits for AKS‑managed     Write-Host "Checking for soft‑deleted Cognitive Services accounts ..."ode‑RG auto‑deletion,
+Fully deletes an application RG, waits for AKS‑managfunction Purge-CognitiveAccounts {
+    param([string]$Prefix)
+
+    Write-Host "Checking for soft‑deleted Cognitive Services accounts ..."
+    $deleted = az cognitiveservices account list-deleted -o json |  Write-Host "Checking for soft‑deleted Cognitive Services accounts ..."   Write-Host "Checking for soft‑deleted Cognitive Services accounts ..."ode‑RG auto‑deletion,
 and purges any soft‑deleted Cognitive Services / Azure OpenAI accounts that
 start with a given prefix.
 
