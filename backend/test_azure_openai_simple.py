@@ -26,7 +26,7 @@ def test_azure_openai_connection():
     deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
     api_version = os.getenv("AZURE_OPENAI_API_VERSION")
     
-    print("🔧 Configuration Check:")
+    print("Configuration Check:")
     print(f"   API Key: {'✅ Present' if api_key else '❌ Missing'}")
     print(f"   Endpoint: {endpoint or '❌ Missing'}")
     print(f"   Deployment: {deployment or '❌ Missing'}")
@@ -62,7 +62,7 @@ def test_azure_openai_connection():
         )
         
         reply = response.choices[0].message.content
-        print(f"📝 Raw response: '{reply}'")
+        print(f"Raw response: '{reply}'")
         
         # Try to parse as JSON
         try:
