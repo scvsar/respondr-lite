@@ -49,15 +49,49 @@ function Run-Tests {
     
     Push-Location $WorkingDirectory
     try {
+        # Install dependencies if needed
+        if ($Name -eq "Frontend" -and !(Test-Path "node_modules")) {
+            Write-Host "Installing frontend dependencies..." -ForegroundColor Cyan
+            npm install | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Failed to install frontend dependencies" -ForegroundColor Red
+                return $false
+            }
+        }
+        elseif ($Name -eq "Backend" -and (Test-Path "requirements.txt")) {
+            # Check if we need to install backend dependencies
+            $requirementsContent = Get-Content "requirements.txt" -Raw
+            $missingDeps = $false
+            try {
+                # Try importing fastapi as a test for installed dependencies
+                python -c "import fastapi" 2>$null
+                if ($LASTEXITCODE -ne 0) {
+                    $missingDeps = $true
+                }
+            }
+            catch {
+                $missingDeps = $true
+            }
+            
+            if ($missingDeps) {
+                Write-Host "Installing backend dependencies..." -ForegroundColor Cyan
+                pip install -r requirements.txt | Out-Host
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Failed to install backend dependencies" -ForegroundColor Red
+                    return $false
+                }
+            }
+        }
+        
         # Special handling for npm tests to prevent hanging
         if ($Command -like "*npm test*") {
             # Use CI=true environment variable to force non-interactive mode
             $env:CI = "true"
-            # Run npm test with explicit exit
-            Invoke-Expression $Command
+            # Run npm test with explicit exit and redirect output to host
+            Invoke-Expression "$Command 2>&1" | Out-Host
         } else {
-            # Run normal command
-            Invoke-Expression $Command
+            # Run normal command and redirect output to host
+            Invoke-Expression "$Command 2>&1" | Out-Host
         }
         
         if ($LASTEXITCODE -ne 0) {

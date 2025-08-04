@@ -11,7 +11,7 @@ import os
 def get_azure_openai_config(resource_group="respondr"):
     """Get Azure OpenAI configuration from Azure"""
     
-    print(f"🔍 Getting Azure OpenAI configuration from resource group: {resource_group}")
+    print(f"Getting Azure OpenAI configuration from resource group: {resource_group}")
     
     try:
         # Get OpenAI account name
@@ -92,7 +92,7 @@ AZURE_OPENAI_API_VERSION={config['AZURE_OPENAI_API_VERSION']}
     print(f"   API Version: {config['AZURE_OPENAI_API_VERSION']}")
 
 def main():
-    print("🔧 Setting up local development environment")
+    print("Setting up local development environment")
     print("=" * 50)
     
     # Check if .env already exists
