@@ -13,6 +13,18 @@
 
 $ErrorActionPreference = "Stop"
 
+# Set console encoding to UTF-8 to properly display Unicode characters like checkmarks
+if ($PSVersionTable.PSVersion.Major -ge 6) {
+    # PowerShell 6+ (cross-platform)
+    $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
+    $PSDefaultParameterValues['*:Encoding'] = 'utf8'
+} else {
+    # Windows PowerShell 5.1 and earlier
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    [Console]::InputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+}
+
 Write-Host "Respondr Test Runner" -ForegroundColor Green
 Write-Host "===================" -ForegroundColor Green
 
@@ -165,12 +177,42 @@ function Run-Tests {
             }
         }
         
-        # Special handling for npm tests to prevent hanging
+        # Special handling for npm tests to prevent hanging and preserve Unicode output
         if ($Command -like "*npm test*") {
             # Use CI=true environment variable to force non-interactive mode
             $env:CI = "true"
-            # Run npm test with explicit exit and redirect output to host
-            Invoke-Expression "$Command 2>&1" | Out-Host
+            # Run npm test with explicit exit, preserving Unicode characters
+            if ($PSVersionTable.PSVersion.Major -ge 6) {
+                # PowerShell 6+ handles UTF-8 better
+                Invoke-Expression "$Command 2>&1" | Out-Host
+            } else {
+                # Windows PowerShell 5.1 - use Start-Process for better Unicode handling
+                $processInfo = New-Object System.Diagnostics.ProcessStartInfo
+                $processInfo.FileName = "cmd.exe"
+                $processInfo.Arguments = "/c `"$Command`""
+                $processInfo.UseShellExecute = $false
+                $processInfo.RedirectStandardOutput = $true
+                $processInfo.RedirectStandardError = $true
+                $processInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+                $processInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+                $processInfo.WorkingDirectory = Get-Location
+                
+                $process = New-Object System.Diagnostics.Process
+                $process.StartInfo = $processInfo
+                $process.Start() | Out-Null
+                
+                # Read output with proper encoding
+                $output = $process.StandardOutput.ReadToEnd()
+                $errorOutput = $process.StandardError.ReadToEnd()
+                $process.WaitForExit()
+                
+                # Display output
+                if ($output) { Write-Host $output -NoNewline }
+                if ($errorOutput) { Write-Host $errorOutput -NoNewline }
+                
+                # Set exit code for error handling
+                $global:LASTEXITCODE = $process.ExitCode
+            }
         } else {
             # Run normal command and redirect output to host
             Invoke-Expression "$Command 2>&1" | Out-Host
