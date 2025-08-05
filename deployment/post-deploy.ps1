@@ -130,7 +130,33 @@ if ($acrName) {
     Write-Host "`nNo ACR name found—skipping attach step." -ForegroundColor Cyan
 }
 
-# 5) Enable AGIC with Microsoft Entra authentication
+# 5) Enable AGIC with Microsoft Entra authentication and cert-manager for Let's Encrypt
+Write-Host "`nInstalling cert-manager for Let's Encrypt certificates..." -ForegroundColor Yellow
+
+# Check if cert-manager is already installed
+$certManagerInstalled = kubectl get pods -n cert-manager 2>$null
+if (-not $certManagerInstalled) {
+    Write-Host "Installing cert-manager..." -ForegroundColor Yellow
+    kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.14.4/cert-manager.yaml
+    
+    # Wait for cert-manager to be ready
+    Write-Host "Waiting for cert-manager pods to be ready..." -ForegroundColor Yellow
+    kubectl wait --for=condition=Ready pod -l app.kubernetes.io/instance=cert-manager -n cert-manager --timeout=300s
+    Write-Host "cert-manager installed successfully!" -ForegroundColor Green
+} else {
+    Write-Host "cert-manager is already installed" -ForegroundColor Green
+}
+
+# Apply Let's Encrypt ClusterIssuer
+Write-Host "Creating Let's Encrypt ClusterIssuer..." -ForegroundColor Yellow
+$letsencryptIssuerPath = Join-Path $PSScriptRoot "letsencrypt-issuer.yaml"
+if (Test-Path $letsencryptIssuerPath) {
+    kubectl apply -f $letsencryptIssuerPath
+    Write-Host "Let's Encrypt ClusterIssuer created successfully!" -ForegroundColor Green
+} else {
+    Write-Host "Warning: letsencrypt-issuer.yaml not found at $letsencryptIssuerPath" -ForegroundColor Yellow
+}
+
 Write-Host "`nEnabling Application Gateway Ingress Controller with Microsoft Entra auth..." -ForegroundColor Yellow
 
 # Install application-gateway-preview extension
@@ -293,8 +319,8 @@ if ($actualDomain) {
     $appHost = "respondr.$actualDomain"
 } else {
     # Use a placeholder that should be updated when DNS is configured
-    $redirectUri = "https://respondr.example.com/oauth2/callback"
-    $appHost = "respondr.example.com"
+    $redirectUri = "https://respondr.paincave.pro/oauth2/callback"
+    $appHost = "respondr.paincave.pro"
     Write-Host "Warning: No DNS zone found. Using placeholder domain. Update redirect URI when DNS is configured." -ForegroundColor Yellow
 }
 

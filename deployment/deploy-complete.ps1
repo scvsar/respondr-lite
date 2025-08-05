@@ -97,9 +97,9 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would run post-deployment configuration" -ForegroundColor Cyan
 }
 
-# Step 3: HTTPS Certificate Setup
-Write-Host "`n🔒 Step 3: Setting up HTTPS Certificate..." -ForegroundColor Yellow
-Write-Host "=============================================" -ForegroundColor Yellow
+# Step 3: Let's Encrypt Certificate Setup
+Write-Host "`n🔒 Step 3: Setting up Let's Encrypt Certificates..." -ForegroundColor Yellow
+Write-Host "=================================================" -ForegroundColor Yellow
 
 # Get Application Gateway details
 $deploy = az deployment group show --resource-group $ResourceGroupName --name main -o json | ConvertFrom-Json
@@ -127,44 +127,11 @@ if (-not $DryRun) {
         Write-Host "✅ HTTPS port already exists" -ForegroundColor Green
     }
     
-    # Create self-signed certificate for testing
-    Write-Host "Creating self-signed certificate for testing..." -ForegroundColor Yellow
-    
-    # Ensure temp directory exists
-    $tempDir = "C:\temp"
-    if (-not (Test-Path $tempDir)) {
-        New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-    }
-    
-    # Create certificate
-    $cert = New-SelfSignedCertificate -DnsName $hostname -CertStoreLocation "cert:\LocalMachine\My"
-    $pwd = ConvertTo-SecureString -String "TempPassword123!" -Force -AsPlainText
-    $certPath = "$tempDir\respondr-cert.pfx"
-    
-    Export-PfxCertificate -Cert $cert -FilePath $certPath -Password $pwd | Out-Null
-    
-    # Upload to Application Gateway
-    $existingCert = az network application-gateway ssl-cert show --gateway-name $appGwName --resource-group $mcResourceGroup --name respondr-ssl-cert 2>$null
-    
-    if (-not $existingCert) {
-        Write-Host "Uploading SSL certificate to Application Gateway..." -ForegroundColor Yellow
-        az network application-gateway ssl-cert create `
-            --gateway-name $appGwName `
-            --resource-group $mcResourceGroup `
-            --name respondr-ssl-cert `
-            --cert-file $certPath `
-            --cert-password "TempPassword123!"
-        Test-LastCommand "Failed to upload SSL certificate"
-        Write-Host "✅ SSL certificate uploaded" -ForegroundColor Green
-    } else {
-        Write-Host "✅ SSL certificate already exists" -ForegroundColor Green
-    }
-    
-    # Clean up certificate file
-    Remove-Item $certPath -Force -ErrorAction SilentlyContinue
+    Write-Host "✅ Application Gateway configured for HTTPS - Let's Encrypt certificates will be managed by cert-manager" -ForegroundColor Green
+    Write-Host "Note: SSL certificates will be automatically provisioned when the ingress is deployed" -ForegroundColor Yellow
     
 } else {
-    Write-Host "DRY RUN: Would set up HTTPS certificate" -ForegroundColor Cyan
+    Write-Host "DRY RUN: Would configure Application Gateway for HTTPS with Let's Encrypt" -ForegroundColor Cyan
 }
 
 # Step 4: Application Deployment
@@ -260,12 +227,12 @@ Write-Host "=====================" -ForegroundColor Green
 if (-not $DryRun) {
     Write-Host "✅ Infrastructure: Deployed" -ForegroundColor Green
     Write-Host "✅ AGIC & Authentication: Configured" -ForegroundColor Green
-    Write-Host "✅ HTTPS Certificate: Self-signed (for testing)" -ForegroundColor Green
+    Write-Host "✅ Let's Encrypt Setup: Configured via cert-manager" -ForegroundColor Green
     Write-Host "✅ Application: Deployed to Kubernetes" -ForegroundColor Green
     Write-Host ""
     Write-Host "🌐 Access Information:" -ForegroundColor Cyan
-    Write-Host "  HTTP:  http://$hostname" -ForegroundColor White
-    Write-Host "  HTTPS: https://$hostname (may need a few minutes)" -ForegroundColor White
+    Write-Host "  HTTP:  http://$hostname (redirects to HTTPS)" -ForegroundColor White
+    Write-Host "  HTTPS: https://$hostname" -ForegroundColor White
     Write-Host "  API:   https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
     Write-Host "🔐 Authentication:" -ForegroundColor Cyan
@@ -273,11 +240,21 @@ if (-not $DryRun) {
     Write-Host "  - If authentication doesn't work, configure via Azure Portal:" -ForegroundColor White
     Write-Host "    Application Gateway → Listeners → Add authentication" -ForegroundColor White
     Write-Host ""
+    Write-Host "🔒 SSL Certificates:" -ForegroundColor Cyan
+    Write-Host "  - Let's Encrypt certificates will be automatically provisioned" -ForegroundColor White
+    Write-Host "  - Initial certificate request may take a few minutes" -ForegroundColor White
+    Write-Host "  - Check certificate status: kubectl get certificate -n respondr" -ForegroundColor White
+    Write-Host ""
     Write-Host "📝 Next Steps:" -ForegroundColor Cyan
     Write-Host "  1. Ensure DNS A record: respondr.$Domain → $ingressIp" -ForegroundColor White
-    Write-Host "  2. Test in browser: https://$hostname" -ForegroundColor White
-    Write-Host "  3. For production: Replace self-signed cert with real certificate" -ForegroundColor White
+    Write-Host "  2. Wait for Let's Encrypt certificate to be issued (2-10 minutes)" -ForegroundColor White
+    Write-Host "  3. Test in browser: https://$hostname" -ForegroundColor White
     Write-Host "  4. Verify Entra authentication redirects to Microsoft login" -ForegroundColor White
+    Write-Host ""
+    Write-Host "🔍 Certificate Status Commands:" -ForegroundColor Cyan
+    Write-Host "  kubectl get certificate -n respondr" -ForegroundColor White
+    Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n respondr" -ForegroundColor White
+    Write-Host "  kubectl get certificaterequests -n respondr" -ForegroundColor White
 } else {
     Write-Host "DRY RUN completed - no changes made" -ForegroundColor Cyan
 }

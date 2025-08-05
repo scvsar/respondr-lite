@@ -298,12 +298,58 @@ if (-not $DryRun) {
         kubectl get services -l app=respondr -n $Namespace
         kubectl get ingress respondr-ingress -n $Namespace
         
+        # Wait for and monitor Let's Encrypt certificate
+        Write-Host "`nWaiting for Let's Encrypt certificate to be issued..." -ForegroundColor Yellow
+        Write-Host "This may take 2-10 minutes depending on DNS propagation and Let's Encrypt processing time." -ForegroundColor Cyan
+        
+        $certificateTimeout = (Get-Date).AddMinutes(10)
+        $certificateReady = $false
+        
+        do {
+            Start-Sleep -Seconds 30
+            $certStatus = kubectl get certificate respondr-tls-letsencrypt -n $Namespace -o jsonpath="{.status.conditions[?(@.type=='Ready')].status}" 2>$null
+            
+            if ($certStatus -eq "True") {
+                $certificateReady = $true
+                Write-Host "✅ Let's Encrypt certificate issued successfully!" -ForegroundColor Green
+                break
+            } else {
+                # Show current certificate status
+                $certInfo = kubectl get certificate respondr-tls-letsencrypt -n $Namespace -o json 2>$null | ConvertFrom-Json
+                if ($certInfo) {
+                    $conditions = $certInfo.status.conditions
+                    $readyCondition = $conditions | Where-Object { $_.type -eq "Ready" }
+                    if ($readyCondition) {
+                        Write-Host "Certificate status: $($readyCondition.status) - $($readyCondition.message)" -ForegroundColor Cyan
+                    } else {
+                        Write-Host "Certificate is being processed..." -ForegroundColor Cyan
+                    }
+                } else {
+                    Write-Host "Certificate resource not found, may still be initializing..." -ForegroundColor Yellow
+                }
+            }
+        } while ((Get-Date) -lt $certificateTimeout -and -not $certificateReady)
+        
+        if (-not $certificateReady) {
+            Write-Host "⚠️  Certificate not ready within timeout. Check status manually:" -ForegroundColor Yellow
+            Write-Host "  kubectl get certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+            Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+            Write-Host "  kubectl get certificaterequests -n $Namespace" -ForegroundColor White
+        }
+        
         Write-Host ""
         Write-Host "Access Information:" -ForegroundColor Green
         Write-Host "- Internal Service: respondr-service.$Namespace.svc.cluster.local" -ForegroundColor Cyan
         Write-Host "- Ingress Host: $hostname" -ForegroundColor Cyan
         Write-Host "- API Endpoint: https://$hostname/api/responders" -ForegroundColor Cyan
         Write-Host "- Webhook Endpoint: https://$hostname/webhook" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "SSL Certificate:" -ForegroundColor Green
+        if ($certificateReady) {
+            Write-Host "- Let's Encrypt certificate: ✅ Ready" -ForegroundColor Green
+        } else {
+            Write-Host "- Let's Encrypt certificate: ⏳ Still processing" -ForegroundColor Yellow
+        }
         Write-Host ""
         Write-Host "Authentication:" -ForegroundColor Green
         Write-Host "- Entra (Azure AD) authentication is configured via Application Gateway" -ForegroundColor Cyan
@@ -333,16 +379,23 @@ if (-not $SkipImageBuild) {
 }
 Write-Host "✅ Created/updated Kubernetes secrets" -ForegroundColor Green
 Write-Host "✅ Deployed application to Kubernetes" -ForegroundColor Green
+Write-Host "✅ Configured Let's Encrypt SSL certificates via cert-manager" -ForegroundColor Green
 Write-Host "✅ Created namespace: $Namespace" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Verify DNS configuration points to Application Gateway IP" -ForegroundColor White
-Write-Host "2. Test authentication: Navigate to https://$hostname in browser" -ForegroundColor White
-Write-Host "3. Test API endpoint: https://$hostname/api/responders (after authentication)" -ForegroundColor White
-Write-Host "4. Send test webhook: Use authenticated endpoint for webhook testing" -ForegroundColor White
+Write-Host "2. Wait for Let's Encrypt certificate to be issued (if not ready yet)" -ForegroundColor White
+Write-Host "3. Test authentication: Navigate to https://$hostname in browser" -ForegroundColor White
+Write-Host "4. Test API endpoint: https://$hostname/api/responders (after authentication)" -ForegroundColor White
+Write-Host "5. Send test webhook: Use authenticated endpoint for webhook testing" -ForegroundColor White
+Write-Host ""
+Write-Host "Certificate Status Commands:" -ForegroundColor Yellow
+Write-Host "kubectl get certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+Write-Host "kubectl describe certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+Write-Host "kubectl get certificaterequests -n $Namespace" -ForegroundColor White
 Write-Host ""
 Write-Host "Security Features Enabled:" -ForegroundColor Green
 Write-Host "✅ Microsoft Entra (Azure AD) authentication via Application Gateway" -ForegroundColor Green
 Write-Host "✅ Azure Workload Identity for secure access to Azure resources" -ForegroundColor Green
-Write-Host "✅ TLS/SSL termination at Application Gateway" -ForegroundColor Green
+Write-Host "✅ Let's Encrypt SSL/TLS certificates with automatic renewal" -ForegroundColor Green
 Write-Host "✅ Dedicated namespace isolation" -ForegroundColor Green

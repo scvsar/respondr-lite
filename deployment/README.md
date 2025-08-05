@@ -172,15 +172,15 @@ After deployment, configure DNS or use hosts file:
 az network public-ip show --resource-group "MC_respondr_respondr-aks-cluster-v2_westus" --name "respondr-aks-cluster-v2-appgw-appgwpip" --query "ipAddress" -o tsv
 
 # Add to hosts file (Windows: C:\Windows\System32\drivers\etc\hosts)
-<APPLICATION_GATEWAY_IP> respondr.example.com
+<APPLICATION_GATEWAY_IP> respondr.paincave.pro
 ```
 
 ### Application Endpoints
 
-- **Frontend**: https://respondr.example.com
-- **API**: https://respondr.example.com/api/responders
-- **Webhook**: https://respondr.example.com/webhook
-- **Health Check**: https://respondr.example.com/health
+- **Frontend**: https://respondr.paincave.pro
+- **API**: https://respondr.paincave.pro/api/responders
+- **Webhook**: https://respondr.paincave.pro/webhook
+- **Health Check**: https://respondr.paincave.pro/health
 
 ## Testing the Deployment
 
@@ -202,10 +202,10 @@ kubectl get pods -n kube-system -l app=ingress-appgw
 
 ```powershell
 # Test API endpoint
-curl https://respondr.example.com/api/responders
+curl https://respondr.paincave.pro/api/responders
 
 # Send test webhook
-curl -X POST https://respondr.example.com/webhook `
+curl -X POST https://respondr.paincave.pro/webhook `
   -H "Content-Type: application/json" `
   -d '{"name": "Test User", "text": "SAR Response", "created_at": 1234567890}'
 ```
@@ -272,7 +272,7 @@ az identity federated-credential list --identity-name "respondr-pod-identity" --
 $appGwIp = az network public-ip show --resource-group "MC_respondr_respondr-aks-cluster-v2_westus" --name "respondr-aks-cluster-v2-appgw-appgwpip" --query "ipAddress" -o tsv
 
 # Update hosts file or DNS records
-Write-Host "Add to hosts file: $appGwIp respondr.example.com"
+Write-Host "Add to hosts file: $appGwIp respondr.paincave.pro"
 ```
 
 ### Debug Commands
