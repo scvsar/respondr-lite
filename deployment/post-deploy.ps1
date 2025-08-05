@@ -339,7 +339,7 @@ if ($openAiState -eq "Succeeded") {
             --model-version "2025-04-14" `
             --model-format "OpenAI" `
             --sku-name "GlobalStandard" `
-            --sku-capacity 250 2>&1
+            --sku-capacity 200 2>&1
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "Successfully deployed gpt-4.1-nano model" -ForegroundColor Green
