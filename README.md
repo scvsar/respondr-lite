@@ -32,6 +32,17 @@ The application consists of:
 - [PowerShell](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell) (version 7.0 or higher)
 - An active Azure subscription with Contributor role or higher
 
+### Important: AGIC and Application Gateway Timing
+
+**Key Learning**: The Application Gateway Ingress Controller (AGIC) automatically creates the Application Gateway, but this process takes 5-10 minutes. During this time:
+
+1. AGIC pod will show `CrashLoopBackOff` status - **this is normal**
+2. The Application Gateway is created in the MC resource group (e.g., `MC_respondr_respondr-aks-cluster-v2_westus`)
+3. The post-deploy script now waits for this process and monitors AGIC health
+4. Once the Application Gateway is ready, AGIC pod becomes healthy automatically
+
+**Do not restart AGIC pods during the initial 10-minute creation window.**
+
 ### Step 1: Prepare Your Environment
 
 ```powershell
@@ -47,6 +58,9 @@ az group create --name respondr --location westus
 # Clone the repository (if not already done)
 git clone <repository-url>
 cd respondr
+
+# Run pre-deployment validation
+.\deployment\pre-deploy-check.ps1 -ResourceGroupName respondr
 ```
 
 ### Step 2: Deploy Azure Infrastructure
@@ -64,25 +78,33 @@ az deployment group create `
 > **Note:** If you encounter an error about the Azure Container Registry name being already in use, this is expected behavior. The template automatically generates unique names for globally unique resources like ACR and Storage Accounts. Simply retry the deployment command.
 
 This creates:
-- Azure Kubernetes Service (AKS) cluster: `respondr-aks-cluster`
+- Azure Kubernetes Service (AKS) cluster: `respondr-aks-cluster-v2` (with Azure CNI networking)
 - Azure Container Registry (ACR): `respondr<uniqueid>acr`
 - Azure OpenAI Service: `respondr-openai-account`
 - Azure Storage Account: `resp<uniqueid>store`
+- Virtual Network: `respondr-vnet` with dedicated subnets for AKS and Application Gateway
 
 ### Step 3: Configure Post-Deployment Settings
 
 Run the post-deployment script to configure the infrastructure:
 
 ```powershell
-# Configure AKS and ACR integration
+# Configure AKS, ACR integration, and Application Gateway Ingress Controller (AGIC)
 .\deployment\post-deploy.ps1 -ResourceGroupName respondr
 ```
 
 This script:
 - Configures kubectl with AKS credentials
+- Sets up workload identity and federated credentials
 - Attaches ACR to AKS for seamless image pulling
+- **Enables Application Gateway Ingress Controller (AGIC)**
+- **Waits for Application Gateway to be created by AGIC (takes 5-10 minutes)**
+- **Monitors AGIC pod health and readiness**
+- Configures Microsoft Entra (Azure AD) authentication
 - Imports a test image and validates the setup
-- Verifies all service provisioning states
+- Deploys and verifies gpt-4.1-nano model in Azure OpenAI
+
+> **Important:** The script now properly handles AGIC timing. The Application Gateway is created in the MC resource group (e.g., `MC_respondr_respondr-aks-cluster-v2_westus`) and the script monitors this automatically.
 
 ### Step 4: Build and Push Container Image
 
@@ -176,15 +198,26 @@ kubectl get ingress respondr-ingress
 
 ### Step 7: Configure Access
 
-Add an entry to your hosts file for local access:
+Get the Application Gateway's public IP and configure DNS or hosts file:
 
 ```powershell
-# Windows (run as Administrator)
-Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "127.0.0.1 respondr.local"
+# Get Application Gateway public IP
+$mcResourceGroup = "MC_respondr_respondr-aks-cluster-v2_westus"
+$appGwIp = az network public-ip show `
+    --resource-group $mcResourceGroup `
+    --name "respondr-aks-cluster-v2-appgw-appgwpip" `
+    --query "ipAddress" -o tsv
+
+Write-Host "Application Gateway IP: $appGwIp"
+
+# Add to hosts file for testing (Windows - run as Administrator)
+Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "$appGwIp respondr.example.com"
 
 # Or manually add this line to your hosts file:
-# 127.0.0.1 respondr.local
+# <IP_ADDRESS> respondr.example.com
 ```
+
+For production, configure proper DNS records with your domain provider or Azure DNS.
 
 ### Step 8: Test the Deployment
 
@@ -192,7 +225,7 @@ Test that everything is working:
 
 ```powershell
 # Test the API endpoint
-curl http://respondr.local/api/responders
+curl https://respondr.example.com/api/responders
 
 # Send a test webhook
 $testPayload = @{
@@ -201,13 +234,13 @@ $testPayload = @{
     created_at = [int][double]::Parse((Get-Date -UFormat %s))
 } | ConvertTo-Json
 
-Invoke-RestMethod -Uri "http://respondr.local/webhook" -Method POST -Body $testPayload -ContentType "application/json"
+Invoke-RestMethod -Uri "https://respondr.example.com/webhook" -Method POST -Body $testPayload -ContentType "application/json"
 
 # Check the results
-curl http://respondr.local/api/responders
+curl https://respondr.example.com/api/responders
 ```
 
-Visit http://respondr.local in your browser to see the dashboard.
+Visit https://respondr.example.com in your browser to see the dashboard. You'll be prompted to authenticate with Microsoft Entra (Azure AD).
 
 ### Step 9: Run Comprehensive Tests
 
@@ -273,10 +306,12 @@ kubectl rollout status deployment/respondr-deployment
 
 Once deployed, the application provides:
 
-- **Frontend Dashboard**: http://respondr.local
-- **API Endpoint**: http://respondr.local/api/responders
-- **Webhook Endpoint**: http://respondr.local/webhook
-- **Simple Dashboard**: http://respondr.local/dashboard
+- **Frontend Dashboard**: https://respondr.example.com (via Application Gateway with Entra auth)
+- **API Endpoint**: https://respondr.example.com/api/responders
+- **Webhook Endpoint**: https://respondr.example.com/webhook
+- **Health Check**: https://respondr.example.com/health
+
+> **Note**: The actual domain depends on your DNS configuration. For testing, you can use the Application Gateway's public IP and add an entry to your hosts file.
 
 ## Development and Local Testing
 
@@ -372,16 +407,53 @@ kubectl port-forward service/respondr-service 8080:80
 2. **DNS Resolution**: Verify hosts file or configure proper DNS
 3. **Azure OpenAI Errors**: Check credentials and deployment name
 4. **Pod Startup Issues**: Check resource limits and quotas
+5. **AGIC Pod CrashLoopBackOff**: This is normal during Application Gateway creation (5-10 minutes)
+6. **Azure CLI Extension Conflicts**: Remove conflicting extensions with `az extension remove --name aks-preview`
+7. **CNI Overlay Issues**: The template uses standard Azure CNI to avoid preview feature requirements
+
+### AGIC and Application Gateway Troubleshooting
+
+**Issue**: AGIC pod showing CrashLoopBackOff or failing to start
+**Cause**: Application Gateway doesn't exist yet (AGIC creates it automatically)
+**Solution**: Wait 5-10 minutes for AGIC to create the Application Gateway, or check deployment status:
+
+```powershell
+# Check AGIC deployment progress
+$aksCluster = "respondr-aks-cluster-v2"
+$mcResourceGroup = "MC_respondr_$aksCluster_westus"
+az deployment group list --resource-group $mcResourceGroup --output table
+
+# Check AGIC pod status
+kubectl get pods -n kube-system -l app=ingress-appgw
+kubectl logs -n kube-system deployment/ingress-appgw-deployment --tail=20
+
+# Restart AGIC if needed (after Application Gateway is ready)
+kubectl rollout restart deployment/ingress-appgw-deployment -n kube-system
+```
+
+**Issue**: Application Gateway not accessible
+**Cause**: Application Gateway is created in MC resource group, not main resource group
+**Solution**: Check the correct resource group:
+
+```powershell
+# Correct resource group for Application Gateway
+$mcResourceGroup = "MC_respondr_respondr-aks-cluster-v2_westus"
+az network application-gateway list --resource-group $mcResourceGroup --output table
+```
 
 ## Resource Naming Convention
 
 All resources follow a consistent naming pattern:
 
 - Resource Group: `respondr`
-- AKS Cluster: `respondr-aks-cluster`
+- AKS Cluster: `respondr-aks-cluster-v2` (uses standard Azure CNI)
 - ACR: `respondr<uniqueString>acr`
 - OpenAI Account: `respondr-openai-account`
 - Storage Account: `resp<uniqueString>store`
+- Virtual Network: `respondr-vnet`
+- Application Gateway: `respondr-aks-cluster-v2-appgw` (created by AGIC in MC resource group)
+
+The v2 suffix indicates the use of standard Azure CNI networking instead of CNI overlay to ensure compatibility with Application Gateway.
 
 You can customize the prefix by modifying the `resourcePrefix` parameter in the Bicep deployment.
 
