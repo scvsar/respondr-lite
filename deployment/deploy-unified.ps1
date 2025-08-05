@@ -29,14 +29,14 @@ if ($Help) {
     exit 0
 }
 
-Write-Host "🚀 Respondr Unified Deployment Script" -ForegroundColor Green
+Write-Host "Respondr Unified Deployment Script" -ForegroundColor Green
 Write-Host "=====================================`n" -ForegroundColor Green
 
 # Determine deployment mode
 $deploymentMode = if ($NoOAuth2) { "Direct Access" } else { "OAuth2 Protected" }
 $modeColor = if ($NoOAuth2) { "Cyan" } else { "Green" }
 
-Write-Host "📋 Deployment Configuration:" -ForegroundColor Yellow
+Write-Host "Deployment Configuration:" -ForegroundColor Yellow
 Write-Host "   Mode: $deploymentMode" -ForegroundColor $modeColor
 Write-Host "   Template: respondr-k8s-unified-template.yaml" -ForegroundColor White
 Write-Host ""
@@ -210,7 +210,7 @@ Write-Host "   ✅ Template processed and saved to: $outputFile" -ForegroundColo
 
 # Deploy to Kubernetes
 Write-Host ""
-Write-Host "🚀 Deploying to Kubernetes..." -ForegroundColor Blue
+Write-Host "Deploying to Kubernetes..." -ForegroundColor Blue
 
 try {
     kubectl apply -f $outputFile
@@ -239,7 +239,7 @@ try {
 
 # Display deployment information
 Write-Host ""
-Write-Host "📊 Deployment Summary" -ForegroundColor Green
+Write-Host "Deployment Summary" -ForegroundColor Green
 Write-Host "===================" -ForegroundColor Green
 
 Write-Host "Mode: $deploymentMode" -ForegroundColor $modeColor
@@ -261,7 +261,7 @@ if ($NoOAuth2) {
 }
 
 Write-Host ""
-Write-Host "🔍 Next Steps:" -ForegroundColor Yellow
+Write-Host "Next Steps:" -ForegroundColor Yellow
 Write-Host "   1. Check deployment: kubectl get pods -n respondr" -ForegroundColor White
 Write-Host "   2. View logs: kubectl logs -n respondr -l app=respondr" -ForegroundColor White
 Write-Host "   3. Test application: https://$($config['HOSTNAME'])" -ForegroundColor White
@@ -274,7 +274,7 @@ if ($NoOAuth2) {
 }
 
 Write-Host ""
-Write-Host "🎉 Deployment completed successfully!" -ForegroundColor Green
+Write-Host "Deployment completed successfully!" -ForegroundColor Green
 
 # Clean up processed file
 Remove-Item $outputFile -Force -ErrorAction SilentlyContinue

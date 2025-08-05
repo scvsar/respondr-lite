@@ -3,8 +3,13 @@ import sys
 import json
 import logging
 import re
-import fcntl
 from datetime import datetime, timedelta
+
+# Import fcntl only on Unix-like systems
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
@@ -122,7 +127,8 @@ def save_messages():
         with open(DATA_FILE, 'w') as f:
             # Try to acquire exclusive lock (Unix-like systems)
             try:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                if fcntl:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             except (ImportError, OSError):
                 # Windows or systems without fcntl - proceed without locking
                 pass

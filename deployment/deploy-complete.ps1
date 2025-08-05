@@ -63,7 +63,7 @@ param(
 
 $hostname = "respondr.$Domain"
 
-Write-Host "🚀 Complete Respondr Deployment" -ForegroundColor Green
+Write-Host "Complete Respondr Deployment" -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Green
 Write-Host "Resource Group: $ResourceGroupName" -ForegroundColor Cyan
 Write-Host "Location: $Location" -ForegroundColor Cyan
@@ -87,7 +87,7 @@ if (-not $SkipInfrastructure) {
     if (-not $DryRun) {
         az deployment group create --resource-group $ResourceGroupName --template-file .\main.bicep
         Test-LastCommand "Infrastructure deployment failed"
-        Write-Host "✅ Infrastructure deployed successfully" -ForegroundColor Green
+        Write-Host "Infrastructure deployed successfully" -ForegroundColor Green
     } else {
         Write-Host "DRY RUN: Would deploy infrastructure" -ForegroundColor Cyan
     }
@@ -102,7 +102,7 @@ Write-Host "=============================================" -ForegroundColor Yell
 if (-not $DryRun) {
     .\post-deploy.ps1 -ResourceGroupName $ResourceGroupName -Location $Location
     Test-LastCommand "Post-deployment configuration failed"
-    Write-Host "✅ Post-deployment configuration completed" -ForegroundColor Green
+    Write-Host "Post-deployment configuration completed" -ForegroundColor Green
 } else {
     Write-Host "DRY RUN: Would run post-deployment configuration" -ForegroundColor Cyan
 }
@@ -132,12 +132,12 @@ if (-not $DryRun) {
             --name httpsPort `
             --port 443
         Test-LastCommand "Failed to add HTTPS port"
-        Write-Host "✅ HTTPS port added" -ForegroundColor Green
+        Write-Host "HTTPS port added" -ForegroundColor Green
     } else {
-        Write-Host "✅ HTTPS port already exists" -ForegroundColor Green
+        Write-Host "HTTPS port already exists" -ForegroundColor Green
     }
     
-    Write-Host "✅ Application Gateway configured for HTTPS - Let's Encrypt certificates will be managed by cert-manager" -ForegroundColor Green
+    Write-Host "Application Gateway configured for HTTPS - Let's Encrypt certificates will be managed by cert-manager" -ForegroundColor Green
     Write-Host "Note: SSL certificates will be automatically provisioned when the ingress is deployed" -ForegroundColor Yellow
     
 } else {
@@ -152,7 +152,7 @@ if ($UseOAuth2) {
     if (-not $DryRun) {
         .\setup-oauth2.ps1 -ResourceGroupName $ResourceGroupName -Domain $Domain
         Test-LastCommand "OAuth2 authentication setup failed"
-        Write-Host "✅ OAuth2 authentication configured successfully" -ForegroundColor Green
+        Write-Host "OAuth2 authentication configured successfully" -ForegroundColor Green
     } else {
         Write-Host "DRY RUN: Would setup OAuth2 authentication" -ForegroundColor Cyan
     }
@@ -162,7 +162,7 @@ if ($UseOAuth2) {
 }
 
 # Step 5: Application Deployment
-Write-Host "`n🎯 Step 5: Deploying Application with Authentication..." -ForegroundColor Yellow
+Write-Host "`nStep 5: Deploying Application with Authentication..." -ForegroundColor Yellow
 Write-Host "======================================================" -ForegroundColor Yellow
 
 $deployArgs = @(
@@ -185,7 +185,7 @@ if ($DryRun) {
 if (-not $DryRun) {
     & .\deploy-to-k8s.ps1 @deployArgs
     Test-LastCommand "Application deployment failed"
-    Write-Host "✅ Application with OAuth2 authentication deployed successfully" -ForegroundColor Green
+    Write-Host "Application with OAuth2 authentication deployed successfully" -ForegroundColor Green
 } else {
     Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
@@ -210,7 +210,7 @@ if (-not $DryRun) {
             Write-Host "DNS resolves to: $resolvedIp" -ForegroundColor Green
             
             if ($resolvedIp -eq $ingressIp) {
-                Write-Host "✅ DNS is correctly configured" -ForegroundColor Green
+                Write-Host "DNS is correctly configured" -ForegroundColor Green
             } else {
                 Write-Host "⚠️  DNS mismatch: Expected $ingressIp, got $resolvedIp" -ForegroundColor Yellow
                 Write-Host "Please update your DNS A record:" -ForegroundColor Yellow
@@ -230,7 +230,7 @@ if (-not $DryRun) {
         Write-Host "Testing HTTP connectivity..." -ForegroundColor Yellow
         try {
             $response = Invoke-WebRequest -Uri "http://$hostname/api/responders" -UseBasicParsing -TimeoutSec 10
-            Write-Host "✅ HTTP connectivity successful (Status: $($response.StatusCode))" -ForegroundColor Green
+            Write-Host "HTTP connectivity successful (Status: $($response.StatusCode))" -ForegroundColor Green
         } catch {
             Write-Host "❌ HTTP connectivity failed: $($_.Exception.Message)" -ForegroundColor Red
         }
@@ -239,7 +239,7 @@ if (-not $DryRun) {
         Write-Host "Testing HTTPS connectivity..." -ForegroundColor Yellow
         try {
             $response = Invoke-WebRequest -Uri "https://$hostname/api/responders" -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck
-            Write-Host "✅ HTTPS connectivity successful (Status: $($response.StatusCode))" -ForegroundColor Green
+            Write-Host "HTTPS connectivity successful (Status: $($response.StatusCode))" -ForegroundColor Green
         } catch {
             Write-Host "❌ HTTPS connectivity failed: $($_.Exception.Message)" -ForegroundColor Red
             Write-Host "Note: HTTPS may take a few minutes to become available after certificate upload" -ForegroundColor Yellow
@@ -252,15 +252,15 @@ if (-not $DryRun) {
 }
 
 # Summary
-Write-Host "`n🎉 Deployment Summary" -ForegroundColor Green
+Write-Host "`nDeployment Summary" -ForegroundColor Green
 Write-Host "=====================" -ForegroundColor Green
 
 if (-not $DryRun) {
-    Write-Host "✅ Infrastructure: Deployed" -ForegroundColor Green
-    Write-Host "✅ AGIC & Authentication: Configured" -ForegroundColor Green
-    Write-Host "✅ Let's Encrypt Setup: Configured via cert-manager" -ForegroundColor Green
-    Write-Host "✅ OAuth2 Authentication: Configured with Azure AD" -ForegroundColor Green
-    Write-Host "✅ Application: Deployed to Kubernetes with OAuth2 proxy" -ForegroundColor Green
+    Write-Host "Infrastructure: Deployed" -ForegroundColor Green
+    Write-Host "AGIC & Authentication: Configured" -ForegroundColor Green
+    Write-Host "Let's Encrypt Setup: Configured via cert-manager" -ForegroundColor Green
+    Write-Host "OAuth2 Authentication: Configured with Azure AD" -ForegroundColor Green
+    Write-Host "Application: Deployed to Kubernetes with OAuth2 proxy" -ForegroundColor Green
     Write-Host ""
     Write-Host "🌐 Access Information:" -ForegroundColor Cyan
     Write-Host "  HTTP:  http://$hostname (redirects to HTTPS)" -ForegroundColor White
@@ -285,7 +285,7 @@ if (-not $DryRun) {
     Write-Host "  4. Verify OAuth2 authentication redirects to Microsoft sign-in" -ForegroundColor White
     Write-Host "  5. Test API access after authentication: https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
-    Write-Host "🔍 Certificate Status Commands:" -ForegroundColor Cyan
+    Write-Host "Certificate Status Commands:" -ForegroundColor Cyan
     Write-Host "  kubectl get certificate -n respondr" -ForegroundColor White
     Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n respondr" -ForegroundColor White
     Write-Host "  kubectl get certificaterequests -n respondr" -ForegroundColor White
@@ -294,4 +294,4 @@ if (-not $DryRun) {
 }
 
 Write-Host ""
-Write-Host "🚀 Deployment completed!" -ForegroundColor Green
+Write-Host "Deployment completed!" -ForegroundColor Green

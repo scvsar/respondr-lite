@@ -1,6 +1,6 @@
 <#
 cleanup.ps1
-Fully deletes an application RG, waits for AKS‑managfunction Purge-CognitiveAccounts {
+Fully deletes an application RG, waits for AKS‑managfunct    Write-Host "Checking for soft-deleted Cognitive Services accounts ..."on Purge-CognitiveAccounts {
     param([string]$Prefix)
 
     Write-Host "Checking for soft‑deleted Cognitive Services accounts ..."

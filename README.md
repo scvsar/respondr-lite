@@ -11,6 +11,7 @@ This application processes incoming webhook notifications from GroupMe messages,
 - **Real-time Response Tracking**: Processes GroupMe webhook messages in real-time
 - **AI-powered Information Extraction**: Uses Azure OpenAI to parse vehicle assignments and ETAs from natural language messages
 - **Live Dashboard**: React-based frontend showing responder status and metrics
+- **OAuth2 Authentication**: Seamless Azure AD/Entra integration for secure access
 - **Container-ready**: Full Docker containerization with multi-stage builds
 - **Kubernetes Deployment**: Production-ready Kubernetes manifests with Azure integration
 
@@ -20,469 +21,161 @@ The application consists of:
 
 - **Frontend**: React application served statically
 - **Backend**: FastAPI Python application with Azure OpenAI integration
+- **Authentication**: OAuth2 Proxy sidecar for Azure AD/Entra authentication
 - **Infrastructure**: Azure Kubernetes Service (AKS), Azure Container Registry (ACR), Azure OpenAI Service, and Azure Storage
 
-## Important Timing Considerations
+## Quick Start - Complete End-to-End Deployment
 
-### DNS Configuration Timing
-**CRITICAL**: DNS must be configured immediately after deployment and BEFORE Let's Encrypt certificate issuance:
-
-1. **Deploy Infrastructure** → Get Application Gateway IP
-2. **Configure DNS Records** → Update your domain provider (NameCheap, etc.)
-3. **Wait for DNS Propagation** → Verify resolution (5-60 minutes)
-4. **Let's Encrypt Certificate Issuance** → Automatic after DNS validation
-
-**Why This Matters**: Let's Encrypt requires your domain to resolve to the Application Gateway IP for domain validation. Without proper DNS configuration, certificate issuance will fail repeatedly.
-
-### Authentication Architecture Note
-**Important**: Azure Application Gateway v2 (Standard_v2 SKU) does not support native Azure AD/Entra authentication. The current deployment now includes **OAuth2 Proxy sidecar authentication** that provides seamless Azure AD/Entra integration. For production environments, the authentication options are:
-
-1. **OAuth2 Proxy Sidecar** (CURRENT IMPLEMENTATION): Uses oauth2-proxy as a sidecar container to handle Azure AD authentication
-   - ✅ **Working**: Users are challenged to sign in with Entra when visiting https://respondr.paincave.pro
-   - ✅ **Transparent**: No changes needed to your existing FastAPI application
-   - ✅ **Secure**: Handles token refresh, secure cookies, and user headers automatically
-   - ✅ **Production-ready**: Widely used Kubernetes authentication pattern
-
-2. **Application-Level Auth**: Implement Azure AD authentication directly in the FastAPI backend
-3. **Azure Front Door Premium**: Add Front Door Premium with native Azure AD authentication in front of Application Gateway
-
-The current implementation provides complete Azure AD authentication with zero application code changes.
-
-### AGIC (Application Gateway Ingress Controller) Timing
-- AGIC creates the Application Gateway automatically (5-10 minutes)
-- AGIC pod will show `CrashLoopBackOff` during this time - **this is normal**
-- Do not restart AGIC pods during the initial creation window
-- The `post-deploy.ps1` script handles this timing automatically
-
-### End-to-End Deployment Timeline
-1. **Infrastructure Deployment**: 10-15 minutes
-2. **Post-Deployment Configuration**: 15-20 minutes (includes AGIC wait)
-3. **DNS Configuration**: Immediate action required by user
-4. **DNS Propagation**: 5-60 minutes (varies by provider)
-5. **Application Deployment**: 5-10 minutes
-6. **Let's Encrypt Certificate**: 2-10 minutes (after DNS validation)
-
-**Total Time**: 45-90 minutes (mostly waiting for Azure services and DNS propagation)
-
-## Complete End-to-End Deployment Guide
-
-### Deployment Options
-
-You have two main deployment approaches:
-
-#### Option 1: Complete Automated Deployment (Recommended for first-time setup)
-Use the `deploy-complete.ps1` script for a fully automated end-to-end deployment with OAuth2 authentication:
+**Recommended for first-time setup**: Use the automated deployment script for a fully functional deployment with OAuth2 authentication:
 
 ```powershell
-# First, create the resource group
+# Prerequisites: Azure CLI, Docker Desktop, kubectl, PowerShell 7+
+# Login to Azure and set subscription
+az login
+az account set --subscription <your-subscription-id>
+
+# Create resource group
 az group create --name respondr --location westus
 
-# Then run the complete deployment with OAuth2 authentication (default)
+# Run complete automated deployment
 cd deployment
 .\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
-
-# Or skip OAuth2 and use Application Gateway authentication instead
-.\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro" -UseOAuth2:$false
 ```
 
-This single command:
-- Deploys all Azure infrastructure via Bicep
-- Configures AKS, AGIC, cert-manager
-- **Sets up OAuth2 Proxy with Azure AD authentication (NEW)**
-- Builds and deploys the application with OAuth2 sidecar
-- Sets up Let's Encrypt SSL certificates
-- Tests connectivity and provides comprehensive status
+**This single command handles everything:**
+- Deploys all Azure infrastructure (AKS, ACR, OpenAI, Storage, Networking)
+- Configures post-deployment settings and AGIC (waits for Application Gateway creation)
+- Creates Azure AD app registration and OAuth2 proxy configuration
+- Builds and deploys the application with OAuth2 sidecar authentication
+- Sets up Let's Encrypt SSL certificates (after you configure DNS)
+- Runs comprehensive tests and provides status verification
 
-**What's New**: The deployment now includes automatic OAuth2 proxy setup that provides seamless Azure AD authentication without any application code changes.
+**⚠️ Important**: You'll need to configure DNS during the deployment process when prompted. The script will pause and show you the Application Gateway IP address that needs to be added to your domain's DNS records.
 
-#### Option 2: Step-by-Step Deployment (Recommended for customization or troubleshooting)
-Use individual scripts for more control over each step:
+## Prerequisites
 
-```powershell
-# Step 1: Deploy infrastructure
-az deployment group create --resource-group respondr --template-file main.bicep
-
-# Step 2: Configure post-deployment settings
-.\post-deploy.ps1 -ResourceGroupName respondr
-
-# Step 3: Setup OAuth2 authentication (optional, but recommended)
-.\setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
-
-# Step 4: Deploy application with OAuth2 authentication
-.\deploy-to-k8s.ps1 -ResourceGroupName respondr -UseOAuth2
-
-# Step 5: Verify OAuth2 authentication is working
-.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
-```
-
-**Step 3 is NEW**: The `setup-oauth2.ps1` script creates an Azure AD app registration and configures OAuth2 proxy for seamless Entra authentication.
-
-### Prerequisites
+Before starting, ensure you have:
 
 - [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (latest version)
 - [Docker Desktop](https://www.docker.com/products/docker-desktop) installed and running
 - [kubectl](https://kubernetes.io/docs/tasks/tools/) (latest version)
 - [PowerShell](https://docs.microsoft.com/en-us/powershell/scripting/install/installing-powershell) (version 7.0 or higher)
 - An active Azure subscription with Contributor role or higher
+- A domain name you control for DNS configuration (e.g., `respondr.paincave.pro`)
 
-### Important: AGIC and Application Gateway Timing
+## Important Deployment Notes
 
-**Key Learning**: The Application Gateway Ingress Controller (AGIC) automatically creates the Application Gateway, but this process takes 5-10 minutes. During this time:
+### DNS Configuration Timing
+**⚠️ CRITICAL**: DNS must be configured during deployment for Let's Encrypt certificate issuance:
+1. The deployment script will pause and display the Application Gateway IP
+2. You must immediately update your DNS records: `respondr.paincave.pro` → `<Gateway IP>`
+3. DNS propagation takes 5-60 minutes depending on your provider
+4. Let's Encrypt certificates are issued automatically after DNS validation
 
-1. AGIC pod will show `CrashLoopBackOff` status - **this is normal**
-2. The Application Gateway is created in the MC resource group (e.g., `MC_respondr_respondr-aks-cluster-v2_westus`)
-3. The post-deploy script now waits for this process and monitors AGIC health
-4. Once the Application Gateway is ready, AGIC pod becomes healthy automatically
+### AGIC and Application Gateway Creation
+- Application Gateway Ingress Controller (AGIC) creates the Application Gateway automatically (5-10 minutes)
+- AGIC pod may show `CrashLoopBackOff` during this time - **this is normal**
+- The deployment scripts handle this timing automatically
 
-**Do not restart AGIC pods during the initial 10-minute creation window.**
+### Authentication Architecture
+Azure Application Gateway v2 does not support native Azure AD authentication. This deployment includes **OAuth2 Proxy sidecar authentication** for seamless Azure AD/Entra integration.
 
-### Deployment Architecture
+## Step-by-Step Deployment (Alternative to Quick Start)
 
-The application uses a **unified deployment template** (`respondr-k8s-unified-template.yaml`) that supports both OAuth2-protected and direct access modes from a single configuration. This modern approach simplifies deployment management while providing flexibility.
+If you prefer manual control over each deployment phase:
 
-**Key Benefits of the Unified Template:**
-- ✅ **Single Source of Truth**: One template for all deployment scenarios
-- ✅ **OAuth2 Ready**: Built-in Azure AD authentication via OAuth2 proxy sidecar
-- ✅ **Session Affinity**: Proper Application Gateway session stickiness configured
-- ✅ **Production Ready**: Includes health checks, resource limits, and security best practices
-- ✅ **Easy Updates**: Use `.\redeploy.ps1 -Action "build"` for quick rebuilds with latest code
-
-The template automatically configures:
-- Multi-container pods (application + OAuth2 proxy)
-- Azure Workload Identity integration
-- Application Gateway session affinity
-- Kubernetes services and ingress
-- Health checks and resource management
-
-### Step 1: Prepare Your Environment
-
+### Step 1: Environment Setup
 ```powershell
-# Login to Azure
+# Login to Azure and create resource group
 az login
-
-# Set the active subscription (if you have multiple subscriptions)
 az account set --subscription <your-subscription-id>
-
-# Create resource group
 az group create --name respondr --location westus
 
-# Clone the repository (if not already done)
-git clone <repository-url>
-cd respondr
-
-# Run pre-deployment validation
-.\deployment\pre-deploy-check.ps1 -ResourceGroupName respondr
+# Validate environment
+cd deployment
+.\pre-deploy-check.ps1 -ResourceGroupName respondr
 ```
 
 ### Step 2: Deploy Azure Infrastructure
-
-Deploy all required Azure resources using the Bicep template:
-
 ```powershell
-# Deploy the infrastructure
+# Deploy all Azure resources using Bicep template
 az deployment group create `
     --resource-group respondr `
     --template-file deployment/main.bicep `
     --parameters resourcePrefix=respondr location=westus
 ```
 
-> **Note:** If you encounter an error about the Azure Container Registry name being already in use, this is expected behavior. The template automatically generates unique names for globally unique resources like ACR and Storage Accounts. Simply retry the deployment command.
-
-This creates:
-- Azure Kubernetes Service (AKS) cluster: `respondr-aks-cluster-v2` (with Azure CNI networking)
-- Azure Container Registry (ACR): `respondr<uniqueid>acr`
-- Azure OpenAI Service: `respondr-openai-account`
-- Azure Storage Account: `resp<uniqueid>store`
-- Virtual Network: `respondr-vnet` with dedicated subnets for AKS and Application Gateway
+Creates: AKS cluster, Azure Container Registry, Azure OpenAI Service, Azure Storage Account, Virtual Network with subnets
 
 ### Step 3: Configure Post-Deployment Settings
-
-Run the post-deployment script to configure the infrastructure:
-
 ```powershell
-# Configure AKS, ACR integration, Application Gateway Ingress Controller (AGIC), and cert-manager
+# Configure AKS, ACR integration, AGIC, cert-manager, and workload identity
 .\deployment\post-deploy.ps1 -ResourceGroupName respondr
 ```
 
-This script:
+This step:
 - Configures kubectl with AKS credentials
-- **Installs cert-manager for Let's Encrypt certificate management**
-- **Creates Let's Encrypt ClusterIssuer for automatic SSL certificates**
+- Installs cert-manager for Let's Encrypt certificate management
 - Sets up workload identity and federated credentials
 - Attaches ACR to AKS for seamless image pulling
-- **Enables Application Gateway Ingress Controller (AGIC)**
-- **Waits for Application Gateway to be created by AGIC (takes 5-10 minutes)**
-- **Monitors AGIC pod health and readiness**
-- **Note**: Gateway-level Azure AD authentication is not available with Application Gateway Standard_v2
-- Imports a test image and validates the setup
-- Deploys and verifies gpt-4.1-nano model in Azure OpenAI
+- Enables Application Gateway Ingress Controller (AGIC)
+- Waits for Application Gateway creation (5-10 minutes)
 
-> **Important:** The script now properly handles AGIC timing and installs cert-manager for automatic Let's Encrypt SSL certificate management. The Application Gateway is created in the MC resource group (e.g., `MC_respondr_respondr-aks-cluster-v2_westus`) and the script monitors this automatically.
-
-### Step 4: Build and Push Container Image
-
-Build the application container and push it to your Azure Container Registry:
-
+### Step 4: Setup OAuth2 Authentication (Recommended)
 ```powershell
-# Get ACR login server name
-$acrName = az acr list -g respondr --query "[0].name" -o tsv
-$acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
-
-# Login to ACR
-az acr login --name $acrName
-
-# Build the container image
-docker build -t respondr:latest .
-
-# Tag for ACR
-docker tag respondr:latest "$acrLoginServer/respondr:latest"
-docker tag respondr:latest "$acrLoginServer/respondr:v1.0"
-
-# Push to ACR
-docker push "$acrLoginServer/respondr:latest"
-docker push "$acrLoginServer/respondr:v1.0"
-
-# Verify the image was pushed
-az acr repository list --name $acrName --output table
+# Create Azure AD app registration and configure OAuth2 proxy
+.\deployment\setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
 ```
 
-### Step 5: Configure Application Secrets
-
-You'll need Azure OpenAI credentials for the application to function. Use the `create-secrets.ps1` script to automatically generate your Kubernetes secrets file:
-
+### Step 5: Deploy Application
 ```powershell
-# Create the secrets.yaml file with your Azure OpenAI credentials
-cd deployment
-.\create-secrets.ps1 -ResourceGroupName respondr
+# Build, push, and deploy application with OAuth2 authentication
+.\deployment\deploy-to-k8s.ps1 -ResourceGroupName respondr -UseOAuth2
 
-# Verify the secrets were created correctly
-# The script will show you the endpoint and deployment settings (but not the key value)
+# Alternative: Deploy without OAuth2 (not recommended for production)
+# .\deployment\deploy-to-k8s.ps1 -ResourceGroupName respondr
 ```
 
-Alternatively, you can manually retrieve the credentials and create the file:
+### Step 6: Configure DNS and SSL
+The deployment script will display the Application Gateway IP address. You must:
 
+1. **Update DNS Records**: Add A record `respondr.paincave.pro` → `<Gateway IP>` with your domain provider
+2. **Wait for DNS Propagation**: 5-60 minutes depending on provider
+3. **Verify SSL Certificate**: Let's Encrypt certificate issued automatically after DNS validation
+
+### Step 7: Test and Verify
 ```powershell
-# Get Azure OpenAI details from the deployment
-$resourceGroup = "respondr"
-$openAIName = az cognitiveservices account list -g $resourceGroup --query "[?kind=='OpenAI'].name" -o tsv
-$openAIEndpoint = az cognitiveservices account show -n $openAIName -g $resourceGroup --query "properties.endpoint" -o tsv
-$openAIKey = az cognitiveservices account keys list -n $openAIName -g $resourceGroup --query "key1" -o tsv
+# Run comprehensive end-to-end testing
+.\deployment\test-end-to-end.ps1 -Domain "paincave.pro"
 
-# Display the values you'll need
-Write-Host "Azure OpenAI Endpoint: $openAIEndpoint"
-Write-Host "Azure OpenAI Key: $openAIKey"
-Write-Host "Azure OpenAI Deployment: gpt-4-1-nano"  # Default from template
-Write-Host "Azure OpenAI API Version: 2025-01-01-preview"  # Default from template
+# Verify OAuth2 authentication specifically
+.\deployment\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
 ```
 
-### Step 6: Deploy Application to Kubernetes
+## Application Endpoints
 
-Navigate to the deployment directory and deploy the application:
+Once deployed, the application provides:
+
+- **Frontend Dashboard**: https://respondr.paincave.pro (with OAuth2 authentication)
+- **API Endpoint**: https://respondr.paincave.pro/api/responders
+- **Webhook Endpoint**: https://respondr.paincave.pro/webhook
+- **Health Check**: https://respondr.paincave.pro/health
+
+> **Note**: Replace `paincave.pro` with your actual domain. All endpoints are protected by OAuth2 authentication and served over HTTPS with Let's Encrypt certificates.
+
+## Deployment Management
+
+### Automated Redeployment (Recommended)
+
+For development updates and quick fixes:
 
 ```powershell
 cd deployment
 
-# Deploy the application (automatically creates secrets.yaml from Azure and configures Let's Encrypt)
-.\deploy-to-k8s.ps1 -ResourceGroupName respondr -ImageTag "latest"
-
-# If you want to use an existing secrets file, you can skip secrets creation:
-# .\deploy-to-k8s.ps1 -ResourceGroupName respondr -ImageTag "latest" -SkipSecretsCreation
-```
-
-This will:
-- Build and push the container image to ACR
-- Create Kubernetes secrets from Azure OpenAI credentials
-- Deploy the application with Let's Encrypt certificate configuration
-- Wait for the Let's Encrypt certificate to be issued (may take 2-10 minutes)
-
-Alternatively, deploy manually:
-
-```powershell
-# Create secrets file (now built into deploy-to-k8s.ps1)
-# This step is now optional as deploy-to-k8s.ps1 will handle it automatically
-.\create-secrets.ps1 -ResourceGroupName respondr
-
-# Deploy to Kubernetes
-kubectl apply -f secrets.yaml
-kubectl apply -f respondr-k8s-deployment.yaml
-
-# Wait for deployment
-kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment
-
-# Wait for Let's Encrypt certificate (this may take a few minutes)
-kubectl wait --for=condition=Ready certificate/respondr-tls-letsencrypt --timeout=600s
-
-# Check status
-kubectl get pods -l app=respondr
-kubectl get services -l app=respondr
-kubectl get ingress respondr-ingress
-kubectl get certificate respondr-tls-letsencrypt
-```
-
-### Step 7: Configure DNS and Wait for SSL Certificate
-
-**CRITICAL DNS TIMING**: This step must be completed **BEFORE** the Let's Encrypt certificate can be issued. The DNS configuration is required for domain validation.
-
-Get the Application Gateway's public IP and configure DNS:
-
-```powershell
-# Get Application Gateway public IP
-$mcResourceGroup = "MC_respondr_respondr-aks-cluster-v2_westus"
-$appGwIp = az network public-ip show `
-    --resource-group $mcResourceGroup `
-    --name "respondr-aks-cluster-v2-appgw-appgwpip" `
-    --query "ipAddress" -o tsv
-
-Write-Host "Application Gateway IP: $appGwIp"
-Write-Host "IMPORTANT: You must update your DNS records NOW with this IP address"
-Write-Host "Domain: respondr.paincave.pro → $appGwIp"
-```
-
-**DNS Configuration Requirements:**
-
-1. **Update DNS Records with Your Domain Provider**:
-   - Log into your domain provider's DNS management console (e.g., NameCheap, GoDaddy, Cloudflare, etc.)
-   - Create or update an A record: `respondr.paincave.pro` → `<Application Gateway IP>`
-   - DNS propagation typically takes 5-60 minutes depending on your provider
-   - **This MUST be done before Let's Encrypt can issue certificates**
-
-2. **Verify DNS Resolution** (wait for propagation):
-   ```powershell
-   # Test DNS resolution
-   nslookup respondr.paincave.pro
-   
-   # Should return the Application Gateway IP address
-   # If it doesn't match, wait longer for DNS propagation
-   ```
-
-3. **For Testing Only** (temporary hosts file entry):
-   ```powershell
-   # Add to hosts file (Windows - run as Administrator)
-   Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "$appGwIp respondr.paincave.pro"
-   
-   # Or manually add this line to your hosts file:
-   # <IP_ADDRESS> respondr.paincave.pro
-   ```
-
-**⚠️ Important**: The hosts file approach is only for testing. Let's Encrypt certificate issuance requires proper DNS records that are publicly resolvable from the internet.
-
-**Wait for Let's Encrypt certificate (after DNS is configured):**
-```powershell
-# FIRST: Verify DNS is resolving correctly
-Write-Host "Verifying DNS resolution..."
-$resolvedIp = (Resolve-DnsName respondr.paincave.pro -Type A).IPAddress
-$expectedIp = $appGwIp
-
-if ($resolvedIp -eq $expectedIp) {
-    Write-Host "✅ DNS is correctly configured" -ForegroundColor Green
-    Write-Host "Proceeding with certificate verification..."
-} else {
-    Write-Host "❌ DNS mismatch:" -ForegroundColor Red
-    Write-Host "  Expected: $expectedIp"
-    Write-Host "  Resolved: $resolvedIp"
-    Write-Host "  Wait for DNS propagation (5-60 minutes) before continuing"
-    Write-Host "  Check your domain provider's DNS settings"
-    return
-}
-
-# Check certificate status
-kubectl get certificate respondr-tls-letsencrypt -n respondr
-
-# Monitor certificate issuance (may take 2-10 minutes after DNS is ready)
-kubectl describe certificate respondr-tls-letsencrypt -n respondr
-
-# Check certificaterequest progress
-kubectl get certificaterequests -n respondr
-
-# Watch certificate status in real-time
-kubectl get certificate respondr-tls-letsencrypt -n respondr -w
-```
-
-The Let's Encrypt certificate issuance process:
-1. cert-manager detects the ingress with Let's Encrypt annotations
-2. **DNS VALIDATION**: Let's Encrypt checks that your domain resolves to the Application Gateway IP
-3. Creates a certificate request and temporary challenge pods
-4. Let's Encrypt validates domain ownership via HTTP-01 challenge
-5. Issues the certificate (usually takes 2-10 minutes after DNS propagation)
-6. cert-manager stores the certificate in the Kubernetes secret
-
-**DNS Troubleshooting:**
-- **Issue**: Certificate request fails with DNS validation errors
-- **Cause**: Domain not resolving to Application Gateway IP
-- **Solution**: 
-  1. Check DNS records with your domain provider
-  2. Verify propagation: `nslookup respondr.paincave.pro`
-  3. Wait for full DNS propagation (can take up to 24 hours in rare cases)
-  4. Test from different locations/DNS servers
-
-### Step 8: Test the Deployment
-
-Test that everything is working with the comprehensive test suite:
-
-```powershell
-# Run complete end-to-end testing (including OAuth2 authentication)
-cd deployment
-.\test-end-to-end.ps1 -Domain "paincave.pro"
-
-# Or run OAuth2-specific verification
-.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
-
-# Manual API testing (after authentication)
-curl https://respondr.paincave.pro/api/responders
-
-# Send a test webhook
-$testPayload = @{
-    name = "Test User"
-    text = "I am responding with SAR78, ETA 15 minutes"
-    created_at = [int][double]::Parse((Get-Date -UFormat %s))
-} | ConvertTo-Json
-
-Invoke-RestMethod -Uri "https://respondr.paincave.pro/webhook" -Method POST -Body $testPayload -ContentType "application/json"
-
-# Check the results
-curl https://respondr.paincave.pro/api/responders
-```
-
-Visit https://respondr.paincave.pro in your browser to see the dashboard. You'll be prompted to authenticate with Microsoft Entra (Azure AD).
-
-**Expected OAuth2 Authentication Flow:**
-1. Navigate to https://respondr.paincave.pro
-2. Automatically redirect to Microsoft login page
-3. Sign in with your Azure AD/Entra credentials
-4. Redirect back to the application dashboard
-5. Access all features without further authentication prompts
-
-**If you get SSL certificate errors:**
-1. Check certificate status: `kubectl get certificate respondr-tls-letsencrypt -n respondr`
-2. Wait for certificate to be Ready (may take up to 10 minutes)
-3. Verify DNS is pointing to the correct IP address
-4. Check cert-manager logs: `kubectl logs -n cert-manager deployment/cert-manager`
-
-### Step 9: Run Comprehensive Tests
-
-```powershell
-# Run the test suite from the backend directory
-cd ../backend
-python test_webhook.py
-
-# This will send multiple test messages and verify the system is working
-```
-
-## Upgrading and Redeployment
-
-The application uses the unified deployment template (`respondr-k8s-unified-template.yaml`) for all deployment scenarios. This ensures consistency and simplifies maintenance.
-
-### Quick Redeployment (Recommended)
-
-For development updates and quick fixes, use the redeploy script:
-
-```powershell
-cd deployment
-
-# Build and deploy with timestamp version (RECOMMENDED)
+# Build new image and deploy with rolling update (RECOMMENDED)
 .\redeploy.ps1 -Action "build" -ResourceGroupName respondr
 
-# Restart deployment (same image, fresh pods)
+# Restart deployment with same image
 .\redeploy.ps1 -Action "restart"
 
 # Update configuration and restart
@@ -490,47 +183,24 @@ cd deployment
 ```
 
 The `build` action automatically:
-- ✅ Builds a new container image with timestamp version (e.g., `v2025.08.05-1439`)
-- ✅ Pushes to Azure Container Registry  
-- ✅ Updates Kubernetes deployment with rolling update
-- ✅ Ensures zero downtime deployment
-- ✅ Maintains session affinity and OAuth2 configuration
+- Builds a new container image with timestamp version
+- Pushes to Azure Container Registry  
+- Updates Kubernetes deployment with zero downtime
+- Maintains OAuth2 configuration and session affinity
 
 ### Production Upgrades
 
-For production environments, use the upgrade script that handles versioning, container builds, and rollback capabilities:
+For production environments with version management:
 
 ```powershell
-cd deployment
-
 # Full upgrade with new version
 .\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr
 
 # Upgrade with automatic rollback on failure
 .\upgrade-k8s.ps1 -Version "v1.2" -ResourceGroupName respondr -RollbackOnFailure
-
-# Use existing container image (skip build)
-.\upgrade-k8s.ps1 -Version "v1.1" -ResourceGroupName respondr -SkipBuild
 ```
 
-### Quick Redeployment
-
-For development or quick fixes:
-
-```powershell
-cd deployment
-
-# Build and deploy with timestamp version
-.\redeploy.ps1 -Action "build" -ResourceGroupName respondr
-
-# Restart deployment (same image, fresh pods)
-.\redeploy.ps1 -Action "restart"
-
-# Update configuration and restart
-.\redeploy.ps1 -Action "update-config"
-```
-
-### Manual Commands
+### Manual Deployment Commands
 
 ```powershell
 # Quick restart without new build
@@ -544,20 +214,11 @@ kubectl get pods -l app=respondr
 kubectl rollout status deployment/respondr-deployment
 ```
 
-## Application Endpoints
+## Development and Testing
 
-Once deployed, the application provides:
+### Local Development
 
-- **Frontend Dashboard**: https://respondr.paincave.pro (via Application Gateway with SSL/TLS)
-- **API Endpoint**: https://respondr.paincave.pro/api/responders
-- **Webhook Endpoint**: https://respondr.paincave.pro/webhook
-- **Health Check**: https://respondr.paincave.pro/health
-
-> **Note**: The actual domain depends on your DNS configuration. For testing, you can use the Application Gateway's public IP and add an entry to your hosts file.
-
-## Development and Local Testing
-
-For local development:
+For local development and testing:
 
 ```powershell
 # Backend development
@@ -573,8 +234,6 @@ npm start
 
 ### Running Tests
 
-The project includes both backend (pytest) and frontend (Jest) tests.
-
 ```powershell
 # Run all tests (backend and frontend)
 .\run-tests.ps1
@@ -586,9 +245,147 @@ python run_tests.py
 # Run just frontend tests
 cd frontend
 npm test
+
+# Test webhook functionality
+cd backend
+python test_webhook.py
 ```
 
-## Cleanup and Resource Management
+### Container Management
+
+```powershell
+# List all repositories in ACR
+$acrName = az acr list -g respondr --query "[0].name" -o tsv
+az acr repository list --name $acrName --output table
+
+# List tags for the respondr repository
+az acr repository show-tags --name $acrName --repository respondr --output table
+
+# Build and push new versions
+docker build -t respondr:v1.1 .
+$acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
+docker tag respondr:v1.1 "$acrLoginServer/respondr:v1.1"
+docker push "$acrLoginServer/respondr:v1.1"
+
+# Update deployment with new image
+kubectl set image deployment/respondr-deployment respondr="$acrLoginServer/respondr:v1.1"
+kubectl rollout status deployment/respondr-deployment
+```
+
+## Monitoring and Troubleshooting
+
+### Quick Status Checks
+
+```powershell
+# Check overall deployment status
+kubectl get pods,svc,ingress -l app=respondr
+kubectl get certificate respondr-tls-letsencrypt -n respondr
+
+# Check application logs
+kubectl logs -l app=respondr --tail=50 -f
+
+# Check OAuth2 proxy logs specifically
+kubectl logs -l app=respondr -c oauth2-proxy --tail=50
+
+# Run deployment verification
+cd deployment
+.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
+.\test-end-to-end.ps1 -Domain "paincave.pro"
+
+# Port forward for direct access (bypass ingress)
+kubectl port-forward service/respondr-service 8080:80
+```
+
+### Common Issues and Solutions
+
+#### AGIC Pod Issues
+**Symptoms**: AGIC pod showing `CrashLoopBackOff`
+**Cause**: Application Gateway creation in progress (5-10 minutes) or permission issues
+**Solution**:
+```powershell
+# Check if AGIC addon is enabled
+az aks addon list --resource-group respondr --name respondr-aks-cluster-v2 --query "[?name=='ingress-appgw'].enabled" -o tsv
+
+# Enable AGIC if needed
+$subnetId = az network vnet subnet show --resource-group respondr --vnet-name respondr-vnet --name appgw-subnet --query "id" -o tsv
+az aks enable-addons --resource-group respondr --name respondr-aks-cluster-v2 --addons ingress-appgw --appgw-subnet-id $subnetId
+
+# Check AGIC logs
+kubectl logs -n kube-system deployment/ingress-appgw-deployment --tail=20
+```
+
+#### SSL Certificate Issues
+**Symptoms**: "Certificate not trusted" or SSL errors
+**Cause**: Let's Encrypt certificate not issued or DNS misconfiguration
+**Solution**:
+```powershell
+# Check certificate status
+kubectl get certificate respondr-tls-letsencrypt -n respondr
+kubectl describe certificate respondr-tls-letsencrypt -n respondr
+
+# Check cert-manager logs
+kubectl logs -n cert-manager deployment/cert-manager
+
+# Verify DNS configuration
+nslookup respondr.paincave.pro
+
+# Manual certificate retry
+kubectl delete certificate respondr-tls-letsencrypt -n respondr
+kubectl apply -f respondr-k8s-deployment.yaml
+```
+
+#### OAuth2 Authentication Issues
+**Symptoms**: Login loops, "OIDC discovery failed", or authentication errors
+**Cause**: Misconfigured Azure AD app or OAuth2 proxy settings
+**Solution**:
+```powershell
+# Check OAuth2 secrets
+kubectl get secret oauth2-secrets -n respondr -o yaml
+
+# Check OAuth2 proxy logs
+kubectl logs -n respondr -l app=respondr -c oauth2-proxy
+
+# Verify Azure AD app registration
+az ad app list --display-name "respondr-oauth2" --query "[].{appId:appId,displayName:displayName}"
+
+# Recreate OAuth2 configuration
+.\setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+kubectl rollout restart deployment/respondr-deployment -n respondr
+```
+
+#### DNS and Network Issues
+**Symptoms**: Domain not resolving or Application Gateway not accessible
+**Solution**:
+```powershell
+# Get Application Gateway IP
+$mcResourceGroup = "MC_respondr_respondr-aks-cluster-v2_westus"
+$appGwIp = az network public-ip show --resource-group $mcResourceGroup --name "respondr-aks-cluster-v2-appgw-appgwpip" --query "ipAddress" -o tsv
+
+# Verify DNS resolution
+nslookup respondr.paincave.pro
+
+# Check Application Gateway configuration
+az network application-gateway list --resource-group $mcResourceGroup --output table
+```
+
+#### Container and Image Issues
+**Symptoms**: Image pull errors or pod startup failures
+**Solution**:
+```powershell
+# Check ACR attachment
+az aks check-acr --resource-group respondr --name respondr-aks-cluster-v2 --acr $acrName
+
+# Manually attach ACR if needed
+az aks update --resource-group respondr --name respondr-aks-cluster-v2 --attach-acr $acrName
+
+# Check image availability
+az acr repository list --name $acrName
+az acr repository show-tags --name $acrName --repository respondr
+```
+
+## Resource Management
+
+### Cleanup Resources
 
 To completely clean up the deployment:
 
@@ -601,203 +398,7 @@ kubectl delete -f secrets.yaml
 .\deployment\cleanup.ps1 -ResourceGroupName respondr -Force
 ```
 
-## Container Registry Management
-
-Useful commands for managing your container images:
-
-```powershell
-# List all repositories in ACR
-$acrName = az acr list -g respondr --query "[0].name" -o tsv
-az acr repository list --name $acrName --output table
-
-# List tags for the respondr repository
-az acr repository show-tags --name $acrName --repository respondr --output table
-
-# Delete old image versions
-az acr repository delete --name $acrName --image respondr:v1.0 --yes
-
-# Build and push new versions
-docker build -t respondr:v1.1 .
-docker tag respondr:v1.1 "$acrLoginServer/respondr:v1.1"
-docker push "$acrLoginServer/respondr:v1.1"
-
-# Update deployment with new image
-kubectl set image deployment/respondr-deployment respondr="$acrLoginServer/respondr:v1.1"
-kubectl rollout status deployment/respondr-deployment
-```
-
-## Monitoring and Troubleshooting
-
-### Common Commands
-
-```powershell
-# Check pod status and logs
-kubectl get pods -l app=respondr
-kubectl logs -l app=respondr --tail=100 -f
-
-# Check OAuth2 proxy logs specifically
-kubectl logs -l app=respondr -c oauth2-proxy --tail=50
-
-# Check service and ingress
-kubectl get svc,ingress
-kubectl describe ingress respondr-ingress
-
-# Run deployment verification
-cd deployment
-.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
-
-# Run comprehensive end-to-end testing
-.\test-end-to-end.ps1 -Domain "paincave.pro"
-
-# Port forward for direct access (bypass ingress)
-kubectl port-forward service/respondr-service 8080:80
-```
-
-### Common Issues
-
-1. **Image Pull Errors**: Ensure ACR is properly attached to AKS
-2. **DNS Resolution**: Verify hosts file or configure proper DNS
-3. **Azure OpenAI Errors**: Check credentials and deployment name
-4. **Pod Startup Issues**: Check resource limits and quotas
-5. **AGIC Pod CrashLoopBackOff**: This is normal during Application Gateway creation (5-10 minutes)
-6. **Azure CLI Extension Conflicts**: Remove conflicting extensions with `az extension remove --name aks-preview`
-7. **CNI Overlay Issues**: The template uses standard Azure CNI to avoid preview feature requirements
-8. **Let's Encrypt Certificate Issues**: Check DNS configuration and certificate status
-9. **OAuth2 Authentication Issues**: Check Azure AD app registration and OAuth2 proxy configuration
-10. **OAuth2 Redirect Loops**: Verify cookie secret length (must be 32 characters) and client secret validity
-
-### OAuth2 Authentication Troubleshooting
-
-**Issue**: OAuth2 authentication not working or infinite redirect loops
-**Cause**: Misconfigured Azure AD app registration or OAuth2 proxy secrets
-**Solution**:
-
-```powershell
-# Step 1: Verify OAuth2 secrets
-kubectl get secret oauth2-secrets -n respondr -o yaml
-
-# Step 2: Check OAuth2 proxy logs
-kubectl logs -n respondr -l app=respondr -c oauth2-proxy
-
-# Step 3: Verify Azure AD app registration
-az ad app list --display-name "respondr-oauth2" --query "[].{appId:appId,displayName:displayName}"
-
-# Step 4: Recreate OAuth2 secrets if needed
-.\setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
-
-# Step 5: Restart deployment
-kubectl rollout restart deployment/respondr-deployment -n respondr
-```
-
-**Issue**: "OIDC discovery failed" or similar OAuth2 proxy errors
-**Cause**: Network connectivity or Azure AD configuration issues
-**Solution**:
-1. Check Azure AD app registration redirect URI: `https://respondr.paincave.pro/oauth2/callback`
-2. Verify tenant ID is correct in OAuth2 secrets
-3. Ensure Azure AD app has proper permissions
-
-**Issue**: Cookie-related errors or "invalid state" errors
-**Cause**: Cookie secret issues or domain mismatch
-**Solution**:
-1. Verify cookie secret is exactly 32 characters: `kubectl get secret oauth2-secrets -o yaml`
-2. Check that domain in OAuth2 configuration matches actual domain
-3. Regenerate cookie secret: `openssl rand -base64 32 | tr -d "=+/" | cut -c1-32`
-
-### Let's Encrypt Certificate Troubleshooting
-
-**Issue**: SSL certificate not working or site shows "certificate not trusted"
-**Cause**: Let's Encrypt certificate not yet issued or DNS misconfiguration
-**Solution**:
-
-```powershell
-# Check certificate status
-kubectl get certificate respondr-tls-letsencrypt -n respondr
-kubectl describe certificate respondr-tls-letsencrypt -n respondr
-
-# Check certificaterequest status
-kubectl get certificaterequests -n respondr
-kubectl describe certificaterequest <request-name> -n respondr
-
-# Check cert-manager logs
-kubectl logs -n cert-manager deployment/cert-manager
-kubectl logs -n cert-manager deployment/cert-manager-webhook
-
-# Check ACME challenge pods
-kubectl get pods -n respondr -l acme.cert-manager.io/http01-solver=true
-
-# Manual certificate retry (if needed)
-kubectl delete certificate respondr-tls-letsencrypt -n respondr
-kubectl apply -f respondr-k8s-deployment.yaml
-```
-
-**Issue**: ACME challenge fails
-**Cause**: DNS not pointing to Application Gateway or domain not accessible
-**Solution**:
-1. Verify DNS A record: `respondr.paincave.pro` → Application Gateway IP
-2. Test domain accessibility: `curl http://respondr.paincave.pro/.well-known/acme-challenge/test`
-3. Check Application Gateway HTTP listener configuration
-4. Ensure Application Gateway allows HTTP traffic for ACME challenges
-
-### AGIC and Application Gateway Troubleshooting
-
-**Issue**: AGIC pod showing CrashLoopBackOff or failing to start
-**Cause**: Application Gateway doesn't exist yet (AGIC creates it automatically), or permission issues
-**Solution**: 
-
-**Step 1: Check if AGIC addon is enabled:**
-```powershell
-az aks addon list --resource-group respondr --name respondr-aks-cluster-v2 --query "[?name=='ingress-appgw'].enabled" -o tsv
-```
-
-**Step 2: If AGIC addon is not enabled, enable it manually:**
-```powershell
-# Get the existing subnet ID (if Bicep template created subnets)
-$subnetId = az network vnet subnet show --resource-group respondr --vnet-name respondr-vnet --name appgw-subnet --query "id" -o tsv
-
-# Enable AGIC addon with existing subnet
-az aks enable-addons --resource-group respondr --name respondr-aks-cluster-v2 --addons ingress-appgw --appgw-subnet-id $subnetId
-```
-
-**Step 3: Fix permission issues if deployment fails:**
-```powershell
-# Get AGIC managed identity object ID from addon configuration
-$agicIdentityObjectId = az aks show --resource-group respondr --name respondr-aks-cluster-v2 --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv
-
-# Grant Network Contributor permissions on VNet
-$vnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/respondr/providers/Microsoft.Network/virtualNetworks/respondr-vnet"
-az role assignment create --assignee $agicIdentityObjectId --role "Network Contributor" --scope $vnetId
-
-# Grant permissions on subnet specifically
-$subnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/respondr/providers/Microsoft.Network/virtualNetworks/respondr-vnet/subnets/appgw-subnet"
-az role assignment create --assignee $agicIdentityObjectId --role "Network Contributor" --scope $subnetId
-```
-
-**Step 4: Monitor AGIC and Application Gateway creation:**
-```powershell
-# Check AGIC deployment progress
-$aksCluster = "respondr-aks-cluster-v2"
-$mcResourceGroup = "MC_respondr_$aksCluster_westus"
-az deployment group list --resource-group $mcResourceGroup --output table
-
-# Check AGIC pod status
-kubectl get pods -n kube-system -l app=ingress-appgw
-kubectl logs -n kube-system deployment/ingress-appgw-deployment --tail=20
-
-# Restart AGIC if needed (after granting permissions)
-kubectl rollout restart deployment/ingress-appgw-deployment -n kube-system
-```
-
-**Issue**: Application Gateway not accessible
-**Cause**: Application Gateway is created in MC resource group, not main resource group
-**Solution**: Check the correct resource group:
-
-```powershell
-# Correct resource group for Application Gateway
-$mcResourceGroup = "MC_respondr_respondr-aks-cluster-v2_westus"
-az network application-gateway list --resource-group $mcResourceGroup --output table
-```
-
-## Resource Naming Convention
+### Resource Naming Convention
 
 All resources follow a consistent naming pattern:
 
@@ -809,51 +410,36 @@ All resources follow a consistent naming pattern:
 - Virtual Network: `respondr-vnet`
 - Application Gateway: `respondr-aks-cluster-v2-appgw` (created by AGIC in MC resource group)
 
-The v2 suffix indicates the use of standard Azure CNI networking instead of CNI overlay to ensure compatibility with Application Gateway.
-
-You can customize the prefix by modifying the `resourcePrefix` parameter in the Bicep deployment.
+The v2 suffix indicates the use of standard Azure CNI networking for compatibility with Application Gateway.
 
 ## Production Recommendations
 
-### 1. DNS Configuration
-- Use your domain provider's DNS management (NameCheap, GoDaddy, Cloudflare, etc.)
-- Configure proper A records pointing to the Application Gateway IP
-- Consider using Azure DNS for integrated management if preferred
-- Set up monitoring and health checks for domain resolution
+### Security
+- All secrets stored in Kubernetes secrets (not configuration files)
+- Containers run as non-root users
+- ACR integration uses managed identity for secure image pulls
+- OAuth2 authentication with Azure AD/Entra integration
+- Resource limits prevent resource exhaustion
 
-### 2. Backup and Disaster Recovery
-- Regular AKS cluster backups using Azure Backup for AKS
-- Azure Storage account geo-replication for persistent data
-- Document recovery procedures and test them regularly
-- Maintain infrastructure as code (Bicep templates) for full environment recreation
-
-### 3. Monitoring and Logging
-- Enable Azure Monitor for containers
-- Configure Application Insights for application performance monitoring
-- Set up log aggregation and alerting for critical issues
+### Monitoring and Backup
+- Enable Azure Monitor for containers and Application Insights
+- Configure log aggregation and alerting for critical issues
 - Monitor certificate expiration and renewal
+- Regular AKS cluster backups using Azure Backup
+- Azure Storage account geo-replication for persistent data
 
-### 4. CI/CD Pipeline
+### CI/CD Integration
 - Automate deployments with Azure DevOps or GitHub Actions
+- Include OAuth2 verification using `verify-oauth2-deployment.ps1`
+- Add end-to-end testing with `test-end-to-end.ps1` in validation pipelines
 - Implement proper testing and staging environments
-- Use infrastructure as code for all resources
-- Automated container image scanning for security vulnerabilities
-- **NEW**: Include OAuth2 verification in deployment pipelines using `verify-oauth2-deployment.ps1`
-- **NEW**: Add end-to-end testing with `test-end-to-end.ps1` in CI/CD validation
+- Use infrastructure as code (Bicep templates) for environment recreation
 
-### 5. Cost Optimization
+### Cost Optimization
 - Use Azure Spot instances for non-critical workloads
 - Configure cluster autoscaling based on demand
 - Monitor and optimize resource usage regularly
 - Review and rightsize VM SKUs based on actual usage
-
-## Security Considerations
-
-- All secrets are stored in Kubernetes secrets, not in configuration files
-- The application runs as a non-root user in containers
-- ACR integration uses managed identity for secure image pulls
-- Resource limits prevent resource exhaustion
-- Network policies can be applied for additional security
 
 ## Contributing
 
