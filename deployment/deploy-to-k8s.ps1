@@ -255,13 +255,8 @@ $podIdentityClientId = $deploy.properties.outputs.podIdentityClientId.value
 $tenantId = az account show --query tenantId -o tsv
 
 # Get DNS zone for hostname configuration
-$dnsZone = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv 2>$null
-if ($dnsZone) {
-    $hostname = "respondr.$dnsZone"
-} else {
-    $hostname = "respondr.example.com"
-    Write-Host "Warning: No DNS zone found. Using placeholder hostname: $hostname" -ForegroundColor Yellow
-}
+$hostname = "respondr.paincave.pro"  # Use actual domain
+Write-Host "Using hostname: $hostname" -ForegroundColor Green
 
 # Replace placeholders in the template
 (Get-Content $deploymentFile) `
