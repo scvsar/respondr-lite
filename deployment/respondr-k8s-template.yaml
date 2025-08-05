@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: respondr-deployment
+  namespace: respondr
   labels:
     app: respondr
 spec:
@@ -13,6 +14,7 @@ spec:
     metadata:
       labels:
         app: respondr
+        azure.workload.identity/use: "true"  # Required for workload identity
     spec:
       serviceAccountName: respondr-sa
       containers:
@@ -67,14 +69,17 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: respondr-sa
+  namespace: respondr
   annotations:
     azure.workload.identity/client-id: CLIENT_ID_PLACEHOLDER
+    azure.workload.identity/tenant-id: TENANT_ID_PLACEHOLDER
 
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: respondr-service
+  namespace: respondr
   labels:
     app: respondr
 spec:
@@ -91,13 +96,19 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: respondr-ingress
+  namespace: respondr
   annotations:
     kubernetes.io/ingress.class: azure/application-gateway
-    appgw.ingress.kubernetes.io/auth-url: https://login.microsoftonline.com/TENANT_ID/oauth2/v2.0/authorize
-    appgw.ingress.kubernetes.io/auth-redirect: https://respondr.example.com
+    appgw.ingress.kubernetes.io/auth-setting: respondrAuth  # Reference to the auth-setting created in post-deploy
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/use-private-ip: "false"
 spec:
+  tls:
+  - hosts:
+    - HOSTNAME_PLACEHOLDER
+    secretName: respondr-tls
   rules:
-  - host: respondr.example.com
+  - host: HOSTNAME_PLACEHOLDER
     http:
       paths:
       - path: /

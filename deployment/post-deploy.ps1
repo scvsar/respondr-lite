@@ -1,6 +1,29 @@
 <#
 .SYNOPSIS
-    Post-deployment configuration for the respondr app.
+    Post-deployment co# 2) Get Storage account name more robustly
+Write-Host "Retrieving storage account name..." -ForegroundColor Yellow
+$storageAccountName = $deploy.properties.outputs.storageAccountName.value 2>$null
+if (-not $storageAccountName) {
+    # Fallback to discovery, but be more specific
+    $storageAccounts = az storage account list --resource-group $ResourceGroupName -o json | ConvertFrom-Json
+    if ($storageAccounts.Count -eq 1) {
+        $storageAccountName = $storageAccounts[0].name
+        Write-Host "  Discovered single storage account: $storageAccountName" -ForegroundColor Yellow
+    } elseif ($storageAccounts.Count -gt 1) {
+        # Try to find one with a name pattern or tags that identify it as the respondr storage account
+        $respondrStorage = $storageAccounts | Where-Object { $_.name -like "*respondr*" -or $_.tags.Application -eq "respondr" }
+        if ($respondrStorage.Count -eq 1) {
+            $storageAccountName = $respondrStorage[0].name
+            Write-Host "  Discovered respondr storage account: $storageAccountName" -ForegroundColor Yellow
+        } else {
+            Write-Host "  Warning: Multiple storage accounts found. Using first one: $($storageAccounts[0].name)" -ForegroundColor Yellow
+            $storageAccountName = $storageAccounts[0].name
+        }
+    } else {
+        Write-Host "  Warning: No storage account found in resource group" -ForegroundColor Yellow
+        $storageAccountName = $null
+    }
+}uration for the respondr app.
 
 .DESCRIPTION
     - Fetches deployment outputs (AKS cluster name, ACR name, OpenAI account name)
@@ -31,6 +54,8 @@ $openAiAccountName  = $deploy.properties.outputs.openAiAccountName.value
 $podIdentityName    = $deploy.properties.outputs.podIdentityName.value
 $podIdentityClientId= $deploy.properties.outputs.podIdentityClientId.value
 $podIdentityId      = $deploy.properties.outputs.podIdentityResourceId.value
+$vnetName           = $deploy.properties.outputs.vnetName.value
+$appGwSubnetName    = $deploy.properties.outputs.appGwSubnetName.value
 
 if (-not $aksClusterName)    { throw "Missing aksClusterName output!" }
 if (-not $openAiAccountName) { throw "Missing openAiAccountName output!" }
@@ -53,7 +78,10 @@ az aks get-credentials `
     --name $aksClusterName `
     --overwrite-existing
 
-# 3.5) Ensure user-assigned managed identity and workload identity configuration
+# 3.5) Create dedicated namespace and configure workload identity
+Write-Host "`nCreating dedicated namespace for respondr..." -ForegroundColor Yellow
+kubectl create namespace respondr --dry-run=client -o yaml | kubectl apply -f -
+
 Write-Host "`nEnsuring user-assigned managed identity and workload identity setup..." -ForegroundColor Yellow
 $identity = az identity show --name $podIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
 if (-not $identity) {
@@ -65,20 +93,54 @@ if (-not $identity) {
     Write-Host "User-assigned identity '$podIdentityName' already exists." -ForegroundColor Green
 }
 
+# Assign necessary roles to the managed identity
+Write-Host "Assigning roles to user-assigned managed identity..." -ForegroundColor Yellow
+$storageAccountId = az storage account show --name $storageAccountName --resource-group $ResourceGroupName --query id -o tsv
+$openAiAccountId = az cognitiveservices account show --name $openAiAccountName --resource-group $ResourceGroupName --query id -o tsv
+
+# Storage Blob Data Contributor role for accessing storage
+az role assignment create `
+    --assignee $podIdentityClientId `
+    --role "Storage Blob Data Contributor" `
+    --scope $storageAccountId 2>$null
+
+# Cognitive Services OpenAI User role for accessing OpenAI
+az role assignment create `
+    --assignee $podIdentityClientId `
+    --role "Cognitive Services OpenAI User" `
+    --scope $openAiAccountId 2>$null
+
 Write-Host "Enabling OIDC and workload identity on AKS cluster..." -ForegroundColor Yellow
 az aks update --name $aksClusterName --resource-group $ResourceGroupName --enable-oidc-issuer --enable-workload-identity
+
+# Check if workload identity webhook is deployed
+Write-Host "Checking workload identity webhook deployment..." -ForegroundColor Yellow
+$webhookPods = kubectl get pods -n kube-system -l app=azure-workload-identity-webhook-mutator -o json | ConvertFrom-Json
+if ($webhookPods.items.Count -gt 0) {
+    Write-Host "Workload identity webhook is deployed" -ForegroundColor Green
+} else {
+    Write-Host "Warning: Workload identity webhook not found. May need manual installation on older AKS versions." -ForegroundColor Yellow
+}
+
 $issuer = az aks show --name $aksClusterName --resource-group $ResourceGroupName --query "oidcIssuerProfile.issuerUrl" -o tsv
 $ficName = "respondr-fic"
+
+# Create federated credential with templated namespace
 az identity federated-credential create `
     --name $ficName `
     --identity-name $podIdentityName `
     --resource-group $ResourceGroupName `
     --issuer $issuer `
-    --subject "system:serviceaccount:default:respondr-sa" `
+    --subject "system:serviceaccount:respondr:respondr-sa" `
     --audience "api://AzureADTokenExchange" 2>$null
 
-kubectl create serviceaccount respondr-sa --dry-run=client -o yaml | kubectl apply -f -
-kubectl annotate serviceaccount respondr-sa azure.workload.identity/client-id=$podIdentityClientId --overwrite
+# Create service account in the respondr namespace
+kubectl create serviceaccount respondr-sa -n respondr --dry-run=client -o yaml | kubectl apply -f -
+kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/client-id=$podIdentityClientId --overwrite
+
+# Get tenant ID for optional annotation
+$tenantId = az account show --query tenantId -o tsv
+kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/tenant-id=$tenantId --overwrite
 
 # 4) Attach ACR (if one exists)
 if ($acrName) {
@@ -93,32 +155,154 @@ if ($acrName) {
 
 # 5) Enable AGIC with Microsoft Entra authentication
 Write-Host "`nEnabling Application Gateway Ingress Controller with Microsoft Entra auth..." -ForegroundColor Yellow
+
+# Install application-gateway-preview extension
+Write-Host "Installing/updating Azure CLI application-gateway-preview extension..." -ForegroundColor Yellow
+az extension add --name application-gateway-preview -y --upgrade 2>$null
+
 $appGwName = "$aksClusterName-appgw"
+
+# Enable AGIC addon with proper subnet configuration using existing VNet
+Write-Host "Enabling AGIC addon..." -ForegroundColor Yellow
 az aks enable-addons `
     --resource-group $ResourceGroupName `
     --name $aksClusterName `
     --addons ingress-appgw `
     --appgw-name $appGwName `
+    --appgw-subnet-id "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName/subnets/$appGwSubnetName" `
     --enable-azure-rbac 2>$null
 
-$tenantId = az account show --query tenantId -o tsv
-az network application-gateway identity assign --resource-group $ResourceGroupName --gateway-name $appGwName 2>$null
+# Wait for Application Gateway to be created
+Write-Host "Waiting for Application Gateway to be ready..." -ForegroundColor Yellow
+$timeout = (Get-Date).AddMinutes(10)
+do {
+    Start-Sleep -Seconds 30
+    $appGwState = az network application-gateway show --name $appGwName --resource-group $ResourceGroupName --query "provisioningState" -o tsv 2>$null
+    Write-Host "Application Gateway state: $appGwState" -ForegroundColor Cyan
+} while ($appGwState -ne "Succeeded" -and (Get-Date) -lt $timeout)
 
-$authAppName = "$ResourceGroupName-agic-auth"
-$authApp = az ad app list --display-name $authAppName -o json | ConvertFrom-Json
-if (-not $authApp) {
-    $authApp = az ad app create --display-name $authAppName --web-redirect-uris "https://respondr.example.com" -o json | ConvertFrom-Json
+if ($appGwState -ne "Succeeded") {
+    Write-Host "Warning: Application Gateway not ready within timeout" -ForegroundColor Yellow
 }
-$authClientId = $authApp.appId
-$authSecret = az ad app credential reset --id $authClientId --append --query password -o tsv
-az network application-gateway auth-setting create `
+
+# Create and assign user-assigned managed identity for Application Gateway
+$appGwIdentityName = "$appGwName-identity"
+Write-Host "Creating user-assigned managed identity for Application Gateway..." -ForegroundColor Yellow
+$existingAppGwIdentity = az identity show --name $appGwIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
+if (-not $existingAppGwIdentity) {
+    $appGwIdentity = az identity create --name $appGwIdentityName --resource-group $ResourceGroupName -o json | ConvertFrom-Json
+} else {
+    $appGwIdentity = $existingAppGwIdentity
+    Write-Host "Using existing Application Gateway identity" -ForegroundColor Green
+}
+$appGwIdentityId = $appGwIdentity.id
+
+# Assign the identity to the Application Gateway
+Write-Host "Assigning identity to Application Gateway..." -ForegroundColor Yellow
+az network application-gateway identity assign `
     --resource-group $ResourceGroupName `
     --gateway-name $appGwName `
-    --name respondrAuth `
-    --auth-type aad `
-    --client-id $authClientId `
-    --client-secret $authSecret `
-    --tenant-id $tenantId 2>$null
+    --identity $appGwIdentityId 2>$null
+
+# Assign Network Contributor role to the identity on the Application Gateway resource group
+Write-Host "Assigning Network Contributor role to Application Gateway identity..." -ForegroundColor Yellow
+$appGwResourceGroupId = az group show --name $ResourceGroupName --query id -o tsv
+az role assignment create `
+    --assignee $appGwIdentity.principalId `
+    --role "Network Contributor" `
+    --scope $appGwResourceGroupId 2>$null
+
+# Assign Managed Identity Operator role for AGIC to impersonate other identities
+Write-Host "Assigning Managed Identity Operator role to AGIC..." -ForegroundColor Yellow
+$agicIdentity = az aks show --name $aksClusterName --resource-group $ResourceGroupName --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv
+if ($agicIdentity) {
+    az role assignment create `
+        --assignee $agicIdentity `
+        --role "Managed Identity Operator" `
+        --scope $appGwIdentityId 2>$null
+}
+
+# Create Entra (AAD) app registration for authentication
+$tenantId = az account show --query tenantId -o tsv
+$authAppName = "$ResourceGroupName-agic-auth"
+
+# Get the actual domain or use a placeholder that will be updated later
+$actualDomain = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv 2>$null
+if ($actualDomain) {
+    $redirectUri = "https://respondr.$actualDomain/oauth2/callback"
+    $appHost = "respondr.$actualDomain"
+} else {
+    # Use a placeholder that should be updated when DNS is configured
+    $redirectUri = "https://respondr.example.com/oauth2/callback"
+    $appHost = "respondr.example.com"
+    Write-Host "Warning: No DNS zone found. Using placeholder domain. Update redirect URI when DNS is configured." -ForegroundColor Yellow
+}
+
+Write-Host "Creating Entra app registration for AGIC authentication..." -ForegroundColor Yellow
+$existingAuthApp = az ad app list --display-name $authAppName -o json | ConvertFrom-Json
+if (-not $existingAuthApp -or $existingAuthApp.Count -eq 0) {
+    $authApp = az ad app create `
+        --display-name $authAppName `
+        --web-redirect-uris $redirectUri `
+        --sign-in-audience "AzureADMyOrg" `
+        -o json | ConvertFrom-Json
+} else {
+    $authApp = $existingAuthApp[0]
+    Write-Host "Using existing app registration: $($authApp.displayName)" -ForegroundColor Green
+    
+    # Update redirect URI if it has changed
+    az ad app update --id $authApp.appId --web-redirect-uris $redirectUri 2>$null
+}
+
+$authClientId = $authApp.appId
+
+# Create client secret
+Write-Host "Creating client secret for app registration..." -ForegroundColor Yellow
+$authSecret = az ad app credential reset --id $authClientId --append --query password -o tsv
+
+# Store secret in Key Vault (recommended practice)
+$keyVaultName = az keyvault list --resource-group $ResourceGroupName --query "[0].name" -o tsv
+if ($keyVaultName) {
+    Write-Host "Storing client secret in Key Vault..." -ForegroundColor Yellow
+    az keyvault secret set --vault-name $keyVaultName --name "agic-auth-secret" --value $authSecret | Out-Null
+    $secretId = az keyvault secret show --vault-name $keyVaultName --name "agic-auth-secret" --query id -o tsv
+} else {
+    Write-Host "No Key Vault found - using raw secret (not recommended for production)" -ForegroundColor Yellow
+    $secretId = $null
+}
+
+# Create auth-setting
+Write-Host "Creating authentication setting for Application Gateway..." -ForegroundColor Yellow
+if ($secretId) {
+    # Use Key Vault reference (recommended)
+    az network application-gateway auth-setting create `
+        --resource-group $ResourceGroupName `
+        --gateway-name $appGwName `
+        --name respondrAuth `
+        --auth-type aad `
+        --client-id $authClientId `
+        --client-secret-id $secretId `
+        --tenant-id $tenantId 2>$null
+} else {
+    # Fallback to raw secret
+    az network application-gateway auth-setting create `
+        --resource-group $ResourceGroupName `
+        --gateway-name $appGwName `
+        --name respondrAuth `
+        --auth-type aad `
+        --client-id $authClientId `
+        --client-secret $authSecret `
+        --tenant-id $tenantId 2>$null
+}
+
+Write-Host "Application Gateway Entra authentication configured successfully!" -ForegroundColor Green
+Write-Host "  App Registration: $authAppName ($authClientId)" -ForegroundColor Cyan
+Write-Host "  Redirect URI: $redirectUri" -ForegroundColor Cyan
+Write-Host "  Auth Setting: respondrAuth" -ForegroundColor Cyan
+Write-Host "  Host: $appHost" -ForegroundColor Cyan
+
+# Note: The auth-setting will be attached to the listener via the Ingress configuration
+Write-Host "Note: Authentication will be applied via Ingress annotations in the Kubernetes manifest" -ForegroundColor Yellow
 
 # 6) Import test image into ACR
 if ($acrName) {
