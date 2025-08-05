@@ -167,13 +167,21 @@ $appGwName = "$aksClusterName-appgw"
 
 # Enable AGIC addon with proper subnet configuration using existing VNet
 Write-Host "Enabling AGIC addon..." -ForegroundColor Yellow
-az aks enable-addons `
+$subnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName/subnets/$appGwSubnetName"
+Write-Host "Using subnet ID: $subnetId" -ForegroundColor Cyan
+
+$enableResult = az aks enable-addons `
     --resource-group $ResourceGroupName `
     --name $aksClusterName `
     --addons ingress-appgw `
-    --appgw-name $appGwName `
-    --appgw-subnet-id "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName/subnets/$appGwSubnetName" `
-    --enable-azure-rbac 2>$null
+    --appgw-subnet-id $subnetId 2>&1
+
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "AGIC enable failed. Output: $enableResult" -ForegroundColor Red
+    Write-Host "This may be expected if AGIC is already enabled." -ForegroundColor Yellow
+} else {
+    Write-Host "AGIC addon enabled successfully!" -ForegroundColor Green
+}
 
 # Wait for Application Gateway to be created by AGIC
 Write-Host "Waiting for Application Gateway to be ready..." -ForegroundColor Yellow
