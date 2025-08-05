@@ -28,6 +28,9 @@ $deploy = az deployment group show `
 $aksClusterName     = $deploy.properties.outputs.aksClusterName.value
 $acrName            = $deploy.properties.outputs.acrName.value
 $openAiAccountName  = $deploy.properties.outputs.openAiAccountName.value
+$podIdentityName    = $deploy.properties.outputs.podIdentityName.value
+$podIdentityClientId= $deploy.properties.outputs.podIdentityClientId.value
+$podIdentityId      = $deploy.properties.outputs.podIdentityResourceId.value
 
 if (-not $aksClusterName)    { throw "Missing aksClusterName output!" }
 if (-not $openAiAccountName) { throw "Missing openAiAccountName output!" }
@@ -41,6 +44,7 @@ Write-Host "  AKS Cluster:  $aksClusterName"
 Write-Host "  ACR:          $($acrName  -or '<none found>')"
 Write-Host "  OpenAIAcct:   $openAiAccountName"
 Write-Host "  StorageAcct:  $storageAccountName"
+Write-Host "  PodIdentity:  $podIdentityName"
 
 # 3) AKS credentials
 Write-Host "`nGetting AKS credentials..." -ForegroundColor Yellow
@@ -48,6 +52,33 @@ az aks get-credentials `
     --resource-group $ResourceGroupName `
     --name $aksClusterName `
     --overwrite-existing
+
+# 3.5) Ensure user-assigned managed identity and workload identity configuration
+Write-Host "`nEnsuring user-assigned managed identity and workload identity setup..." -ForegroundColor Yellow
+$identity = az identity show --name $podIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
+if (-not $identity) {
+    Write-Host "Creating user-assigned identity '$podIdentityName'..." -ForegroundColor Yellow
+    $identity = az identity create --name $podIdentityName --resource-group $ResourceGroupName -o json | ConvertFrom-Json
+    $podIdentityClientId = $identity.clientId
+    $podIdentityId       = $identity.id
+} else {
+    Write-Host "User-assigned identity '$podIdentityName' already exists." -ForegroundColor Green
+}
+
+Write-Host "Enabling OIDC and workload identity on AKS cluster..." -ForegroundColor Yellow
+az aks update --name $aksClusterName --resource-group $ResourceGroupName --enable-oidc-issuer --enable-workload-identity
+$issuer = az aks show --name $aksClusterName --resource-group $ResourceGroupName --query "oidcIssuerProfile.issuerUrl" -o tsv
+$ficName = "respondr-fic"
+az identity federated-credential create `
+    --name $ficName `
+    --identity-name $podIdentityName `
+    --resource-group $ResourceGroupName `
+    --issuer $issuer `
+    --subject "system:serviceaccount:default:respondr-sa" `
+    --audience "api://AzureADTokenExchange" 2>$null
+
+kubectl create serviceaccount respondr-sa --dry-run=client -o yaml | kubectl apply -f -
+kubectl annotate serviceaccount respondr-sa azure.workload.identity/client-id=$podIdentityClientId --overwrite
 
 # 4) Attach ACR (if one exists)
 if ($acrName) {
@@ -60,7 +91,36 @@ if ($acrName) {
     Write-Host "`nNo ACR name found—skipping attach step." -ForegroundColor Cyan
 }
 
-# 5) Import test image into ACR
+# 5) Enable AGIC with Microsoft Entra authentication
+Write-Host "`nEnabling Application Gateway Ingress Controller with Microsoft Entra auth..." -ForegroundColor Yellow
+$appGwName = "$aksClusterName-appgw"
+az aks enable-addons `
+    --resource-group $ResourceGroupName `
+    --name $aksClusterName `
+    --addons ingress-appgw `
+    --appgw-name $appGwName `
+    --enable-azure-rbac 2>$null
+
+$tenantId = az account show --query tenantId -o tsv
+az network application-gateway identity assign --resource-group $ResourceGroupName --gateway-name $appGwName 2>$null
+
+$authAppName = "$ResourceGroupName-agic-auth"
+$authApp = az ad app list --display-name $authAppName -o json | ConvertFrom-Json
+if (-not $authApp) {
+    $authApp = az ad app create --display-name $authAppName --web-redirect-uris "https://respondr.example.com" -o json | ConvertFrom-Json
+}
+$authClientId = $authApp.appId
+$authSecret = az ad app credential reset --id $authClientId --append --query password -o tsv
+az network application-gateway auth-setting create `
+    --resource-group $ResourceGroupName `
+    --gateway-name $appGwName `
+    --name respondrAuth `
+    --auth-type aad `
+    --client-id $authClientId `
+    --client-secret $authSecret `
+    --tenant-id $tenantId 2>$null
+
+# 6) Import test image into ACR
 if ($acrName) {
     Write-Host "`nImporting test image to ACR..." -ForegroundColor Yellow
     $importResult = az acr import `
@@ -219,10 +279,37 @@ if (Test-Path $testPodYaml) {
         Write-Host "   To test manually, install kubectl and run:" -ForegroundColor Cyan
         Write-Host "     kubectl apply -f $testPodYaml"
     }
-} else {    Write-Host "test-pod.yaml not found at $testPodYaml" -ForegroundColor Red
+} else {    Write-Host "test-pod.yaml not found at $testPodYaml" -ForegroundColor Red }
+
+# 7) Validate AGIC ingress and Azure DNS
+Write-Host "`nValidating Application Gateway ingress and DNS..." -ForegroundColor Yellow
+$ingressIp = kubectl get ingress respondr-ingress -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+if ($ingressIp) {
+    Write-Host "Ingress IP: $ingressIp" -ForegroundColor Green
+    try {
+        $resp = Invoke-WebRequest -Uri "http://$ingressIp" -UseBasicParsing -TimeoutSec 5
+        Write-Host "Application responded with status $($resp.StatusCode)" -ForegroundColor Green
+    } catch {
+        Write-Host "Ingress test failed: $_" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Ingress IP not available" -ForegroundColor Yellow
 }
 
-# 7) Check OpenAI account provisioning state
+$dnsZone = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv
+if ($dnsZone) {
+    $fqdn = "respondr.$dnsZone"
+    $dnsIp = az network dns record-set a show --resource-group $ResourceGroupName --zone-name $dnsZone --name respondr --query "arecords[0].ipv4Address" -o tsv 2>$null
+    if ($dnsIp) { Write-Host "DNS A record for $fqdn -> $dnsIp" -ForegroundColor Green }
+    try {
+        Invoke-WebRequest -Uri "https://$fqdn" -UseBasicParsing -TimeoutSec 5 | Out-Null
+        Write-Host "DNS endpoint reachable" -ForegroundColor Green
+    } catch {
+        Write-Host "DNS endpoint unreachable: $_" -ForegroundColor Yellow
+    }
+}
+
+# 8) Check OpenAI account provisioning state
 Write-Host "`nChecking OpenAI account status..." -ForegroundColor Yellow
 $openAiState = az cognitiveservices account show `
     --name $openAiAccountName `
@@ -230,7 +317,7 @@ $openAiState = az cognitiveservices account show `
     --query "properties.provisioningState" -o tsv
 Write-Host "OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
 
-# 7.5) Deploy gpt-4.1-nano model if OpenAI account is ready
+# 8.5) Deploy gpt-4.1-nano model if OpenAI account is ready
 if ($openAiState -eq "Succeeded") {
     Write-Host "`nDeploying gpt-4.1-nano model..." -ForegroundColor Yellow
     
@@ -274,7 +361,7 @@ if ($openAiState -eq "Succeeded") {
     Write-Host "`nSkipping model deployment - OpenAI account not ready (state: $openAiState)" -ForegroundColor Yellow
 }
 
-# 8) Check Storage account provisioning state
+# 9) Check Storage account provisioning state
 if ($storageAccountName) {
     Write-Host "`nChecking Storage account status..." -ForegroundColor Yellow
     $storageState = az storage account show `

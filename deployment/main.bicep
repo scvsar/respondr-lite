@@ -22,6 +22,9 @@ param storageAccountName string = 'resp${uniqueString(resourceGroup().id)}store'
 @description('The SKU for the Azure Storage Account.')
 param storageAccountSku string = 'Standard_LRS'
 
+@description('Name of the user-assigned managed identity used by pods via workload identity')
+param podIdentityName string = '${resourcePrefix}-pod-identity'
+
 resource aksCluster 'Microsoft.ContainerService/managedClusters@2023-08-01' = {
   name: aksClusterName
   location: location
@@ -119,9 +122,18 @@ resource container 'Microsoft.Storage/storageAccounts/blobServices/containers@20
   }
 }
 
+// User-assigned managed identity for Kubernetes workload identity
+resource podIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: podIdentityName
+  location: location
+}
+
 // Outputs for resource names and endpoints
 output aksClusterName string = aksCluster.name
 output acrName string = acr.name
 output openAiAccountName string = openAiAccount.name
 output storageAccountName string = storageAccount.name
 output storageAccountBlobEndpoint string = storageAccount.properties.primaryEndpoints.blob
+output podIdentityName string = podIdentity.name
+output podIdentityClientId string = podIdentity.properties.clientId
+output podIdentityResourceId string = podIdentity.id
