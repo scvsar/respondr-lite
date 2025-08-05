@@ -60,6 +60,10 @@ You have two main deployment approaches:
 Use the `deploy-complete.ps1` script for a fully automated end-to-end deployment:
 
 ```powershell
+# First, create the resource group
+az group create --name respondr --location westus
+
+# Then run the complete deployment
 cd deployment
 .\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
 ```
@@ -602,9 +606,38 @@ kubectl apply -f respondr-k8s-deployment.yaml
 ### AGIC and Application Gateway Troubleshooting
 
 **Issue**: AGIC pod showing CrashLoopBackOff or failing to start
-**Cause**: Application Gateway doesn't exist yet (AGIC creates it automatically)
-**Solution**: Wait 5-10 minutes for AGIC to create the Application Gateway, or check deployment status:
+**Cause**: Application Gateway doesn't exist yet (AGIC creates it automatically), or permission issues
+**Solution**: 
 
+**Step 1: Check if AGIC addon is enabled:**
+```powershell
+az aks addon list --resource-group respondr --name respondr-aks-cluster-v2 --query "[?name=='ingress-appgw'].enabled" -o tsv
+```
+
+**Step 2: If AGIC addon is not enabled, enable it manually:**
+```powershell
+# Get the existing subnet ID (if Bicep template created subnets)
+$subnetId = az network vnet subnet show --resource-group respondr --vnet-name respondr-vnet --name appgw-subnet --query "id" -o tsv
+
+# Enable AGIC addon with existing subnet
+az aks enable-addons --resource-group respondr --name respondr-aks-cluster-v2 --addons ingress-appgw --appgw-subnet-id $subnetId
+```
+
+**Step 3: Fix permission issues if deployment fails:**
+```powershell
+# Get AGIC managed identity object ID from addon configuration
+$agicIdentityObjectId = az aks show --resource-group respondr --name respondr-aks-cluster-v2 --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv
+
+# Grant Network Contributor permissions on VNet
+$vnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/respondr/providers/Microsoft.Network/virtualNetworks/respondr-vnet"
+az role assignment create --assignee $agicIdentityObjectId --role "Network Contributor" --scope $vnetId
+
+# Grant permissions on subnet specifically
+$subnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/respondr/providers/Microsoft.Network/virtualNetworks/respondr-vnet/subnets/appgw-subnet"
+az role assignment create --assignee $agicIdentityObjectId --role "Network Contributor" --scope $subnetId
+```
+
+**Step 4: Monitor AGIC and Application Gateway creation:**
 ```powershell
 # Check AGIC deployment progress
 $aksCluster = "respondr-aks-cluster-v2"
@@ -615,7 +648,7 @@ az deployment group list --resource-group $mcResourceGroup --output table
 kubectl get pods -n kube-system -l app=ingress-appgw
 kubectl logs -n kube-system deployment/ingress-appgw-deployment --tail=20
 
-# Restart AGIC if needed (after Application Gateway is ready)
+# Restart AGIC if needed (after granting permissions)
 kubectl rollout restart deployment/ingress-appgw-deployment -n kube-system
 ```
 
