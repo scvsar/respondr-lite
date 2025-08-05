@@ -29,6 +29,9 @@ param(
     [switch]$SkipImageBuild = $false,
     
     [Parameter(Mandatory=$false)]
+    [switch]$UseOAuth2 = $false,
+    
+    [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
 )
 
@@ -243,33 +246,51 @@ if (-not $SkipImageBuild) {
 }
 
 # Update the image and identity details in the deployment template
-$deploymentFile = "respondr-k8s-template.yaml"
-$tempFile = "respondr-k8s-temp.yaml"
+# Select deployment template based on OAuth2 setting
+if ($UseOAuth2) {
+    $deploymentFile = "respondr-k8s-oauth2.yaml"
+    if (-not (Test-Path $deploymentFile)) {
+        Write-Error "OAuth2 deployment file '$deploymentFile' not found. Please run setup-oauth2.ps1 first."
+        exit 1
+    }
+    Write-Host "Using OAuth2-enabled deployment template" -ForegroundColor Green
+    $tempFile = $deploymentFile  # Use the OAuth2 file directly
+} else {
+    $deploymentFile = "respondr-k8s-template.yaml"
+    $tempFile = "respondr-k8s-temp.yaml"
+    Write-Host "Using standard deployment template (no OAuth2)" -ForegroundColor Yellow
+}
 
 Write-Host "Preparing deployment configuration..." -ForegroundColor Yellow
 
-# Get deployment outputs for identity configuration
-Write-Host "Getting identity configuration from Azure deployment..." -ForegroundColor Yellow
-$deploy = az deployment group show --resource-group $ResourceGroupName --name main -o json | ConvertFrom-Json
-$podIdentityClientId = $deploy.properties.outputs.podIdentityClientId.value
-$tenantId = az account show --query tenantId -o tsv
+if (-not $UseOAuth2) {
+    # Get deployment outputs for identity configuration (only for non-OAuth2 deployments)
+    Write-Host "Getting identity configuration from Azure deployment..." -ForegroundColor Yellow
+    $deploy = az deployment group show --resource-group $ResourceGroupName --name main -o json | ConvertFrom-Json
+    $podIdentityClientId = $deploy.properties.outputs.podIdentityClientId.value
+    $tenantId = az account show --query tenantId -o tsv
 
-# Get DNS zone for hostname configuration
-$hostname = "respondr.paincave.pro"  # Use actual domain
-Write-Host "Using hostname: $hostname" -ForegroundColor Green
+    # Get DNS zone for hostname configuration
+    $hostname = "respondr.paincave.pro"  # Use actual domain
+    Write-Host "Using hostname: $hostname" -ForegroundColor Green
 
-# Replace placeholders in the template
-(Get-Content $deploymentFile) `
-    -replace '{{ACR_IMAGE_PLACEHOLDER}}', $fullImageName `
-    -replace 'CLIENT_ID_PLACEHOLDER', $podIdentityClientId `
-    -replace 'TENANT_ID_PLACEHOLDER', $tenantId `
-    -replace 'HOSTNAME_PLACEHOLDER', $hostname | Set-Content $tempFile
+    # Replace placeholders in the template
+    (Get-Content $deploymentFile) `
+        -replace '{{ACR_IMAGE_PLACEHOLDER}}', $fullImageName `
+        -replace 'CLIENT_ID_PLACEHOLDER', $podIdentityClientId `
+        -replace 'TENANT_ID_PLACEHOLDER', $tenantId `
+        -replace 'HOSTNAME_PLACEHOLDER', $hostname | Set-Content $tempFile
 
-Write-Host "Configuration prepared:" -ForegroundColor Green
-Write-Host "  Image: $fullImageName" -ForegroundColor Cyan
-Write-Host "  Client ID: $podIdentityClientId" -ForegroundColor Cyan
-Write-Host "  Tenant ID: $tenantId" -ForegroundColor Cyan
-Write-Host "  Hostname: $hostname" -ForegroundColor Cyan
+    Write-Host "Configuration prepared:" -ForegroundColor Green
+    Write-Host "  Image: $fullImageName" -ForegroundColor Cyan
+    Write-Host "  Client ID: $podIdentityClientId" -ForegroundColor Cyan
+    Write-Host "  Tenant ID: $tenantId" -ForegroundColor Cyan
+    Write-Host "  Hostname: $hostname" -ForegroundColor Cyan
+} else {
+    Write-Host "Using pre-configured OAuth2 deployment file" -ForegroundColor Green
+    Write-Host "  Image: Already configured in OAuth2 template" -ForegroundColor Cyan
+    Write-Host "  Authentication: OAuth2 Proxy with Azure AD" -ForegroundColor Cyan
+}
 
 # Deploy secrets first
 Write-Host "Deploying secrets..." -ForegroundColor Yellow
@@ -352,9 +373,15 @@ if (-not $DryRun) {
         }
         Write-Host ""
         Write-Host "Authentication:" -ForegroundColor Green
-        Write-Host "- Entra (Azure AD) authentication is configured via Application Gateway" -ForegroundColor Cyan
-        Write-Host "- Workload Identity is configured for Azure resource access" -ForegroundColor Cyan
-        Write-Host "- All traffic will be authenticated via Microsoft Entra" -ForegroundColor Cyan        
+        if ($UseOAuth2) {
+            Write-Host "- OAuth2 Proxy with Azure AD authentication is configured" -ForegroundColor Cyan
+            Write-Host "- Users will be challenged to sign in with Entra/Azure AD" -ForegroundColor Cyan
+            Write-Host "- Authentication handled by oauth2-proxy sidecar container" -ForegroundColor Cyan
+        } else {
+            Write-Host "- Entra (Azure AD) authentication is configured via Application Gateway" -ForegroundColor Cyan
+            Write-Host "- Workload Identity is configured for Azure resource access" -ForegroundColor Cyan
+            Write-Host "- All traffic will be authenticated via Microsoft Entra" -ForegroundColor Cyan
+        }
     } else {
         Write-Error "Deployment failed!"
         exit 1
@@ -364,8 +391,10 @@ if (-not $DryRun) {
     Get-Content $tempFile
 }
 
-# Clean up temp file
-Remove-Item $tempFile -ErrorAction SilentlyContinue
+# Clean up temp file (only for non-OAuth2 deployments)
+if (-not $UseOAuth2) {
+    Remove-Item $tempFile -ErrorAction SilentlyContinue
+}
 
 Write-Host ""
 Write-Host "Deployment script completed!" -ForegroundColor Green
@@ -395,7 +424,13 @@ Write-Host "kubectl describe certificate respondr-tls-letsencrypt -n $Namespace"
 Write-Host "kubectl get certificaterequests -n $Namespace" -ForegroundColor White
 Write-Host ""
 Write-Host "Security Features Enabled:" -ForegroundColor Green
-Write-Host "✅ Microsoft Entra (Azure AD) authentication via Application Gateway" -ForegroundColor Green
-Write-Host "✅ Azure Workload Identity for secure access to Azure resources" -ForegroundColor Green
+if ($UseOAuth2) {
+    Write-Host "✅ OAuth2 Proxy with Microsoft Entra (Azure AD) authentication" -ForegroundColor Green
+    Write-Host "✅ Automatic Azure AD sign-in challenge for all users" -ForegroundColor Green
+    Write-Host "✅ Sidecar authentication pattern with transparent integration" -ForegroundColor Green
+} else {
+    Write-Host "✅ Microsoft Entra (Azure AD) authentication via Application Gateway" -ForegroundColor Green
+    Write-Host "✅ Azure Workload Identity for secure access to Azure resources" -ForegroundColor Green
+}
 Write-Host "✅ Let's Encrypt SSL/TLS certificates with automatic renewal" -ForegroundColor Green
 Write-Host "✅ Dedicated namespace isolation" -ForegroundColor Green

@@ -308,87 +308,18 @@ if ($agicIdentity) {
         --scope $appGwIdentityId 2>$null
 }
 
-# Create Entra (AAD) app registration for authentication
-$tenantId = az account show --query tenantId -o tsv
-$authAppName = "$ResourceGroupName-agic-auth"
+# Note: Azure Application Gateway v2 (Standard_v2) does not support native Azure AD authentication
+# Authentication should be implemented at the application level instead
+Write-Host "Note: Azure Application Gateway v2 (Standard_v2) does not support native Azure AD authentication" -ForegroundColor Yellow
+Write-Host "For authentication, consider implementing application-level auth or upgrading to Azure Front Door Premium" -ForegroundColor Yellow
 
-# Get the actual domain or use a placeholder that will be updated later
-$actualDomain = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv 2>$null
-if ($actualDomain) {
-    $redirectUri = "https://respondr.$actualDomain/oauth2/callback"
-    $appHost = "respondr.$actualDomain"
-} else {
-    # Use a placeholder that should be updated when DNS is configured
-    $redirectUri = "https://respondr.paincave.pro/oauth2/callback"
-    $appHost = "respondr.paincave.pro"
-    Write-Host "Warning: No DNS zone found. Using placeholder domain. Update redirect URI when DNS is configured." -ForegroundColor Yellow
-}
+# Authentication can be added at the application level using libraries like:
+# - MSAL (Microsoft Authentication Library)
+# - FastAPI OAuth2/OpenID Connect
+# - Azure Easy Auth (if moving to App Service)
 
-Write-Host "Creating Entra app registration for AGIC authentication..." -ForegroundColor Yellow
-$existingAuthApp = az ad app list --display-name $authAppName -o json | ConvertFrom-Json
-if (-not $existingAuthApp -or $existingAuthApp.Count -eq 0) {
-    $authApp = az ad app create `
-        --display-name $authAppName `
-        --web-redirect-uris $redirectUri `
-        --sign-in-audience "AzureADMyOrg" `
-        -o json | ConvertFrom-Json
-} else {
-    $authApp = $existingAuthApp[0]
-    Write-Host "Using existing app registration: $($authApp.displayName)" -ForegroundColor Green
-    
-    # Update redirect URI if it has changed
-    az ad app update --id $authApp.appId --web-redirect-uris $redirectUri 2>$null
-}
-
-$authClientId = $authApp.appId
-
-# Create client secret
-Write-Host "Creating client secret for app registration..." -ForegroundColor Yellow
-$authSecret = az ad app credential reset --id $authClientId --append --query password -o tsv
-
-# Store secret in Key Vault (recommended practice)
-$keyVaultName = az keyvault list --resource-group $ResourceGroupName --query "[0].name" -o tsv
-if ($keyVaultName) {
-    Write-Host "Storing client secret in Key Vault..." -ForegroundColor Yellow
-    az keyvault secret set --vault-name $keyVaultName --name "agic-auth-secret" --value $authSecret | Out-Null
-    $secretId = az keyvault secret show --vault-name $keyVaultName --name "agic-auth-secret" --query id -o tsv
-} else {
-    Write-Host "No Key Vault found - using raw secret (not recommended for production)" -ForegroundColor Yellow
-    $secretId = $null
-}
-
-# Create auth-setting for Application Gateway (located in MC resource group)
-Write-Host "Creating authentication setting for Application Gateway..." -ForegroundColor Yellow
-if ($secretId) {
-    # Use Key Vault reference (recommended)
-    az network application-gateway auth-setting create `
-        --resource-group $mcResourceGroup `
-        --gateway-name $appGwName `
-        --name respondrAuth `
-        --auth-type aad `
-        --client-id $authClientId `
-        --client-secret-id $secretId `
-        --tenant-id $tenantId 2>$null
-} else {
-    # Fallback to raw secret
-    az network application-gateway auth-setting create `
-        --resource-group $mcResourceGroup `
-        --gateway-name $appGwName `
-        --name respondrAuth `
-        --auth-type aad `
-        --client-id $authClientId `
-        --client-secret $authSecret `
-        --tenant-id $tenantId 2>$null
-}
-
-Write-Host "Application Gateway Entra authentication configured successfully!" -ForegroundColor Green
-Write-Host "  App Registration: $authAppName ($authClientId)" -ForegroundColor Cyan
-Write-Host "  Redirect URI: $redirectUri" -ForegroundColor Cyan
-Write-Host "  Auth Setting: respondrAuth" -ForegroundColor Cyan
-Write-Host "  Host: $appHost" -ForegroundColor Cyan
-
-# Note: The auth-setting will be attached to the listener via the Ingress configuration
-Write-Host "Note: Authentication will be applied via Ingress annotations in the Kubernetes manifest" -ForegroundColor Yellow
+# For now, the application will be accessible without gateway-level authentication
+# Implement authentication in the FastAPI backend as needed for your security requirements
 
 # 6) Import test image into ACR
 if ($acrName) {

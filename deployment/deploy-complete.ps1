@@ -8,9 +8,10 @@
     This script performs the complete deployment workflow:
     1. Infrastructure deployment (Bicep)
     2. Post-deployment configuration (AGIC, identities, auth setup)
-    3. HTTPS certificate configuration
-    4. Application deployment to Kubernetes
-    5. DNS verification and testing
+    3. OAuth2 authentication setup (Azure AD app registration and configuration)
+    4. HTTPS certificate configuration
+    5. Application deployment to Kubernetes with OAuth2 proxy
+    6. DNS verification and testing
 
 .PARAMETER ResourceGroupName
     The Azure resource group name to deploy to.
@@ -27,8 +28,14 @@
 .PARAMETER SkipImageBuild
     Skip the Docker image build step.
 
+.PARAMETER UseOAuth2
+    Use OAuth2 proxy for authentication (default: true). If false, uses Application Gateway authentication.
+
 .EXAMPLE
     .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro"
+    
+.EXAMPLE
+    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro" -UseOAuth2:$false
 #>
 
 param(
@@ -46,6 +53,9 @@ param(
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipImageBuild,
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$UseOAuth2 = $true,  # Default to OAuth2 authentication
     
     [Parameter(Mandatory=$false)]
     [switch]$DryRun
@@ -134,14 +144,35 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would configure Application Gateway for HTTPS with Let's Encrypt" -ForegroundColor Cyan
 }
 
-# Step 4: Application Deployment
-Write-Host "`n🎯 Step 4: Deploying Application..." -ForegroundColor Yellow
-Write-Host "=====================================" -ForegroundColor Yellow
+# Step 4: OAuth2 Authentication Setup
+if ($UseOAuth2) {
+    Write-Host "`n🔐 Step 4: Setting up OAuth2 Authentication..." -ForegroundColor Yellow
+    Write-Host "===============================================" -ForegroundColor Yellow
+
+    if (-not $DryRun) {
+        .\setup-oauth2.ps1 -ResourceGroupName $ResourceGroupName -Domain $Domain
+        Test-LastCommand "OAuth2 authentication setup failed"
+        Write-Host "✅ OAuth2 authentication configured successfully" -ForegroundColor Green
+    } else {
+        Write-Host "DRY RUN: Would setup OAuth2 authentication" -ForegroundColor Cyan
+    }
+} else {
+    Write-Host "`n⏭️  Step 4: Skipping OAuth2 Authentication (using Application Gateway auth)" -ForegroundColor Yellow
+    Write-Host "============================================================================" -ForegroundColor Yellow
+}
+
+# Step 5: Application Deployment
+Write-Host "`n🎯 Step 5: Deploying Application with Authentication..." -ForegroundColor Yellow
+Write-Host "======================================================" -ForegroundColor Yellow
 
 $deployArgs = @(
     "-ResourceGroupName", $ResourceGroupName
     "-Namespace", "respondr"
 )
+
+if ($UseOAuth2) {
+    $deployArgs += "-UseOAuth2"
+}
 
 if ($SkipImageBuild) {
     $deployArgs += "-SkipImageBuild"
@@ -154,13 +185,13 @@ if ($DryRun) {
 if (-not $DryRun) {
     & .\deploy-to-k8s.ps1 @deployArgs
     Test-LastCommand "Application deployment failed"
-    Write-Host "✅ Application deployed successfully" -ForegroundColor Green
+    Write-Host "✅ Application with OAuth2 authentication deployed successfully" -ForegroundColor Green
 } else {
-    Write-Host "DRY RUN: Would deploy application" -ForegroundColor Cyan
+    Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
 
-# Step 5: DNS and Connectivity Verification
-Write-Host "`n🌐 Step 5: DNS and Connectivity Verification..." -ForegroundColor Yellow
+# Step 6: DNS and Connectivity Verification
+Write-Host "`n🌐 Step 6: DNS and Connectivity Verification..." -ForegroundColor Yellow
 Write-Host "=================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {
@@ -228,7 +259,8 @@ if (-not $DryRun) {
     Write-Host "✅ Infrastructure: Deployed" -ForegroundColor Green
     Write-Host "✅ AGIC & Authentication: Configured" -ForegroundColor Green
     Write-Host "✅ Let's Encrypt Setup: Configured via cert-manager" -ForegroundColor Green
-    Write-Host "✅ Application: Deployed to Kubernetes" -ForegroundColor Green
+    Write-Host "✅ OAuth2 Authentication: Configured with Azure AD" -ForegroundColor Green
+    Write-Host "✅ Application: Deployed to Kubernetes with OAuth2 proxy" -ForegroundColor Green
     Write-Host ""
     Write-Host "🌐 Access Information:" -ForegroundColor Cyan
     Write-Host "  HTTP:  http://$hostname (redirects to HTTPS)" -ForegroundColor White
@@ -236,9 +268,10 @@ if (-not $DryRun) {
     Write-Host "  API:   https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
     Write-Host "🔐 Authentication:" -ForegroundColor Cyan
-    Write-Host "  - Entra (Azure AD) authentication should redirect to Microsoft login" -ForegroundColor White
-    Write-Host "  - If authentication doesn't work, configure via Azure Portal:" -ForegroundColor White
-    Write-Host "    Application Gateway → Listeners → Add authentication" -ForegroundColor White
+    Write-Host "  - OAuth2 Proxy with Azure AD authentication is ENABLED" -ForegroundColor White
+    Write-Host "  - Users WILL be challenged to sign in with Entra/Azure AD" -ForegroundColor White
+    Write-Host "  - Authentication is handled by oauth2-proxy sidecar container" -ForegroundColor White
+    Write-Host "  - No application code changes required" -ForegroundColor White
     Write-Host ""
     Write-Host "🔒 SSL Certificates:" -ForegroundColor Cyan
     Write-Host "  - Let's Encrypt certificates will be automatically provisioned" -ForegroundColor White
@@ -249,7 +282,8 @@ if (-not $DryRun) {
     Write-Host "  1. Ensure DNS A record: respondr.$Domain → $ingressIp" -ForegroundColor White
     Write-Host "  2. Wait for Let's Encrypt certificate to be issued (2-10 minutes)" -ForegroundColor White
     Write-Host "  3. Test in browser: https://$hostname" -ForegroundColor White
-    Write-Host "  4. Verify Entra authentication redirects to Microsoft login" -ForegroundColor White
+    Write-Host "  4. Verify OAuth2 authentication redirects to Microsoft sign-in" -ForegroundColor White
+    Write-Host "  5. Test API access after authentication: https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
     Write-Host "🔍 Certificate Status Commands:" -ForegroundColor Cyan
     Write-Host "  kubectl get certificate -n respondr" -ForegroundColor White

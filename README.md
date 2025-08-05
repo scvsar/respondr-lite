@@ -34,6 +34,20 @@ The application consists of:
 
 **Why This Matters**: Let's Encrypt requires your domain to resolve to the Application Gateway IP for domain validation. Without proper DNS configuration, certificate issuance will fail repeatedly.
 
+### Authentication Architecture Note
+**Important**: Azure Application Gateway v2 (Standard_v2 SKU) does not support native Azure AD/Entra authentication. The current deployment now includes **OAuth2 Proxy sidecar authentication** that provides seamless Azure AD/Entra integration. For production environments, the authentication options are:
+
+1. **OAuth2 Proxy Sidecar** (CURRENT IMPLEMENTATION): Uses oauth2-proxy as a sidecar container to handle Azure AD authentication
+   - ✅ **Working**: Users are challenged to sign in with Entra when visiting https://respondr.paincave.pro
+   - ✅ **Transparent**: No changes needed to your existing FastAPI application
+   - ✅ **Secure**: Handles token refresh, secure cookies, and user headers automatically
+   - ✅ **Production-ready**: Widely used Kubernetes authentication pattern
+
+2. **Application-Level Auth**: Implement Azure AD authentication directly in the FastAPI backend
+3. **Azure Front Door Premium**: Add Front Door Premium with native Azure AD authentication in front of Application Gateway
+
+The current implementation provides complete Azure AD authentication with zero application code changes.
+
 ### AGIC (Application Gateway Ingress Controller) Timing
 - AGIC creates the Application Gateway automatically (5-10 minutes)
 - AGIC pod will show `CrashLoopBackOff` during this time - **this is normal**
@@ -57,23 +71,29 @@ The application consists of:
 You have two main deployment approaches:
 
 #### Option 1: Complete Automated Deployment (Recommended for first-time setup)
-Use the `deploy-complete.ps1` script for a fully automated end-to-end deployment:
+Use the `deploy-complete.ps1` script for a fully automated end-to-end deployment with OAuth2 authentication:
 
 ```powershell
 # First, create the resource group
 az group create --name respondr --location westus
 
-# Then run the complete deployment
+# Then run the complete deployment with OAuth2 authentication (default)
 cd deployment
 .\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+
+# Or skip OAuth2 and use Application Gateway authentication instead
+.\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro" -UseOAuth2:$false
 ```
 
 This single command:
 - Deploys all Azure infrastructure via Bicep
-- Configures AKS, AGIC, cert-manager, and authentication
-- Builds and deploys the application
+- Configures AKS, AGIC, cert-manager
+- **Sets up OAuth2 Proxy with Azure AD authentication (NEW)**
+- Builds and deploys the application with OAuth2 sidecar
 - Sets up Let's Encrypt SSL certificates
 - Tests connectivity and provides comprehensive status
+
+**What's New**: The deployment now includes automatic OAuth2 proxy setup that provides seamless Azure AD authentication without any application code changes.
 
 #### Option 2: Step-by-Step Deployment (Recommended for customization or troubleshooting)
 Use individual scripts for more control over each step:
@@ -85,9 +105,17 @@ az deployment group create --resource-group respondr --template-file main.bicep
 # Step 2: Configure post-deployment settings
 .\post-deploy.ps1 -ResourceGroupName respondr
 
-# Step 3: Deploy application
-.\deploy-to-k8s.ps1 -ResourceGroupName respondr
+# Step 3: Setup OAuth2 authentication (optional, but recommended)
+.\setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+
+# Step 4: Deploy application with OAuth2 authentication
+.\deploy-to-k8s.ps1 -ResourceGroupName respondr -UseOAuth2
+
+# Step 5: Verify OAuth2 authentication is working
+.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
 ```
+
+**Step 3 is NEW**: The `setup-oauth2.ps1` script creates an Azure AD app registration and configures OAuth2 proxy for seamless Entra authentication.
 
 ### Prerequisites
 
@@ -167,7 +195,7 @@ This script:
 - **Enables Application Gateway Ingress Controller (AGIC)**
 - **Waits for Application Gateway to be created by AGIC (takes 5-10 minutes)**
 - **Monitors AGIC pod health and readiness**
-- Configures Microsoft Entra (Azure AD) authentication
+- **Note**: Gateway-level Azure AD authentication is not available with Application Gateway Standard_v2
 - Imports a test image and validates the setup
 - Deploys and verifies gpt-4.1-nano model in Azure OpenAI
 
@@ -371,10 +399,17 @@ The Let's Encrypt certificate issuance process:
 
 ### Step 8: Test the Deployment
 
-Test that everything is working:
+Test that everything is working with the comprehensive test suite:
 
 ```powershell
-# Test the API endpoint (after certificate is ready)
+# Run complete end-to-end testing (including OAuth2 authentication)
+cd deployment
+.\test-end-to-end.ps1 -Domain "paincave.pro"
+
+# Or run OAuth2-specific verification
+.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
+
+# Manual API testing (after authentication)
 curl https://respondr.paincave.pro/api/responders
 
 # Send a test webhook
@@ -391,6 +426,13 @@ curl https://respondr.paincave.pro/api/responders
 ```
 
 Visit https://respondr.paincave.pro in your browser to see the dashboard. You'll be prompted to authenticate with Microsoft Entra (Azure AD).
+
+**Expected OAuth2 Authentication Flow:**
+1. Navigate to https://respondr.paincave.pro
+2. Automatically redirect to Microsoft login page
+3. Sign in with your Azure AD/Entra credentials
+4. Redirect back to the application dashboard
+5. Access all features without further authentication prompts
 
 **If you get SSL certificate errors:**
 1. Check certificate status: `kubectl get certificate respondr-tls-letsencrypt -n respondr`
@@ -462,7 +504,7 @@ kubectl rollout status deployment/respondr-deployment
 
 Once deployed, the application provides:
 
-- **Frontend Dashboard**: https://respondr.paincave.pro (via Application Gateway with Entra auth)
+- **Frontend Dashboard**: https://respondr.paincave.pro (via Application Gateway with SSL/TLS)
 - **API Endpoint**: https://respondr.paincave.pro/api/responders
 - **Webhook Endpoint**: https://respondr.paincave.pro/webhook
 - **Health Check**: https://respondr.paincave.pro/health
@@ -549,9 +591,19 @@ kubectl rollout status deployment/respondr-deployment
 kubectl get pods -l app=respondr
 kubectl logs -l app=respondr --tail=100 -f
 
+# Check OAuth2 proxy logs specifically
+kubectl logs -l app=respondr -c oauth2-proxy --tail=50
+
 # Check service and ingress
 kubectl get svc,ingress
 kubectl describe ingress respondr-ingress
+
+# Run deployment verification
+cd deployment
+.\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
+
+# Run comprehensive end-to-end testing
+.\test-end-to-end.ps1 -Domain "paincave.pro"
 
 # Port forward for direct access (bypass ingress)
 kubectl port-forward service/respondr-service 8080:80
@@ -567,6 +619,45 @@ kubectl port-forward service/respondr-service 8080:80
 6. **Azure CLI Extension Conflicts**: Remove conflicting extensions with `az extension remove --name aks-preview`
 7. **CNI Overlay Issues**: The template uses standard Azure CNI to avoid preview feature requirements
 8. **Let's Encrypt Certificate Issues**: Check DNS configuration and certificate status
+9. **OAuth2 Authentication Issues**: Check Azure AD app registration and OAuth2 proxy configuration
+10. **OAuth2 Redirect Loops**: Verify cookie secret length (must be 32 characters) and client secret validity
+
+### OAuth2 Authentication Troubleshooting
+
+**Issue**: OAuth2 authentication not working or infinite redirect loops
+**Cause**: Misconfigured Azure AD app registration or OAuth2 proxy secrets
+**Solution**:
+
+```powershell
+# Step 1: Verify OAuth2 secrets
+kubectl get secret oauth2-secrets -n respondr -o yaml
+
+# Step 2: Check OAuth2 proxy logs
+kubectl logs -n respondr -l app=respondr -c oauth2-proxy
+
+# Step 3: Verify Azure AD app registration
+az ad app list --display-name "respondr-oauth2" --query "[].{appId:appId,displayName:displayName}"
+
+# Step 4: Recreate OAuth2 secrets if needed
+.\setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+
+# Step 5: Restart deployment
+kubectl rollout restart deployment/respondr-deployment -n respondr
+```
+
+**Issue**: "OIDC discovery failed" or similar OAuth2 proxy errors
+**Cause**: Network connectivity or Azure AD configuration issues
+**Solution**:
+1. Check Azure AD app registration redirect URI: `https://respondr.paincave.pro/oauth2/callback`
+2. Verify tenant ID is correct in OAuth2 secrets
+3. Ensure Azure AD app has proper permissions
+
+**Issue**: Cookie-related errors or "invalid state" errors
+**Cause**: Cookie secret issues or domain mismatch
+**Solution**:
+1. Verify cookie secret is exactly 32 characters: `kubectl get secret oauth2-secrets -o yaml`
+2. Check that domain in OAuth2 configuration matches actual domain
+3. Regenerate cookie secret: `openssl rand -base64 32 | tr -d "=+/" | cut -c1-32`
 
 ### Let's Encrypt Certificate Troubleshooting
 
@@ -703,6 +794,8 @@ You can customize the prefix by modifying the `resourcePrefix` parameter in the 
 - Implement proper testing and staging environments
 - Use infrastructure as code for all resources
 - Automated container image scanning for security vulnerabilities
+- **NEW**: Include OAuth2 verification in deployment pipelines using `verify-oauth2-deployment.ps1`
+- **NEW**: Add end-to-end testing with `test-end-to-end.ps1` in CI/CD validation
 
 ### 5. Cost Optimization
 - Use Azure Spot instances for non-critical workloads
