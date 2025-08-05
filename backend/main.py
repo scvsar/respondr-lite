@@ -3,8 +3,10 @@ import sys
 import json
 import logging
 import re
+import fcntl
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +19,12 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Data storage file path
+DATA_FILE = "/tmp/respondr_messages.json" if os.path.exists("/tmp") else "./respondr_messages.json"
 
 # Load environment variables from .env file
 load_dotenv()
@@ -87,6 +95,48 @@ app = FastAPI(
 )
 
 messages = []
+
+def load_messages():
+    """Load messages from shared file"""
+    global messages
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, 'r') as f:
+                messages = json.load(f)
+            logger.info(f"Loaded {len(messages)} messages from shared storage")
+        else:
+            messages = []
+            logger.info("No existing message file found, starting with empty list")
+    except Exception as e:
+        logger.error(f"Error loading messages: {e}")
+        messages = []
+
+def save_messages():
+    """Save messages to shared file with file locking"""
+    global messages
+    try:
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+        
+        # Write with exclusive lock to prevent race conditions
+        with open(DATA_FILE, 'w') as f:
+            # Try to acquire exclusive lock (Unix-like systems)
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            except (ImportError, OSError):
+                # Windows or systems without fcntl - proceed without locking
+                pass
+            json.dump(messages, f, indent=2)
+        logger.debug(f"Saved {len(messages)} messages to shared storage")
+    except Exception as e:
+        logger.error(f"Error saving messages: {e}")
+
+def reload_messages():
+    """Reload messages from shared file to get latest data"""
+    load_messages()
+
+# Load messages on startup
+load_messages()
 
 # Initialize the Azure OpenAI client with credentials from .env
 logger.info("Initializing Azure OpenAI client")
@@ -313,7 +363,10 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "arrival_status": eta_info.get("status")
     }
 
+    # Reload messages to get latest data from other pods
+    reload_messages()
     messages.append(message_record)
+    save_messages()  # Save to shared storage
     return {"status": "ok"}
 
 def calculate_eta_info(eta_str: str) -> dict:
@@ -370,7 +423,20 @@ def calculate_eta_info(eta_str: str) -> dict:
 
 @app.get("/api/responders")
 def get_responder_data():
+    reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
+
+@app.get("/debug/pod-info")
+def get_pod_info():
+    """Debug endpoint to show which pod is serving requests"""
+    pod_name = os.getenv("HOSTNAME", "unknown-pod")
+    pod_ip = os.getenv("POD_IP", "unknown-ip")
+    return JSONResponse(content={
+        "pod_name": pod_name,
+        "pod_ip": pod_ip,
+        "message_count": len(messages),
+        "data_file_exists": os.path.exists(DATA_FILE)
+    })
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def display_dashboard():
@@ -461,6 +527,8 @@ def cleanup_invalid_timestamps(api_key: str = Depends(validate_webhook_api_key))
     """Remove messages with invalid timestamps (1970-01-01 entries)"""
     global messages
     
+    # Reload latest data first
+    reload_messages()
     initial_count = len(messages)
     
     # Remove messages with Unix timestamp 0 or equivalent to 1970-01-01
@@ -481,6 +549,7 @@ def cleanup_invalid_timestamps(api_key: str = Depends(validate_webhook_api_key))
     ]
     
     removed_count = initial_count - len(messages)
+    save_messages()  # Save cleaned data back to shared storage
     
     return {
         "status": "success",
