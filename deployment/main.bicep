@@ -5,7 +5,7 @@ param location string = resourceGroup().location
 param resourcePrefix string = 'respondr'
 
 @description('The name of the AKS cluster.')
-param aksClusterName string = '${resourcePrefix}-aks-cluster'
+param aksClusterName string = '${resourcePrefix}-aks-cluster-v2'
 
 @description('The name of the Azure OpenAI account.')
 param openAiAccountName string = '${resourcePrefix}-openai-account'
@@ -25,6 +25,46 @@ param storageAccountSku string = 'Standard_LRS'
 @description('Name of the user-assigned managed identity used by pods via workload identity')
 param podIdentityName string = '${resourcePrefix}-pod-identity'
 
+@description('The address space for the virtual network')
+param vnetAddressPrefix string = '10.0.0.0/16'
+
+@description('The subnet address space for AKS nodes')
+param aksSubnetAddressPrefix string = '10.0.1.0/24'
+
+@description('The subnet address space for Application Gateway')
+param appGwSubnetAddressPrefix string = '10.0.2.0/24'
+
+// Create Virtual Network for AKS and Application Gateway
+resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
+  name: '${resourcePrefix}-vnet'
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [vnetAddressPrefix]
+    }
+    subnets: [
+      {
+        name: 'aks-subnet'
+        properties: {
+          addressPrefix: aksSubnetAddressPrefix
+        }
+      }
+      {
+        name: 'appgw-subnet'
+        properties: {
+          addressPrefix: appGwSubnetAddressPrefix
+        }
+      }
+    ]
+  }
+}
+
+// Reference to the AKS subnet
+resource aksSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-04-01' existing = {
+  parent: vnet
+  name: 'aks-subnet'
+}
+
 resource aksCluster 'Microsoft.ContainerService/managedClusters@2023-08-01' = {
   name: aksClusterName
   location: location
@@ -36,12 +76,28 @@ resource aksCluster 'Microsoft.ContainerService/managedClusters@2023-08-01' = {
     agentPoolProfiles: [
       {
         name: 'agentpool'
-        count: 1
+        count: 2
         vmSize: 'Standard_DS2_v2'
         osType: 'Linux'
         mode: 'System'
+        vnetSubnetID: aksSubnet.id
       }
     ]
+    networkProfile: {
+      networkPlugin: 'azure'  // Use Azure CNI (not overlay)
+      networkPolicy: 'azure'
+      serviceCidr: '10.2.0.0/16'
+      dnsServiceIP: '10.2.0.10'
+    }
+    // Enable workload identity and OIDC issuer
+    oidcIssuerProfile: {
+      enabled: true
+    }
+    securityProfile: {
+      workloadIdentity: {
+        enabled: true
+      }
+    }
   }
 }
 
@@ -137,3 +193,7 @@ output storageAccountBlobEndpoint string = storageAccount.properties.primaryEndp
 output podIdentityName string = podIdentity.name
 output podIdentityClientId string = podIdentity.properties.clientId
 output podIdentityResourceId string = podIdentity.id
+output vnetName string = vnet.name
+output aksSubnetName string = 'aks-subnet'
+output appGwSubnetName string = 'appgw-subnet'
+output appGwSubnetAddressPrefix string = appGwSubnetAddressPrefix

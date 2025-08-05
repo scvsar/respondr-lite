@@ -242,12 +242,39 @@ if (-not $SkipImageBuild) {
     }
 }
 
-# Update the image in the deployment template
+# Update the image and identity details in the deployment template
 $deploymentFile = "respondr-k8s-template.yaml"
 $tempFile = "respondr-k8s-temp.yaml"
 
 Write-Host "Preparing deployment configuration..." -ForegroundColor Yellow
-(Get-Content $deploymentFile) -replace '{{ACR_IMAGE_PLACEHOLDER}}', $fullImageName | Set-Content $tempFile
+
+# Get deployment outputs for identity configuration
+Write-Host "Getting identity configuration from Azure deployment..." -ForegroundColor Yellow
+$deploy = az deployment group show --resource-group $ResourceGroupName --name main -o json | ConvertFrom-Json
+$podIdentityClientId = $deploy.properties.outputs.podIdentityClientId.value
+$tenantId = az account show --query tenantId -o tsv
+
+# Get DNS zone for hostname configuration
+$dnsZone = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv 2>$null
+if ($dnsZone) {
+    $hostname = "respondr.$dnsZone"
+} else {
+    $hostname = "respondr.example.com"
+    Write-Host "Warning: No DNS zone found. Using placeholder hostname: $hostname" -ForegroundColor Yellow
+}
+
+# Replace placeholders in the template
+(Get-Content $deploymentFile) `
+    -replace '{{ACR_IMAGE_PLACEHOLDER}}', $fullImageName `
+    -replace 'CLIENT_ID_PLACEHOLDER', $podIdentityClientId `
+    -replace 'TENANT_ID_PLACEHOLDER', $tenantId `
+    -replace 'HOSTNAME_PLACEHOLDER', $hostname | Set-Content $tempFile
+
+Write-Host "Configuration prepared:" -ForegroundColor Green
+Write-Host "  Image: $fullImageName" -ForegroundColor Cyan
+Write-Host "  Client ID: $podIdentityClientId" -ForegroundColor Cyan
+Write-Host "  Tenant ID: $tenantId" -ForegroundColor Cyan
+Write-Host "  Hostname: $hostname" -ForegroundColor Cyan
 
 # Deploy secrets first
 Write-Host "Deploying secrets..." -ForegroundColor Yellow
@@ -279,9 +306,14 @@ if (-not $DryRun) {
         Write-Host ""
         Write-Host "Access Information:" -ForegroundColor Green
         Write-Host "- Internal Service: respondr-service.$Namespace.svc.cluster.local" -ForegroundColor Cyan
-        Write-Host "- Ingress Host: respondr.local (add to /etc/hosts or DNS)" -ForegroundColor Cyan
-        Write-Host "- API Endpoint: http://respondr.local/api/responders" -ForegroundColor Cyan
-        Write-Host "- Webhook Endpoint: http://respondr.local/webhook" -ForegroundColor Cyan        
+        Write-Host "- Ingress Host: $hostname" -ForegroundColor Cyan
+        Write-Host "- API Endpoint: https://$hostname/api/responders" -ForegroundColor Cyan
+        Write-Host "- Webhook Endpoint: https://$hostname/webhook" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Authentication:" -ForegroundColor Green
+        Write-Host "- Entra (Azure AD) authentication is configured via Application Gateway" -ForegroundColor Cyan
+        Write-Host "- Workload Identity is configured for Azure resource access" -ForegroundColor Cyan
+        Write-Host "- All traffic will be authenticated via Microsoft Entra" -ForegroundColor Cyan        
     } else {
         Write-Error "Deployment failed!"
         exit 1
@@ -309,6 +341,13 @@ Write-Host "✅ Deployed application to Kubernetes" -ForegroundColor Green
 Write-Host "✅ Created namespace: $Namespace" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "1. Update your /etc/hosts file: echo '127.0.0.1 respondr.local' >> /etc/hosts" -ForegroundColor White
-Write-Host "2. Test the application: curl http://respondr.local/api/responders" -ForegroundColor White
-Write-Host "3. Send test webhook: curl -X POST http://respondr.local/webhook -H 'Content-Type: application/json' -d '{`"name`":`"Test`",`"text`":`"SAR1 ETA 15 min`",`"created_at`":1234567890}'" -ForegroundColor White
+Write-Host "1. Verify DNS configuration points to Application Gateway IP" -ForegroundColor White
+Write-Host "2. Test authentication: Navigate to https://$hostname in browser" -ForegroundColor White
+Write-Host "3. Test API endpoint: https://$hostname/api/responders (after authentication)" -ForegroundColor White
+Write-Host "4. Send test webhook: Use authenticated endpoint for webhook testing" -ForegroundColor White
+Write-Host ""
+Write-Host "Security Features Enabled:" -ForegroundColor Green
+Write-Host "✅ Microsoft Entra (Azure AD) authentication via Application Gateway" -ForegroundColor Green
+Write-Host "✅ Azure Workload Identity for secure access to Azure resources" -ForegroundColor Green
+Write-Host "✅ TLS/SSL termination at Application Gateway" -ForegroundColor Green
+Write-Host "✅ Dedicated namespace isolation" -ForegroundColor Green

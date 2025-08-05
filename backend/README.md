@@ -29,7 +29,7 @@ AZURE_OPENAI_API_VERSION=2025-01-01-preview
    uvicorn main:app --reload
    ```
 
-The application will start on http://localhost:8001 by default.
+The application will start on http://localhost:8000 by default.
 
 ## Testing the Integration
 
