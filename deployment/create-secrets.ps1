@@ -213,7 +213,16 @@ if (-not $deploymentValidated) {
 
 Write-Host "`nSecrets file created successfully!" -ForegroundColor Green
 Write-Host "You can now deploy your application using:" -ForegroundColor Yellow
-Write-Host "  kubectl apply -f secrets.yaml" -ForegroundColor Cyan
-Write-Host "  kubectl apply -f respondr-k8s-deployment.yaml" -ForegroundColor Cyan
-Write-Host "or use the deployment script:" -ForegroundColor Yellow
-Write-Host "  .\deploy-to-k8s.ps1" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "📋 Deployment Options:" -ForegroundColor Blue
+Write-Host "  1. Unified deployment (recommended):" -ForegroundColor Yellow
+Write-Host "     .\deploy-unified.ps1                    # OAuth2 protected (secure)" -ForegroundColor Green
+Write-Host "     .\deploy-unified.ps1 -NoOAuth2          # Direct access (simple)" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "  2. Manual deployment:" -ForegroundColor Yellow
+Write-Host "     kubectl apply -f secrets.yaml" -ForegroundColor White
+Write-Host "     kubectl apply -f respondr-k8s.yaml      # OAuth2 version" -ForegroundColor White
+Write-Host "     kubectl apply -f respondr-k8s-oauth2.yaml  # OAuth2 version (legacy)" -ForegroundColor White
+Write-Host ""
+Write-Host "  3. Legacy deployment scripts:" -ForegroundColor Yellow
+Write-Host "     .\deploy-to-k8s.ps1" -ForegroundColor White

@@ -145,6 +145,10 @@ metadata:
     app: respondr
 spec:
   type: ClusterIP
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800  # 3 hours
   ports:
   - name: oauth2-proxy
     port: 80
