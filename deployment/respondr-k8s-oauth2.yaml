@@ -87,6 +87,8 @@ spec:
         - --pass-user-headers=true
         - --set-xauthrequest=true
         - --silence-ping-logging=true
+        - --skip-auth-regex=^/webhook$
+        - --skip-auth-regex=^/health$
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:

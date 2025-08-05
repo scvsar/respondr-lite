@@ -132,7 +132,7 @@ if ($aksClusterName) {
 $deploymentYaml = Get-Content "respondr-k8s-oauth2-template.yaml" -Raw
 $deploymentYaml = $deploymentYaml -replace "{{ACR_IMAGE_PLACEHOLDER}}", $imageUri
 $deploymentYaml = $deploymentYaml -replace "{{HOSTNAME_PLACEHOLDER}}", $hostname
-$deploymentYaml = $deploymentYaml -replace "{{AZURE_CLIENT_ID}}", $appId
+$deploymentYaml = $deploymentYaml -replace "HOSTNAME_PLACEHOLDER", $hostname
 $deploymentYaml = $deploymentYaml -replace "{{AZURE_TENANT_ID}}", $tenantId
 $deploymentYaml = $deploymentYaml -replace "CLIENT_ID_PLACEHOLDER", $identityClientId
 $deploymentYaml = $deploymentYaml -replace "TENANT_ID_PLACEHOLDER", $tenantId
