@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import App from './App';
 
 // Mock fetch API for all tests
@@ -37,14 +37,18 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
-test('renders SCVSAR Response Tracker', () => {
-  render(<App />);
+test('renders SCVSAR Response Tracker', async () => {
+  await act(async () => {
+    render(<App />);
+  });
   const headingElement = screen.getByText(/SCVSAR Response Tracker/i);
   expect(headingElement).toBeInTheDocument();
 });
 
 test('renders responder metrics', async () => {
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+  });
   
   // Wait for the data to load and metrics to appear
   await waitFor(() => {
@@ -55,8 +59,10 @@ test('renders responder metrics', async () => {
   expect(avgEtaElement).toBeInTheDocument();
 });
 
-test('renders table headers', () => {
-  render(<App />);
+test('renders table headers', async () => {
+  await act(async () => {
+    render(<App />);
+  });
   expect(screen.getByText('Time')).toBeInTheDocument();
   expect(screen.getByText('Name')).toBeInTheDocument();
   expect(screen.getByText('Message')).toBeInTheDocument();
@@ -65,7 +71,9 @@ test('renders table headers', () => {
 });
 
 test('fetches and displays responder data', async () => {
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+  });
   
   // Wait for the fetch to be called and data to load
   await waitFor(() => {
@@ -82,7 +90,9 @@ test('fetches and displays responder data', async () => {
 });
 
 test('shows correct metrics for responders', async () => {
-  render(<App />);
+  await act(async () => {
+    render(<App />);
+  });
   
   // Wait for data to load and metrics to appear
   await waitFor(() => {
