@@ -136,6 +136,24 @@ az deployment group create --resource-group respondr --template-file main.bicep
 
 **Do not restart AGIC pods during the initial 10-minute creation window.**
 
+### Deployment Architecture
+
+The application uses a **unified deployment template** (`respondr-k8s-unified-template.yaml`) that supports both OAuth2-protected and direct access modes from a single configuration. This modern approach simplifies deployment management while providing flexibility.
+
+**Key Benefits of the Unified Template:**
+- ✅ **Single Source of Truth**: One template for all deployment scenarios
+- ✅ **OAuth2 Ready**: Built-in Azure AD authentication via OAuth2 proxy sidecar
+- ✅ **Session Affinity**: Proper Application Gateway session stickiness configured
+- ✅ **Production Ready**: Includes health checks, resource limits, and security best practices
+- ✅ **Easy Updates**: Use `.\redeploy.ps1 -Action "build"` for quick rebuilds with latest code
+
+The template automatically configures:
+- Multi-container pods (application + OAuth2 proxy)
+- Azure Workload Identity integration
+- Application Gateway session affinity
+- Kubernetes services and ingress
+- Health checks and resource management
+
 ### Step 1: Prepare Your Environment
 
 ```powershell
@@ -451,6 +469,32 @@ python test_webhook.py
 ```
 
 ## Upgrading and Redeployment
+
+The application uses the unified deployment template (`respondr-k8s-unified-template.yaml`) for all deployment scenarios. This ensures consistency and simplifies maintenance.
+
+### Quick Redeployment (Recommended)
+
+For development updates and quick fixes, use the redeploy script:
+
+```powershell
+cd deployment
+
+# Build and deploy with timestamp version (RECOMMENDED)
+.\redeploy.ps1 -Action "build" -ResourceGroupName respondr
+
+# Restart deployment (same image, fresh pods)
+.\redeploy.ps1 -Action "restart"
+
+# Update configuration and restart
+.\redeploy.ps1 -Action "update-config"
+```
+
+The `build` action automatically:
+- ✅ Builds a new container image with timestamp version (e.g., `v2025.08.05-1439`)
+- ✅ Pushes to Azure Container Registry  
+- ✅ Updates Kubernetes deployment with rolling update
+- ✅ Ensures zero downtime deployment
+- ✅ Maintains session affinity and OAuth2 configuration
 
 ### Production Upgrades
 

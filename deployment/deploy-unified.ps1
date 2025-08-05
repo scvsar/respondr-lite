@@ -121,7 +121,7 @@ if (-not $secretsExist) {
 Write-Host ""
 Write-Host "📁 Loading configuration..." -ForegroundColor Yellow
 
-$envFile = ".\backend\.env"
+$envFile = "..\backend\.env"
 if (-not (Test-Path $envFile)) {
     Write-Host "   ❌ .env file not found. Please run create-secrets.ps1 first." -ForegroundColor Red
     exit 1
@@ -177,7 +177,7 @@ if ($NoOAuth2) {
     
     # Configure service to point directly to main container
     $servicePortConfig = @"
-  - name: http
+- name: http
     port: 80
     targetPort: 8000
     protocol: TCP
@@ -192,7 +192,7 @@ if ($NoOAuth2) {
     
     # Configure service to point to OAuth2 proxy
     $servicePortConfig = @"
-  - name: http
+- name: http
     port: 80
     targetPort: 4180
     protocol: TCP
