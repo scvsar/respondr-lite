@@ -24,6 +24,39 @@ The application consists of:
 
 ## Complete End-to-End Deployment Guide
 
+### Deployment Options
+
+You have two main deployment approaches:
+
+#### Option 1: Complete Automated Deployment (Recommended for first-time setup)
+Use the `deploy-complete.ps1` script for a fully automated end-to-end deployment:
+
+```powershell
+cd deployment
+.\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+```
+
+This single command:
+- Deploys all Azure infrastructure via Bicep
+- Configures AKS, AGIC, cert-manager, and authentication
+- Builds and deploys the application
+- Sets up Let's Encrypt SSL certificates
+- Tests connectivity and provides comprehensive status
+
+#### Option 2: Step-by-Step Deployment (Recommended for customization or troubleshooting)
+Use individual scripts for more control over each step:
+
+```powershell
+# Step 1: Deploy infrastructure
+az deployment group create --resource-group respondr --template-file main.bicep
+
+# Step 2: Configure post-deployment settings
+.\post-deploy.ps1 -ResourceGroupName respondr
+
+# Step 3: Deploy application
+.\deploy-to-k8s.ps1 -ResourceGroupName respondr
+```
+
 ### Prerequisites
 
 - [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (latest version)
@@ -89,12 +122,14 @@ This creates:
 Run the post-deployment script to configure the infrastructure:
 
 ```powershell
-# Configure AKS, ACR integration, and Application Gateway Ingress Controller (AGIC)
+# Configure AKS, ACR integration, Application Gateway Ingress Controller (AGIC), and cert-manager
 .\deployment\post-deploy.ps1 -ResourceGroupName respondr
 ```
 
 This script:
 - Configures kubectl with AKS credentials
+- **Installs cert-manager for Let's Encrypt certificate management**
+- **Creates Let's Encrypt ClusterIssuer for automatic SSL certificates**
 - Sets up workload identity and federated credentials
 - Attaches ACR to AKS for seamless image pulling
 - **Enables Application Gateway Ingress Controller (AGIC)**
@@ -104,7 +139,7 @@ This script:
 - Imports a test image and validates the setup
 - Deploys and verifies gpt-4.1-nano model in Azure OpenAI
 
-> **Important:** The script now properly handles AGIC timing. The Application Gateway is created in the MC resource group (e.g., `MC_respondr_respondr-aks-cluster-v2_westus`) and the script monitors this automatically.
+> **Important:** The script now properly handles AGIC timing and installs cert-manager for automatic Let's Encrypt SSL certificate management. The Application Gateway is created in the MC resource group (e.g., `MC_respondr_respondr-aks-cluster-v2_westus`) and the script monitors this automatically.
 
 ### Step 4: Build and Push Container Image
 
@@ -169,12 +204,18 @@ Navigate to the deployment directory and deploy the application:
 ```powershell
 cd deployment
 
-# Deploy the application (automatically creates secrets.yaml from Azure)
+# Deploy the application (automatically creates secrets.yaml from Azure and configures Let's Encrypt)
 .\deploy-to-k8s.ps1 -ResourceGroupName respondr -ImageTag "latest"
 
 # If you want to use an existing secrets file, you can skip secrets creation:
 # .\deploy-to-k8s.ps1 -ResourceGroupName respondr -ImageTag "latest" -SkipSecretsCreation
 ```
+
+This will:
+- Build and push the container image to ACR
+- Create Kubernetes secrets from Azure OpenAI credentials
+- Deploy the application with Let's Encrypt certificate configuration
+- Wait for the Let's Encrypt certificate to be issued (may take 2-10 minutes)
 
 Alternatively, deploy manually:
 
@@ -190,15 +231,19 @@ kubectl apply -f respondr-k8s-deployment.yaml
 # Wait for deployment
 kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment
 
+# Wait for Let's Encrypt certificate (this may take a few minutes)
+kubectl wait --for=condition=Ready certificate/respondr-tls-letsencrypt --timeout=600s
+
 # Check status
 kubectl get pods -l app=respondr
 kubectl get services -l app=respondr
 kubectl get ingress respondr-ingress
+kubectl get certificate respondr-tls-letsencrypt
 ```
 
-### Step 7: Configure Access
+### Step 7: Configure DNS and Wait for SSL Certificate
 
-Get the Application Gateway's public IP and configure DNS or hosts file:
+Get the Application Gateway's public IP and configure DNS:
 
 ```powershell
 # Get Application Gateway public IP
@@ -210,22 +255,43 @@ $appGwIp = az network public-ip show `
 
 Write-Host "Application Gateway IP: $appGwIp"
 
-# Add to hosts file for testing (Windows - run as Administrator)
-Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "$appGwIp respondr.example.com"
+# For testing, add to hosts file (Windows - run as Administrator)
+Add-Content -Path C:\Windows\System32\drivers\etc\hosts -Value "$appGwIp respondr.paincave.pro"
 
 # Or manually add this line to your hosts file:
-# <IP_ADDRESS> respondr.example.com
+# <IP_ADDRESS> respondr.paincave.pro
 ```
 
-For production, configure proper DNS records with your domain provider or Azure DNS.
+**For production, configure proper DNS records:**
+- Add an A record with your domain provider: `respondr.paincave.pro` → `<Application Gateway IP>`
+- Or use Azure DNS if managing the domain through Azure
+
+**Wait for Let's Encrypt certificate:**
+```powershell
+# Check certificate status
+kubectl get certificate respondr-tls-letsencrypt -n respondr
+
+# Monitor certificate issuance
+kubectl describe certificate respondr-tls-letsencrypt -n respondr
+
+# Check certificaterequest progress
+kubectl get certificaterequests -n respondr
+```
+
+The Let's Encrypt certificate issuance process:
+1. cert-manager detects the ingress with Let's Encrypt annotations
+2. Creates a certificate request and temporary challenge pods
+3. Let's Encrypt validates domain ownership via HTTP-01 challenge
+4. Issues the certificate (usually takes 2-10 minutes)
+5. cert-manager stores the certificate in the Kubernetes secret
 
 ### Step 8: Test the Deployment
 
 Test that everything is working:
 
 ```powershell
-# Test the API endpoint
-curl https://respondr.example.com/api/responders
+# Test the API endpoint (after certificate is ready)
+curl https://respondr.paincave.pro/api/responders
 
 # Send a test webhook
 $testPayload = @{
@@ -234,13 +300,19 @@ $testPayload = @{
     created_at = [int][double]::Parse((Get-Date -UFormat %s))
 } | ConvertTo-Json
 
-Invoke-RestMethod -Uri "https://respondr.example.com/webhook" -Method POST -Body $testPayload -ContentType "application/json"
+Invoke-RestMethod -Uri "https://respondr.paincave.pro/webhook" -Method POST -Body $testPayload -ContentType "application/json"
 
 # Check the results
-curl https://respondr.example.com/api/responders
+curl https://respondr.paincave.pro/api/responders
 ```
 
-Visit https://respondr.example.com in your browser to see the dashboard. You'll be prompted to authenticate with Microsoft Entra (Azure AD).
+Visit https://respondr.paincave.pro in your browser to see the dashboard. You'll be prompted to authenticate with Microsoft Entra (Azure AD).
+
+**If you get SSL certificate errors:**
+1. Check certificate status: `kubectl get certificate respondr-tls-letsencrypt -n respondr`
+2. Wait for certificate to be Ready (may take up to 10 minutes)
+3. Verify DNS is pointing to the correct IP address
+4. Check cert-manager logs: `kubectl logs -n cert-manager deployment/cert-manager`
 
 ### Step 9: Run Comprehensive Tests
 
@@ -306,10 +378,10 @@ kubectl rollout status deployment/respondr-deployment
 
 Once deployed, the application provides:
 
-- **Frontend Dashboard**: https://respondr.example.com (via Application Gateway with Entra auth)
-- **API Endpoint**: https://respondr.example.com/api/responders
-- **Webhook Endpoint**: https://respondr.example.com/webhook
-- **Health Check**: https://respondr.example.com/health
+- **Frontend Dashboard**: https://respondr.paincave.pro (via Application Gateway with Entra auth)
+- **API Endpoint**: https://respondr.paincave.pro/api/responders
+- **Webhook Endpoint**: https://respondr.paincave.pro/webhook
+- **Health Check**: https://respondr.paincave.pro/health
 
 > **Note**: The actual domain depends on your DNS configuration. For testing, you can use the Application Gateway's public IP and add an entry to your hosts file.
 
@@ -410,6 +482,42 @@ kubectl port-forward service/respondr-service 8080:80
 5. **AGIC Pod CrashLoopBackOff**: This is normal during Application Gateway creation (5-10 minutes)
 6. **Azure CLI Extension Conflicts**: Remove conflicting extensions with `az extension remove --name aks-preview`
 7. **CNI Overlay Issues**: The template uses standard Azure CNI to avoid preview feature requirements
+8. **Let's Encrypt Certificate Issues**: Check DNS configuration and certificate status
+
+### Let's Encrypt Certificate Troubleshooting
+
+**Issue**: SSL certificate not working or site shows "certificate not trusted"
+**Cause**: Let's Encrypt certificate not yet issued or DNS misconfiguration
+**Solution**:
+
+```powershell
+# Check certificate status
+kubectl get certificate respondr-tls-letsencrypt -n respondr
+kubectl describe certificate respondr-tls-letsencrypt -n respondr
+
+# Check certificaterequest status
+kubectl get certificaterequests -n respondr
+kubectl describe certificaterequest <request-name> -n respondr
+
+# Check cert-manager logs
+kubectl logs -n cert-manager deployment/cert-manager
+kubectl logs -n cert-manager deployment/cert-manager-webhook
+
+# Check ACME challenge pods
+kubectl get pods -n respondr -l acme.cert-manager.io/http01-solver=true
+
+# Manual certificate retry (if needed)
+kubectl delete certificate respondr-tls-letsencrypt -n respondr
+kubectl apply -f respondr-k8s-deployment.yaml
+```
+
+**Issue**: ACME challenge fails
+**Cause**: DNS not pointing to Application Gateway or domain not accessible
+**Solution**:
+1. Verify DNS A record: `respondr.paincave.pro` → Application Gateway IP
+2. Test domain accessibility: `curl http://respondr.paincave.pro/.well-known/acme-challenge/test`
+3. Check Application Gateway HTTP listener configuration
+4. Ensure Application Gateway allows HTTP traffic for ACME challenges
 
 ### AGIC and Application Gateway Troubleshooting
 
