@@ -1,8 +1,59 @@
+"""
+Enhanced Webhook Test Script for Respondr Application
+
+This script tests the webhook endpoint with proper API key authentication.
+The API key is securely loaded from environment variables or .env file.
+
+Security Features:
+- API key authentication via X-API-Key header
+- Secrets loaded from .env file (not hardcoded)
+- Automatic environment detection and setup
+
+Usage:
+  python test_webhook.py            # Test local endpoint
+  python test_webhook.py --production  # Test production endpoint
+
+Prerequisites:
+- Run create-secrets.ps1 to generate .env file with current API keys
+- Or manually set WEBHOOK_API_KEY environment variable
+"""
+
 import requests
 import json
 import time
 import argparse
+import os
 from datetime import datetime, timedelta
+
+# Try to load from environment variables or .env file
+try:
+    from dotenv import load_dotenv
+    # Look for .env file in the same directory as this script
+    import os
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    env_path = os.path.join(script_dir, '.env')
+    
+    if os.path.exists(env_path):
+        load_dotenv(env_path)
+        print(f"📁 Loaded environment from: {env_path}")
+    else:
+        load_dotenv()  # Try default locations
+        print("📁 Loaded environment from default locations")
+except ImportError:
+    # If python-dotenv is not installed, just use environment variables
+    print("⚠️  python-dotenv not installed, using system environment variables only")
+    pass
+
+# Get webhook API key from environment
+WEBHOOK_API_KEY = os.getenv('WEBHOOK_API_KEY')
+
+if not WEBHOOK_API_KEY:
+    print("⚠️  WARNING: WEBHOOK_API_KEY not found in environment variables!")
+    print("Please ensure you have:")
+    print("1. Run the create-secrets.ps1 script to generate .env file")
+    print("2. Or set WEBHOOK_API_KEY environment variable")
+    print("3. Or install python-dotenv: pip install python-dotenv")
+    exit(1)
 
 def get_webhook_url(production=False):
     """Get the appropriate webhook URL based on environment"""
@@ -150,7 +201,18 @@ def send_webhook_message(message_data, production=False):
         # Remove the 'expected' field before sending (it's just for our testing reference)
         webhook_data = {k: v for k, v in message_data.items() if k != 'expected'}
         
-        response = requests.post(webhook_url, json=webhook_data)
+        # Prepare headers with API key for authentication
+        headers = {
+            'Content-Type': 'application/json'
+        }
+        
+        # Add API key for production (and local if available)
+        if WEBHOOK_API_KEY:
+            headers['X-API-Key'] = WEBHOOK_API_KEY
+        elif production:
+            print(f"⚠️  Warning: No API key available for production request")
+        
+        response = requests.post(webhook_url, json=webhook_data, headers=headers)
         if response.status_code == 200:
             expected = message_data.get('expected', 'Standard test')
             print(f"✅ Sent from {message_data['name']}: '{message_data['text'][:40]}...'")
@@ -158,6 +220,8 @@ def send_webhook_message(message_data, production=False):
             return True
         else:
             print(f"❌ Failed to send message from {message_data['name']}: {response.status_code}")
+            if response.status_code == 401:
+                print(f"   Authentication failed - check API key")
             return False
     except requests.exceptions.RequestException as e:
         print(f"❌ Error sending message from {message_data['name']}: {e}")

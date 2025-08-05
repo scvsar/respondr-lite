@@ -5,7 +5,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -27,6 +27,9 @@ azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
 azure_openai_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 
+# Webhook API key for security
+webhook_api_key = os.getenv("WEBHOOK_API_KEY")
+
 # Check if we're running in test mode
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
 
@@ -40,6 +43,26 @@ elif is_testing:
     azure_openai_endpoint = azure_openai_endpoint or "https://test-endpoint.openai.azure.com/"
     azure_openai_deployment = azure_openai_deployment or "test-deployment"
     azure_openai_api_version = azure_openai_api_version or "2025-01-01-preview"
+    webhook_api_key = webhook_api_key or "test-webhook-key"
+
+if not is_testing and not webhook_api_key:
+    logger.error("Missing WEBHOOK_API_KEY environment variable")
+    raise ValueError("WEBHOOK_API_KEY must be set for webhook authentication")
+
+
+def validate_webhook_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
+    """Validate the API key for webhook endpoint"""
+    if is_testing:
+        return True  # Skip validation in tests
+    
+    if not x_api_key or x_api_key != webhook_api_key:
+        logger.warning(f"Invalid or missing API key for webhook request")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key. Include 'X-API-Key' header.",
+            headers={"WWW-Authenticate": "API-Key"}
+        )
+    return True
 
 
 @asynccontextmanager
@@ -242,14 +265,36 @@ def extract_details_from_text(text: str) -> dict:
         }
 
 @app.post("/webhook")
-async def receive_webhook(request: Request):
+async def receive_webhook(request: Request, api_key_valid: bool = Depends(validate_webhook_api_key)):
     data = await request.json()
     logger.info(f"Received webhook data from: {data.get('name', 'Unknown')}")
 
     name = data.get("name", "Unknown")
     text = data.get("text", "")
     created_at = data.get("created_at", 0)
-    timestamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+    
+    # Handle invalid or missing timestamps
+    try:
+        if created_at == 0 or created_at is None:
+            # Use current time if timestamp is missing or invalid
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            logger.warning(f"Missing or invalid timestamp for message from {name}, using current time")
+        else:
+            timestamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, OSError) as e:
+        # Handle invalid timestamp values
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.warning(f"Invalid timestamp {created_at} for message from {name}: {e}, using current time")
+
+    # Skip processing completely empty or meaningless messages
+    if not text or text.strip() == "":
+        logger.info(f"Skipping empty message from {name}")
+        return {"status": "skipped", "reason": "empty message"}
+    
+    # Skip if both name and text are defaults/unknown
+    if name == "Unknown" and (not text or text.strip() == ""):
+        logger.info(f"Skipping placeholder message with no content")
+        return {"status": "skipped", "reason": "placeholder message"}
 
     parsed = extract_details_from_text(text)
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}")
@@ -410,6 +455,39 @@ else:
 static_dir = os.path.join(frontend_build, "static")
 if not is_testing and os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.post("/cleanup/invalid-timestamps")
+def cleanup_invalid_timestamps(api_key: str = Depends(validate_webhook_api_key)):
+    """Remove messages with invalid timestamps (1970-01-01 entries)"""
+    global messages
+    
+    initial_count = len(messages)
+    
+    # Remove messages with Unix timestamp 0 or equivalent to 1970-01-01
+    messages = [
+        msg for msg in messages 
+        if not (
+            "created_at" in msg and 
+            (msg["created_at"] == 0 or msg["created_at"] == "1970-01-01 00:00:00")
+        )
+    ]
+    
+    # Also remove messages with empty or unknown content
+    messages = [
+        msg for msg in messages 
+        if msg.get("message", "").strip() and 
+           msg.get("vehicle", "Unknown") != "Unknown" and
+           msg.get("eta", "Unknown") != "Unknown"
+    ]
+    
+    removed_count = initial_count - len(messages)
+    
+    return {
+        "status": "success",
+        "message": f"Cleaned up {removed_count} invalid entries",
+        "initial_count": initial_count,
+        "remaining_count": len(messages)
+    }
 
 @app.get("/")
 def serve_frontend():
