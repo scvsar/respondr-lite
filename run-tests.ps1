@@ -25,22 +25,18 @@ try {
         # PowerShell 6+ (cross-platform)
         $PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
         $PSDefaultParameterValues['*:Encoding'] = 'utf8'
-        # Use proper Unicode characters in PowerShell Core
-        $script:checkMark = "✅"
-        $script:crossMark = "❌"
-        $script:warningMark = "⚠️"
+        # Use simple text indicators
+        $script:checkMark = "[PASS]"
+        $script:crossMark = "[FAIL]"
+        $script:warningMark = "[WARN]"
     } else {
         # Windows PowerShell 5.1 and earlier - be more conservative
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         $OutputEncoding = [System.Text.Encoding]::UTF8
-        # Test if Unicode works
-        $testOutput = "✅"
-        if ([Console]::OutputEncoding.GetBytes($testOutput).Length -eq $testOutput.Length) {
-            # Unicode likely supported
-            $script:checkMark = "✅"
-            $script:crossMark = "❌"
-            $script:warningMark = "⚠️"
-        }
+        # Use simple text indicators
+        $script:checkMark = "[PASS]"
+        $script:crossMark = "[FAIL]"
+        $script:warningMark = "[WARN]"
     }
 }
 catch {

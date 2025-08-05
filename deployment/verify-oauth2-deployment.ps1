@@ -31,7 +31,7 @@ param(
 
 $hostname = "respondr.$Domain"
 
-Write-Host "🔍 OAuth2 Authentication Deployment Verification" -ForegroundColor Green
+Write-Host "OAuth2 Authentication Deployment Verification" -ForegroundColor Green
 Write-Host "=================================================" -ForegroundColor Green
 Write-Host "Domain: $hostname" -ForegroundColor Cyan
 Write-Host "Namespace: $Namespace" -ForegroundColor Cyan
@@ -218,7 +218,7 @@ try {
 Write-Host ""
 
 # Summary
-Write-Host "🎯 Verification Summary" -ForegroundColor Green
+Write-Host "Verification Summary" -ForegroundColor Green
 Write-Host "======================" -ForegroundColor Green
 Write-Host ""
 Write-Host "✅ Your OAuth2 authentication deployment appears to be working!" -ForegroundColor Green

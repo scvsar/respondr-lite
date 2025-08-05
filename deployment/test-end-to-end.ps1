@@ -100,7 +100,7 @@ function Test-Endpoint {
     }
 }
 
-Write-Host "🔍 1. Basic Connectivity Tests" -ForegroundColor Yellow
+Write-Host "1. Basic Connectivity Tests" -ForegroundColor Yellow
 Write-Host "==============================" -ForegroundColor Yellow
 
 # Test HTTP redirect
@@ -123,7 +123,7 @@ $callbackTest = Test-Endpoint "OAuth2 callback endpoint" "https://$hostname/oaut
 $signinTest = Test-Endpoint "OAuth2 sign-in endpoint" "https://$hostname/oauth2/sign_in"
 
 Write-Host ""
-Write-Host "📊 3. API Endpoint Tests (Authentication Required)" -ForegroundColor Yellow
+Write-Host "3. API Endpoint Tests (Authentication Required)" -ForegroundColor Yellow
 Write-Host "==================================================" -ForegroundColor Yellow
 
 # Test API endpoints that require authentication
@@ -205,7 +205,7 @@ try {
 }
 
 Write-Host ""
-Write-Host "🎯 Test Results Summary" -ForegroundColor Green
+Write-Host "Test Results Summary" -ForegroundColor Green
 Write-Host "=======================" -ForegroundColor Green
 
 $allTests = @(
@@ -236,10 +236,10 @@ foreach ($test in $allTests) {
 }
 
 Write-Host ""
-Write-Host "📊 Overall Result: $passedTests/$totalTests tests passed" -ForegroundColor Cyan
+Write-Host "Overall Result: $passedTests/$totalTests tests passed" -ForegroundColor Cyan
 
 if ($passedTests -eq $totalTests) {
-    Write-Host "🎉 All tests passed! Your OAuth2 deployment is working correctly." -ForegroundColor Green
+    Write-Host "All tests passed! Your OAuth2 deployment is working correctly." -ForegroundColor Green
 } elseif ($passedTests -ge ($totalTests * 0.8)) {
     Write-Host "⚠️  Most tests passed. Check the failed tests above for issues." -ForegroundColor Yellow
 } else {

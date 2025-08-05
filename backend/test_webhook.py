@@ -215,16 +215,16 @@ def send_webhook_message(message_data, production=False):
         response = requests.post(webhook_url, json=webhook_data, headers=headers)
         if response.status_code == 200:
             expected = message_data.get('expected', 'Standard test')
-            print(f"✅ Sent from {message_data['name']}: '{message_data['text'][:40]}...'")
+            print(f"[SENT] Sent from {message_data['name']}: '{message_data['text'][:40]}...'")
             print(f"   Expected: {expected}")
             return True
         else:
-            print(f"❌ Failed to send message from {message_data['name']}: {response.status_code}")
+            print(f"[FAIL] Failed to send message from {message_data['name']}: {response.status_code}")
             if response.status_code == 401:
                 print(f"   Authentication failed - check API key")
             return False
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error sending message from {message_data['name']}: {e}")
+        print(f"[ERROR] Error sending message from {message_data['name']}: {e}")
         return False
 
 def validate_api_responses(production=False):
@@ -243,7 +243,7 @@ def validate_api_responses(production=False):
         response = requests.get(api_url)
         if response.status_code == 200:
             responders = response.json()
-            print(f"\n📋 Analysis of {len(responders)} processed messages:")
+            print(f"\nAnalysis of {len(responders)} processed messages:")
             
             # Categorize responses
             valid_responses = []
@@ -270,11 +270,11 @@ def validate_api_responses(production=False):
                 if eta and ':' in eta and len(eta) == 5:  # HH:MM format
                     time_converted.append(resp['name'])
             
-            print(f"✅ Clear responses: {len(valid_responses)}")
-            print(f"🚫 Not responding: {len(not_responding)}")
-            print(f"❓ Unknown vehicle: {len(unknown_vehicle)}")
-            print(f"❓ Unknown ETA: {len(unknown_eta)}")
-            print(f"⏰ Time format converted: {len(time_converted)}")
+            print(f"Clear responses: {len(valid_responses)}")
+            print(f"Not responding: {len(not_responding)}")
+            print(f"Unknown vehicle: {len(unknown_vehicle)}")
+            print(f"Unknown ETA: {len(unknown_eta)}")
+            print(f"Time format converted: {len(time_converted)}")
             
             if time_converted:
                 print(f"   Time conversions: {', '.join(time_converted[:3])}{'...' if len(time_converted) > 3 else ''}")
@@ -285,16 +285,16 @@ def validate_api_responses(production=False):
             # Show some examples of time calculations
             arriving_soon = [r for r in responders if r.get('minutes_until_arrival') and r['minutes_until_arrival'] <= 15]
             if arriving_soon:
-                print(f"\n🚨 Arriving Soon (≤15 min): {len(arriving_soon)} responders")
+                print(f"\nArriving Soon (≤15 min): {len(arriving_soon)} responders")
                 for resp in arriving_soon[:3]:  # Show first 3
                     print(f"   {resp['name']}: {resp['eta']} ({resp['minutes_until_arrival']} min)")
             
             return True
         else:
-            print(f"❌ Failed to fetch API data: {response.status_code}")
+            print(f"[FAIL] Failed to fetch API data: {response.status_code}")
             return False
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error validating API responses: {e}")
+        print(f"[ERROR] Error validating API responses: {e}")
         return False
 
 def test_webhook_endpoint(production=False):
@@ -302,16 +302,16 @@ def test_webhook_endpoint(production=False):
     webhook_url = get_webhook_url(production)
     mode = "Production" if production else "Local"
     
-    print(f"🧪 Starting Enhanced Webhook Test - {mode} Mode")
+    print(f"Starting Enhanced Webhook Test - {mode} Mode")
     print("="*60)
     
     if production:
-        print("🌐 Production testing with OAuth2 configuration:")
+        print("Production testing with OAuth2 configuration:")
         print("• Webhook endpoint: No authentication required")
         print("• Dashboard/API: OAuth2 authentication required")
         print("• Testing webhook bypass functionality")
     else:
-        print("🏠 Local testing scenarios:")
+        print("Local testing scenarios:")
         print("• Standard SAR vehicle assignments")
         print("• Personal vehicle (POV) responses") 
         print("• Partial/unclear information")
@@ -336,17 +336,17 @@ def test_webhook_endpoint(production=False):
     print(f"Test Results: {successful_sends}/{len(test_messages)} messages sent successfully")
     
     if successful_sends == len(test_messages):
-        print(f"\n🎉 All messages sent successfully to {mode.lower()} endpoint!")
+        print(f"\nAll messages sent successfully to {mode.lower()} endpoint!")
         
         if production:
-            print("\n🌐 Production Webhook Testing Complete!")
-            print("   ✅ Webhook endpoint bypasses OAuth2 authentication")
-            print("   📝 Manual verification required for processed data:")
+            print("\nProduction Webhook Testing Complete!")
+            print("   Webhook endpoint bypasses OAuth2 authentication")
+            print("   Manual verification required for processed data:")
             print("   1. Visit: https://respondr.paincave.pro")
             print("   2. Sign in with Azure AD credentials")
             print("   3. Verify test messages appear in dashboard")
         else:
-            print("\n📋 Local Testing - Review the parsed results:")
+            print("\nLocal Testing - Review the parsed results:")
             print("   - API endpoint: http://localhost:8000/api/responders")
             print("   - Dashboard: http://localhost:8000/dashboard") 
             print("   - Frontend: http://localhost:8000")

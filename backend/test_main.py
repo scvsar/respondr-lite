@@ -33,11 +33,31 @@ def mock_openai_response():
 
 def test_get_responder_data_empty():
     """Test the /api/responders endpoint with no data"""
-    # Use an empty list for messages
-    with patch('main.messages', []):
-        response = client.get("/api/responders")
-        assert response.status_code == 200
-        assert response.json() == []
+    # Clean up any existing data file and reload to ensure empty state
+    data_file = "./respondr_messages.json"
+    backup_exists = os.path.exists(data_file)
+    backup_data = None
+    
+    # Backup existing data if it exists
+    if backup_exists:
+        with open(data_file, 'r') as f:
+            backup_data = f.read()
+        os.remove(data_file)
+    
+    try:
+        # Reload messages to get empty state
+        from main import load_messages
+        load_messages()
+        
+        with patch('main.messages', []):
+            response = client.get("/api/responders")
+            assert response.status_code == 200
+            assert response.json() == []
+    finally:
+        # Restore backup data if it existed
+        if backup_exists and backup_data:
+            with open(data_file, 'w') as f:
+                f.write(backup_data)
 
 def test_webhook_endpoint(mock_openai_response):
     """Test the webhook endpoint with a mock OpenAI response"""

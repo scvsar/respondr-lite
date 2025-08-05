@@ -108,7 +108,7 @@ try {
             if ($OpenAIDeploymentName) {
                 # Check if the specified deployment exists
                 if ($deployments -contains $OpenAIDeploymentName) {
-                    Write-Host "  ✅ Specified deployment '$OpenAIDeploymentName' found" -ForegroundColor Green
+                    Write-Host "  Specified deployment '$OpenAIDeploymentName' found" -ForegroundColor Green
                     $deploymentValidated = $true
                 } else {
                     Write-Host "  ⚠️  Specified deployment '$OpenAIDeploymentName' not found in deployed models" -ForegroundColor Yellow
@@ -129,12 +129,12 @@ try {
                 if ($foundModel) {
                     $actualDeploymentName = $foundModel
                     $deploymentValidated = $true
-                    Write-Host "  ✅ Using found deployment: '$foundModel'" -ForegroundColor Green
+                    Write-Host "  Using found deployment: '$foundModel'" -ForegroundColor Green
                 } else {
                     # Use the first available deployment
                     $actualDeploymentName = $deployments[0]
                     $deploymentValidated = $true
-                    Write-Host "  ✅ Using first available deployment: '$actualDeploymentName'" -ForegroundColor Green
+                    Write-Host "  Using first available deployment: '$actualDeploymentName'" -ForegroundColor Green
                 }
             }
         } else {
@@ -181,7 +181,7 @@ catch {
 Write-Host "`nVerifying secrets file..." -ForegroundColor Yellow
 
 $keyStatus = if ($openAIKey) { "Valid key found" } else { "MISSING" }
-$deploymentStatus = if ($deploymentValidated) { "✅ Validated" } else { "⚠️  Placeholder (manual setup required)" }
+$deploymentStatus = if ($deploymentValidated) { "Validated" } else { "⚠️  Placeholder (manual setup required)" }
 
 Write-Host "  Azure OpenAI Endpoint: $openAIEndpoint" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI API Key: $keyStatus" -ForegroundColor Cyan

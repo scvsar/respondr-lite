@@ -56,18 +56,18 @@ if ($Docker) {
     # Check if backend is running
     try {
         Invoke-WebRequest -Uri "http://localhost:8000/api/responders" -TimeoutSec 2 | Out-Null
-        Write-Host "✅ Backend is running, testing webhooks..." -ForegroundColor Green
+        Write-Host "Backend is running, testing webhooks..." -ForegroundColor Green
         
         Set-Location backend
         python test_webhook.py
         
     } catch {
-        Write-Host "❌ Backend not running on localhost:8000" -ForegroundColor Red
+        Write-Host "Backend not running on localhost:8000" -ForegroundColor Red
         Write-Host "Start the backend first with: .\dev-local.ps1" -ForegroundColor Yellow
     }
     
 } elseif ($Full) {
-    Write-Host "🎯 Starting Full Stack (Backend + Frontend)..." -ForegroundColor Blue
+    Write-Host "Starting Full Stack (Backend + Frontend)..." -ForegroundColor Blue
     Write-Host ""
     Write-Host "This will open two terminals:" -ForegroundColor Yellow
     Write-Host "  1. Backend (FastAPI) on http://localhost:8000" -ForegroundColor Cyan
@@ -75,15 +75,15 @@ if ($Docker) {
     Write-Host ""
     
     # Start backend in new terminal
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host '🚀 Starting Backend...' -ForegroundColor Green; python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
     
     # Start frontend in new terminal
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; Write-Host '⚛️  Starting Frontend...' -ForegroundColor Blue; npm start"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; Write-Host 'Starting Frontend...' -ForegroundColor Blue; npm start"
     
-    Write-Host "✅ Both services starting in separate terminals..." -ForegroundColor Green
+    Write-Host "Both services starting in separate terminals..." -ForegroundColor Green
     Write-Host ""
     Write-Host "Access URLs:" -ForegroundColor Yellow
     Write-Host "  • Frontend: http://localhost:3000" -ForegroundColor Cyan
@@ -91,7 +91,7 @@ if ($Docker) {
     Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
     
 } else {
-    Write-Host "🚀 Starting Backend Only (FastAPI)..." -ForegroundColor Blue
+    Write-Host "Starting Backend Only (FastAPI)..." -ForegroundColor Blue
     Write-Host ""
     Write-Host "Access points:" -ForegroundColor Yellow
     Write-Host "  • API: http://localhost:8000" -ForegroundColor Cyan
