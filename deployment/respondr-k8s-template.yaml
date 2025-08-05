@@ -102,11 +102,13 @@ metadata:
     appgw.ingress.kubernetes.io/auth-setting: respondrAuth  # Reference to the auth-setting created in post-deploy
     appgw.ingress.kubernetes.io/ssl-redirect: "true"
     appgw.ingress.kubernetes.io/use-private-ip: "false"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    acme.cert-manager.io/http01-edit-in-place: "true"
 spec:
   tls:
   - hosts:
     - HOSTNAME_PLACEHOLDER
-    secretName: respondr-tls
+    secretName: respondr-tls-letsencrypt
   rules:
   - host: HOSTNAME_PLACEHOLDER
     http:
