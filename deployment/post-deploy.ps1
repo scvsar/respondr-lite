@@ -1,29 +1,6 @@
 <#
 .SYNOPSIS
-    Post-deployment co# 2) Get Storage account name more robustly
-Write-Host "Retrieving storage account name..." -ForegroundColor Yellow
-$storageAccountName = $deploy.properties.outputs.storageAccountName.value 2>$null
-if (-not $storageAccountName) {
-    # Fallback to discovery, but be more specific
-    $storageAccounts = az storage account list --resource-group $ResourceGroupName -o json | ConvertFrom-Json
-    if ($storageAccounts.Count -eq 1) {
-        $storageAccountName = $storageAccounts[0].name
-        Write-Host "  Discovered single storage account: $storageAccountName" -ForegroundColor Yellow
-    } elseif ($storageAccounts.Count -gt 1) {
-        # Try to find one with a name pattern or tags that identify it as the respondr storage account
-        $respondrStorage = $storageAccounts | Where-Object { $_.name -like "*respondr*" -or $_.tags.Application -eq "respondr" }
-        if ($respondrStorage.Count -eq 1) {
-            $storageAccountName = $respondrStorage[0].name
-            Write-Host "  Discovered respondr storage account: $storageAccountName" -ForegroundColor Yellow
-        } else {
-            Write-Host "  Warning: Multiple storage accounts found. Using first one: $($storageAccounts[0].name)" -ForegroundColor Yellow
-            $storageAccountName = $storageAccounts[0].name
-        }
-    } else {
-        Write-Host "  Warning: No storage account found in resource group" -ForegroundColor Yellow
-        $storageAccountName = $null
-    }
-}uration for the respondr app.
+    Post-deployment configuration for the respondr app.
 
 .DESCRIPTION
     - Fetches deployment outputs (AKS cluster name, ACR name, OpenAI account name)
@@ -172,25 +149,108 @@ az aks enable-addons `
     --appgw-subnet-id "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName/subnets/$appGwSubnetName" `
     --enable-azure-rbac 2>$null
 
-# Wait for Application Gateway to be created
+# Wait for Application Gateway to be created by AGIC
 Write-Host "Waiting for Application Gateway to be ready..." -ForegroundColor Yellow
-$timeout = (Get-Date).AddMinutes(10)
+
+# IMPORTANT: AGIC creates Application Gateway in the MC resource group, not the main resource group!
+$mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
+Write-Host "Monitoring Application Gateway in MC resource group: $mcResourceGroup" -ForegroundColor Cyan
+
+# First, wait for AGIC deployment to start
+Write-Host "Waiting for AGIC to start Application Gateway deployment..." -ForegroundColor Yellow
+$deploymentStartTimeout = (Get-Date).AddMinutes(5)
+$deploymentStarted = $false
+
 do {
     Start-Sleep -Seconds 30
-    $appGwState = az network application-gateway show --name $appGwName --resource-group $ResourceGroupName --query "provisioningState" -o tsv 2>$null
-    Write-Host "Application Gateway state: $appGwState" -ForegroundColor Cyan
-} while ($appGwState -ne "Succeeded" -and (Get-Date) -lt $timeout)
+    $deploymentStatus = az deployment group show --resource-group $mcResourceGroup --name $appGwName --query "properties.provisioningState" -o tsv 2>$null
+    if ($deploymentStatus) {
+        Write-Host "AGIC started Application Gateway deployment: $deploymentStatus" -ForegroundColor Green
+        $deploymentStarted = $true
+        break
+    }
+    Write-Host "Waiting for AGIC to start Application Gateway deployment..." -ForegroundColor Yellow
+} while ((Get-Date) -lt $deploymentStartTimeout)
+
+if (-not $deploymentStarted) {
+    Write-Host "Warning: AGIC has not started Application Gateway deployment within timeout" -ForegroundColor Yellow
+    Write-Host "Check AGIC pod logs: kubectl logs -n kube-system deployment/ingress-appgw-deployment" -ForegroundColor Yellow
+}
+
+# Wait for deployment to complete
+$deploymentTimeout = (Get-Date).AddMinutes(10)
+do {
+    Start-Sleep -Seconds 30
+    $deploymentStatus = az deployment group show --resource-group $mcResourceGroup --name $appGwName --query "properties.provisioningState" -o tsv 2>$null
+    Write-Host "Application Gateway deployment status: $deploymentStatus" -ForegroundColor Cyan
+    
+    if ($deploymentStatus -eq "Succeeded") {
+        Write-Host "Application Gateway deployment completed successfully!" -ForegroundColor Green
+        break
+    } elseif ($deploymentStatus -eq "Failed") {
+        Write-Host "Application Gateway deployment failed!" -ForegroundColor Red
+        $deploymentError = az deployment group show --resource-group $mcResourceGroup --name $appGwName --query "properties.error" -o json 2>$null
+        if ($deploymentError -and $deploymentError -ne "null") {
+            Write-Host "Deployment error: $deploymentError" -ForegroundColor Red
+        }
+        break
+    }
+} while ((Get-Date) -lt $deploymentTimeout)
+
+# Wait for Application Gateway resource to be fully provisioned
+Write-Host "Waiting for Application Gateway resource to be ready..." -ForegroundColor Yellow
+$resourceTimeout = (Get-Date).AddMinutes(5)
+do {
+    Start-Sleep -Seconds 15
+    $appGwState = az network application-gateway show --name $appGwName --resource-group $mcResourceGroup --query "provisioningState" -o tsv 2>$null
+    Write-Host "Application Gateway resource state: $appGwState" -ForegroundColor Cyan
+} while ($appGwState -ne "Succeeded" -and (Get-Date) -lt $resourceTimeout)
 
 if ($appGwState -ne "Succeeded") {
     Write-Host "Warning: Application Gateway not ready within timeout" -ForegroundColor Yellow
+} else {
+    Write-Host "Application Gateway is ready!" -ForegroundColor Green
+}
+
+# Wait for AGIC pod to become healthy
+Write-Host "Waiting for AGIC pod to be ready..." -ForegroundColor Yellow
+$agicTimeout = (Get-Date).AddMinutes(5)
+do {
+    Start-Sleep -Seconds 15
+    $agicPod = kubectl get pods -n kube-system -l app=ingress-appgw -o json 2>$null | ConvertFrom-Json
+    if ($agicPod.items.Count -gt 0) {
+        $podStatus = $agicPod.items[0].status
+        if ($podStatus.phase -eq "Running" -and $podStatus.containerStatuses[0].ready -eq $true) {
+            Write-Host "AGIC pod is running and ready!" -ForegroundColor Green
+            break
+        } else {
+            $readyStatus = if ($podStatus.containerStatuses.Count -gt 0) { $podStatus.containerStatuses[0].ready } else { "unknown" }
+            Write-Host "AGIC pod status: $($podStatus.phase), Ready: $readyStatus" -ForegroundColor Cyan
+        }
+    } else {
+        Write-Host "AGIC pod not found" -ForegroundColor Yellow
+    }
+} while ((Get-Date) -lt $agicTimeout)
+
+# Show final AGIC status
+$finalAgicPod = kubectl get pods -n kube-system -l app=ingress-appgw -o json 2>$null | ConvertFrom-Json
+if ($finalAgicPod.items.Count -gt 0) {
+    $finalPodStatus = $finalAgicPod.items[0]
+    $finalReadyStatus = if ($finalPodStatus.status.containerStatuses.Count -gt 0) { $finalPodStatus.status.containerStatuses[0].ready } else { "unknown" }
+    Write-Host "Final AGIC pod status: $($finalPodStatus.status.phase), Ready: $finalReadyStatus" -ForegroundColor Cyan
+    if ($finalPodStatus.status.phase -ne "Running" -or $finalReadyStatus -ne $true) {
+        Write-Host "Warning: AGIC pod may not be fully ready. Check logs with: kubectl logs -n kube-system deployment/ingress-appgw-deployment" -ForegroundColor Yellow
+    }
 }
 
 # Create and assign user-assigned managed identity for Application Gateway
 $appGwIdentityName = "$appGwName-identity"
 Write-Host "Creating user-assigned managed identity for Application Gateway..." -ForegroundColor Yellow
-$existingAppGwIdentity = az identity show --name $appGwIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
+
+# Note: Application Gateway identity should be created in the MC resource group where the gateway exists
+$existingAppGwIdentity = az identity show --name $appGwIdentityName --resource-group $mcResourceGroup -o json 2>$null | ConvertFrom-Json
 if (-not $existingAppGwIdentity) {
-    $appGwIdentity = az identity create --name $appGwIdentityName --resource-group $ResourceGroupName -o json | ConvertFrom-Json
+    $appGwIdentity = az identity create --name $appGwIdentityName --resource-group $mcResourceGroup -o json | ConvertFrom-Json
 } else {
     $appGwIdentity = $existingAppGwIdentity
     Write-Host "Using existing Application Gateway identity" -ForegroundColor Green
@@ -200,17 +260,17 @@ $appGwIdentityId = $appGwIdentity.id
 # Assign the identity to the Application Gateway
 Write-Host "Assigning identity to Application Gateway..." -ForegroundColor Yellow
 az network application-gateway identity assign `
-    --resource-group $ResourceGroupName `
+    --resource-group $mcResourceGroup `
     --gateway-name $appGwName `
     --identity $appGwIdentityId 2>$null
 
-# Assign Network Contributor role to the identity on the Application Gateway resource group
+# Assign Network Contributor role to the identity on the MC resource group (where App Gateway exists)
 Write-Host "Assigning Network Contributor role to Application Gateway identity..." -ForegroundColor Yellow
-$appGwResourceGroupId = az group show --name $ResourceGroupName --query id -o tsv
+$mcResourceGroupId = az group show --name $mcResourceGroup --query id -o tsv
 az role assignment create `
     --assignee $appGwIdentity.principalId `
     --role "Network Contributor" `
-    --scope $appGwResourceGroupId 2>$null
+    --scope $mcResourceGroupId 2>$null
 
 # Assign Managed Identity Operator role for AGIC to impersonate other identities
 Write-Host "Assigning Managed Identity Operator role to AGIC..." -ForegroundColor Yellow
@@ -271,12 +331,12 @@ if ($keyVaultName) {
     $secretId = $null
 }
 
-# Create auth-setting
+# Create auth-setting for Application Gateway (located in MC resource group)
 Write-Host "Creating authentication setting for Application Gateway..." -ForegroundColor Yellow
 if ($secretId) {
     # Use Key Vault reference (recommended)
     az network application-gateway auth-setting create `
-        --resource-group $ResourceGroupName `
+        --resource-group $mcResourceGroup `
         --gateway-name $appGwName `
         --name respondrAuth `
         --auth-type aad `
@@ -286,7 +346,7 @@ if ($secretId) {
 } else {
     # Fallback to raw secret
     az network application-gateway auth-setting create `
-        --resource-group $ResourceGroupName `
+        --resource-group $mcResourceGroup `
         --gateway-name $appGwName `
         --name respondrAuth `
         --auth-type aad `
