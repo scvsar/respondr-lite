@@ -1,10 +1,22 @@
 import requests
 import json
 import time
+import argparse
 from datetime import datetime, timedelta
 
-# Base URL for the webhook endpoint
-WEBHOOK_URL = "http://localhost:8000/webhook"
+def get_webhook_url(production=False):
+    """Get the appropriate webhook URL based on environment"""
+    if production:
+        return "https://respondr.paincave.pro/webhook"
+    else:
+        return "http://localhost:8000/webhook"
+
+def get_api_url(production=False):
+    """Get the appropriate API URL based on environment"""
+    if production:
+        return "https://respondr.paincave.pro/api/responders"
+    else:
+        return "http://localhost:8000/api/responders"
 
 # Synthetic test data simulating GroupMe messages from SAR responders
 # Including both valid responses and edge cases with realistic timing
@@ -130,13 +142,15 @@ test_messages = [
     }
 ]
 
-def send_webhook_message(message_data):
+def send_webhook_message(message_data, production=False):
     """Send a single webhook message to the API"""
+    webhook_url = get_webhook_url(production)
+    
     try:
         # Remove the 'expected' field before sending (it's just for our testing reference)
         webhook_data = {k: v for k, v in message_data.items() if k != 'expected'}
         
-        response = requests.post(WEBHOOK_URL, json=webhook_data)
+        response = requests.post(webhook_url, json=webhook_data)
         if response.status_code == 200:
             expected = message_data.get('expected', 'Standard test')
             print(f"✅ Sent from {message_data['name']}: '{message_data['text'][:40]}...'")
@@ -149,10 +163,20 @@ def send_webhook_message(message_data):
         print(f"❌ Error sending message from {message_data['name']}: {e}")
         return False
 
-def validate_api_responses():
+def validate_api_responses(production=False):
     """Fetch and analyze the API responses after sending test data"""
+    api_url = get_api_url(production)
+    
+    if production:
+        print("\n⚠️  Production API validation requires OAuth2 authentication")
+        print("   Please manually verify in browser:")
+        print(f"   1. Visit: https://respondr.paincave.pro")
+        print("   2. Sign in with Azure AD credentials")
+        print(f"   3. Check API: {api_url}")
+        return True
+    
     try:
-        response = requests.get("http://localhost:8000/api/responders")
+        response = requests.get(api_url)
         if response.status_code == 200:
             responders = response.json()
             print(f"\n📋 Analysis of {len(responders)} processed messages:")
@@ -209,51 +233,88 @@ def validate_api_responses():
         print(f"❌ Error validating API responses: {e}")
         return False
 
-def test_webhook_endpoint():
+def test_webhook_endpoint(production=False):
     """Send all test messages to the webhook endpoint"""
-    print("🧪 Starting Enhanced Webhook Test")
+    webhook_url = get_webhook_url(production)
+    mode = "Production" if production else "Local"
+    
+    print(f"🧪 Starting Enhanced Webhook Test - {mode} Mode")
     print("="*60)
-    print("Testing both valid SAR responses and edge cases:")
-    print("• Standard SAR vehicle assignments")
-    print("• Personal vehicle (POV) responses") 
-    print("• Partial/unclear information")
-    print("• Non-response messages (chat, questions)")
-    print("• Malformed or empty messages")
-    print("• Unusual but valid formats")
+    
+    if production:
+        print("🌐 Production testing with OAuth2 configuration:")
+        print("• Webhook endpoint: No authentication required")
+        print("• Dashboard/API: OAuth2 authentication required")
+        print("• Testing webhook bypass functionality")
+    else:
+        print("🏠 Local testing scenarios:")
+        print("• Standard SAR vehicle assignments")
+        print("• Personal vehicle (POV) responses") 
+        print("• Partial/unclear information")
+        print("• Non-response messages (chat, questions)")
+        print("• Malformed or empty messages")
+        print("• Unusual but valid formats")
+    
     print("="*60)
-    print(f"Sending {len(test_messages)} messages to {WEBHOOK_URL}")
+    print(f"Sending {len(test_messages)} messages to {webhook_url}")
     print("-" * 60)
     
     successful_sends = 0
     
     for i, message in enumerate(test_messages, 1):
         print(f"\n[{i:2d}/{len(test_messages)}] ", end="")
-        if send_webhook_message(message):
+        if send_webhook_message(message, production):
             successful_sends += 1
         # Small delay between messages to simulate real-world timing
-        time.sleep(0.3)
+        time.sleep(0.5 if production else 0.3)
     
     print("\n" + "="*60)
     print(f"Test Results: {successful_sends}/{len(test_messages)} messages sent successfully")
     
     if successful_sends == len(test_messages):
-        print("\n🎉 All messages sent successfully!")
-        print("\n📋 Review the parsed results:")
-        print("   - API endpoint: http://localhost:8000/api/responders")
-        print("   - Dashboard: http://localhost:8000/dashboard") 
-        print("   - Frontend: http://localhost:8000")
-        print("\nCheck how the AI handled:")
-        print("   • Valid responses vs. non-response messages")
-        print("   • Unclear vehicle assignments")
-        print("   • Missing or vague ETA information")
-        print("   • Malformed input data")
+        print(f"\n🎉 All messages sent successfully to {mode.lower()} endpoint!")
+        
+        if production:
+            print("\n🌐 Production Webhook Testing Complete!")
+            print("   ✅ Webhook endpoint bypasses OAuth2 authentication")
+            print("   📝 Manual verification required for processed data:")
+            print("   1. Visit: https://respondr.paincave.pro")
+            print("   2. Sign in with Azure AD credentials")
+            print("   3. Verify test messages appear in dashboard")
+        else:
+            print("\n📋 Local Testing - Review the parsed results:")
+            print("   - API endpoint: http://localhost:8000/api/responders")
+            print("   - Dashboard: http://localhost:8000/dashboard") 
+            print("   - Frontend: http://localhost:8000")
+            print("\nCheck how the AI handled:")
+            print("   • Valid responses vs. non-response messages")
+            print("   • Unclear vehicle assignments")
+            print("   • Missing or vague ETA information")
+            print("   • Malformed input data")
         
         # Analyze the results
-        validate_api_responses()
+        validate_api_responses(production)
     else:
         print(f"\nWarning: {len(test_messages) - successful_sends} messages failed to send.")
-        print("Check if the server is running on the correct port.")
-        print("Expected server: http://localhost:8000")
+        if production:
+            print("Check production endpoint connectivity and OAuth2 configuration.")
+        else:
+            print("Check if the server is running on the correct port.")
+            print("Expected server: http://localhost:8000")
+
+def main():
+    """Main function with argument parsing for production testing"""
+    parser = argparse.ArgumentParser(description="Test webhook endpoints for Respondr application")
+    parser.add_argument(
+        "--production", 
+        action="store_true", 
+        help="Test production endpoint (https://respondr.paincave.pro)"
+    )
+    
+    args = parser.parse_args()
+    
+    # Run the tests
+    test_webhook_endpoint(production=args.production)
 
 if __name__ == "__main__":
-    test_webhook_endpoint()
+    main()

@@ -1,0 +1,192 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deployment.kubernetes.io/revision: "8"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"labels":{"app":"respondr"},"name":"respondr-deployment","namespace":"respondr"},"spec":{"replicas":2,"selector":{"matchLabels":{"app":"respondr"}},"template":{"metadata":{"labels":{"app":"respondr","azure.workload.identity/use":"true"}},"spec":{"containers":[{"env":[{"name":"AZURE_OPENAI_API_KEY","valueFrom":{"secretKeyRef":{"key":"AZURE_OPENAI_API_KEY","name":"respondr-secrets"}}},{"name":"AZURE_OPENAI_ENDPOINT","valueFrom":{"secretKeyRef":{"key":"AZURE_OPENAI_ENDPOINT","name":"respondr-secrets"}}},{"name":"AZURE_OPENAI_DEPLOYMENT","valueFrom":{"secretKeyRef":{"key":"AZURE_OPENAI_DEPLOYMENT","name":"respondr-secrets"}}},{"name":"AZURE_OPENAI_API_VERSION","valueFrom":{"secretKeyRef":{"key":"AZURE_OPENAI_API_VERSION","name":"respondr-secrets"}}}],"image":"respondrbt774d4d55kswacr.azurecr.io/respondr:latest","imagePullPolicy":"IfNotPresent","livenessProbe":{"httpGet":{"path":"/api/responders","port":8000},"initialDelaySeconds":30,"periodSeconds":10},"name":"respondr","ports":[{"containerPort":8000}],"readinessProbe":{"httpGet":{"path":"/api/responders","port":8000},"initialDelaySeconds":5,"periodSeconds":5},"resources":{"limits":{"cpu":"500m","memory":"512Mi"},"requests":{"cpu":"250m","memory":"256Mi"}}},{"args":["--provider=oidc","--provider-display-name=\"Microsoft Entra\"","--client-id=277aff9d-67f9-4caa-872c-be940ba89dde","--client-secret={{AZURE_CLIENT_SECRET}}","--oidc-issuer-url=https://login.microsoftonline.com/5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d/v2.0","--redirect-url=https://respondr.paincave.pro/oauth2/callback","--email-domain=*","--upstream=http://localhost:8000","--http-address=0.0.0.0:4180","--cookie-secret={{OAUTH2_COOKIE_SECRET}}","--cookie-secure=true","--cookie-httponly=true","--cookie-samesite=lax","--cookie-expire=24h","--skip-provider-button=true","--pass-access-token=true","--pass-user-headers=true","--set-xauthrequest=true","--silence-ping-logging=true","--skip-auth-regex=^/webhook$","--skip-auth-regex=^/health$"],"env":[{"name":"OAUTH2_PROXY_CLIENT_ID","valueFrom":{"secretKeyRef":{"key":"client-id","name":"oauth2-secrets"}}},{"name":"OAUTH2_PROXY_CLIENT_SECRET","valueFrom":{"secretKeyRef":{"key":"client-secret","name":"oauth2-secrets"}}},{"name":"OAUTH2_PROXY_COOKIE_SECRET","valueFrom":{"secretKeyRef":{"key":"cookie-secret","name":"oauth2-secrets"}}}],"image":"quay.io/oauth2-proxy/oauth2-proxy:v7.5.1","livenessProbe":{"httpGet":{"path":"/ping","port":4180},"initialDelaySeconds":10,"periodSeconds":10},"name":"oauth2-proxy","ports":[{"containerPort":4180}],"readinessProbe":{"httpGet":{"path":"/ping","port":4180},"initialDelaySeconds":5,"periodSeconds":5},"resources":{"limits":{"cpu":"100m","memory":"128Mi"},"requests":{"cpu":"50m","memory":"64Mi"}}}],"serviceAccountName":"respondr-sa"}}}}
+  creationTimestamp: "2025-08-05T17:48:13Z"
+  generation: 8
+  labels:
+    app: respondr
+  name: respondr-deployment
+  namespace: respondr
+  resourceVersion: "34915"
+  uid: 3a3726cf-7ed5-4a19-af7c-ca87185719d3
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 2
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: respondr
+  strategy:
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2025-08-05T11:51:07-07:00"
+      creationTimestamp: null
+      labels:
+        app: respondr
+        azure.workload.identity/use: "true"
+    spec:
+      containers:
+      - env:
+        - name: AZURE_OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              key: AZURE_OPENAI_API_KEY
+              name: respondr-secrets
+        - name: AZURE_OPENAI_ENDPOINT
+          valueFrom:
+            secretKeyRef:
+              key: AZURE_OPENAI_ENDPOINT
+              name: respondr-secrets
+        - name: AZURE_OPENAI_DEPLOYMENT
+          valueFrom:
+            secretKeyRef:
+              key: AZURE_OPENAI_DEPLOYMENT
+              name: respondr-secrets
+        - name: AZURE_OPENAI_API_VERSION
+          valueFrom:
+            secretKeyRef:
+              key: AZURE_OPENAI_API_VERSION
+              name: respondr-secrets
+        image: respondrbt774d4d55kswacr.azurecr.io/respondr:latest
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /api/responders
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: respondr
+        ports:
+        - containerPort: 8000
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /api/responders
+            port: 8000
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 500m
+            memory: 512Mi
+          requests:
+            cpu: 250m
+            memory: 256Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      - args:
+        - --provider=oidc
+        - --provider-display-name="Microsoft Entra"
+        - --client-id=277aff9d-67f9-4caa-872c-be940ba89dde
+        - --client-secret={{AZURE_CLIENT_SECRET}}
+        - --oidc-issuer-url=https://login.microsoftonline.com/5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d/v2.0
+        - --redirect-url=https://respondr.paincave.pro/oauth2/callback
+        - --email-domain=*
+        - --upstream=http://localhost:8000
+        - --http-address=0.0.0.0:4180
+        - --cookie-secret={{OAUTH2_COOKIE_SECRET}}
+        - --cookie-secure=true
+        - --cookie-httponly=true
+        - --cookie-samesite=lax
+        - --cookie-expire=24h
+        - --skip-provider-button=true
+        - --pass-access-token=true
+        - --pass-user-headers=true
+        - --set-xauthrequest=true
+        - --silence-ping-logging=true
+        - --skip-auth-regex=^/webhook$
+        - --skip-auth-regex=^/health$
+        env:
+        - name: OAUTH2_PROXY_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              key: client-id
+              name: oauth2-secrets
+        - name: OAUTH2_PROXY_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: client-secret
+              name: oauth2-secrets
+        - name: OAUTH2_PROXY_COOKIE_SECRET
+          valueFrom:
+            secretKeyRef:
+              key: cookie-secret
+              name: oauth2-secrets
+        image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
+        imagePullPolicy: IfNotPresent
+        livenessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ping
+            port: 4180
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: oauth2-proxy
+        ports:
+        - containerPort: 4180
+          protocol: TCP
+        readinessProbe:
+          failureThreshold: 3
+          httpGet:
+            path: /ping
+            port: 4180
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          successThreshold: 1
+          timeoutSeconds: 1
+        resources:
+          limits:
+            cpu: 100m
+            memory: 128Mi
+          requests:
+            cpu: 50m
+            memory: 64Mi
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      serviceAccount: respondr-sa
+      serviceAccountName: respondr-sa
+      terminationGracePeriodSeconds: 30
+status:
+  availableReplicas: 2
+  conditions:
+  - lastTransitionTime: "2025-08-05T17:48:35Z"
+    lastUpdateTime: "2025-08-05T17:48:35Z"
+    message: Deployment has minimum availability.
+    reason: MinimumReplicasAvailable
+    status: "True"
+    type: Available
+  - lastTransitionTime: "2025-08-05T17:48:13Z"
+    lastUpdateTime: "2025-08-05T18:51:29Z"
+    message: ReplicaSet "respondr-deployment-557cb5c9" has successfully progressed.
+    reason: NewReplicaSetAvailable
+    status: "True"
+    type: Progressing
+  observedGeneration: 8
+  readyReplicas: 2
+  replicas: 2
+  updatedReplicas: 2

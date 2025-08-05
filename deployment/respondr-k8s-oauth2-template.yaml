@@ -73,14 +73,11 @@ spec:
         args:
         - --provider=oidc
         - --provider-display-name="Microsoft Entra"
-        - --client-id={{AZURE_CLIENT_ID}}
-        - --client-secret={{AZURE_CLIENT_SECRET}}
         - --oidc-issuer-url=https://login.microsoftonline.com/{{AZURE_TENANT_ID}}/v2.0
         - --redirect-url=https://{{HOSTNAME_PLACEHOLDER}}/oauth2/callback
         - --email-domain=*
         - --upstream=http://localhost:8000
         - --http-address=0.0.0.0:4180
-        - --cookie-secret={{OAUTH2_COOKIE_SECRET}}
         - --cookie-secure=true
         - --cookie-httponly=true
         - --cookie-samesite=lax
@@ -90,6 +87,8 @@ spec:
         - --pass-user-headers=true
         - --set-xauthrequest=true
         - --silence-ping-logging=true
+        - --skip-auth-regex=^/webhook$
+        - --skip-auth-regex=^/health$
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
