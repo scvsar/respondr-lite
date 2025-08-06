@@ -174,17 +174,65 @@ $enableResult = az aks enable-addons `
     --resource-group $ResourceGroupName `
     --name $aksClusterName `
     --addons ingress-appgw `
+    --appgw-name $appGwName `
     --appgw-subnet-id $subnetId 2>&1
 
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "AGIC enable failed. Output: $enableResult" -ForegroundColor Red
-    Write-Host "This may be expected if AGIC is already enabled." -ForegroundColor Yellow
+    Write-Host "AGIC enable failed. Full output:" -ForegroundColor Red
+    Write-Host $enableResult -ForegroundColor Red
+    
+    # Check if AGIC is already enabled
+    $agicStatus = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.enabled" -o tsv 2>$null
+    if ($agicStatus -eq "true") {
+        Write-Host "AGIC addon is already enabled - continuing with deployment." -ForegroundColor Yellow
+    } else {
+        Write-Host "AGIC addon is not enabled and enablement failed. This will prevent Application Gateway creation." -ForegroundColor Red
+        Write-Host "Manual fix: Run 'az aks enable-addons --resource-group $ResourceGroupName --name $aksClusterName --addons ingress-appgw --appgw-name $appGwName --appgw-subnet-id $subnetId'" -ForegroundColor Yellow
+        throw "AGIC enablement failed and addon is not active"
+    }
 } else {
     Write-Host "AGIC addon enabled successfully!" -ForegroundColor Green
 }
 
+# Verify AGIC has proper permissions on the subnet
+Write-Host "Verifying AGIC managed identity has Network Contributor permissions on subnet..." -ForegroundColor Yellow
+$agicIdentityId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv 2>$null
+
+if ($agicIdentityId) {
+    Write-Host "AGIC managed identity object ID: $agicIdentityId" -ForegroundColor Cyan
+    
+    # Grant Network Contributor role on the Application Gateway subnet
+    Write-Host "Ensuring AGIC has Network Contributor role on Application Gateway subnet..." -ForegroundColor Yellow
+    $roleAssignment = az role assignment create `
+        --assignee $agicIdentityId `
+        --role "Network Contributor" `
+        --scope $subnetId 2>&1
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Network Contributor role assigned successfully (or already exists)" -ForegroundColor Green
+    } else {
+        Write-Host "Warning: Role assignment may have failed: $roleAssignment" -ForegroundColor Yellow
+        Write-Host "This might cause Application Gateway deployment to fail" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Warning: Could not retrieve AGIC managed identity - permissions may need manual configuration" -ForegroundColor Yellow
+}
+
 # Wait for Application Gateway to be created by AGIC
 Write-Host "Waiting for Application Gateway to be ready..." -ForegroundColor Yellow
+
+# Get the actual Application Gateway name from AGIC configuration (may differ from requested name)
+Write-Host "Getting actual Application Gateway name from AGIC..." -ForegroundColor Yellow
+$actualAppGwId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.config.effectiveApplicationGatewayId" -o tsv 2>$null
+
+if ($actualAppGwId) {
+    $actualAppGwName = $actualAppGwId.Split('/')[-1]
+    Write-Host "AGIC created Application Gateway: $actualAppGwName" -ForegroundColor Green
+    # Use the actual name for subsequent operations
+    $appGwName = $actualAppGwName
+} else {
+    Write-Host "Could not get actual Application Gateway name - using requested name: $appGwName" -ForegroundColor Yellow
+}
 
 # IMPORTANT: AGIC creates Application Gateway in the MC resource group, not the main resource group!
 $mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
@@ -208,7 +256,11 @@ do {
 
 if (-not $deploymentStarted) {
     Write-Host "Warning: AGIC has not started Application Gateway deployment within timeout" -ForegroundColor Yellow
-    Write-Host "Check AGIC pod logs: kubectl logs -n kube-system deployment/ingress-appgw-deployment" -ForegroundColor Yellow
+    Write-Host "This may indicate permission issues or AGIC configuration problems" -ForegroundColor Yellow
+    Write-Host "Diagnostic commands:" -ForegroundColor Yellow
+    Write-Host "  kubectl logs -n kube-system deployment/ingress-appgw-deployment" -ForegroundColor Cyan
+    Write-Host "  az aks show --resource-group $ResourceGroupName --name $aksClusterName --query addonProfiles.ingressApplicationGateway" -ForegroundColor Cyan
+    Write-Host "AGIC managed identity may need Network Contributor role on subnet: $subnetId" -ForegroundColor Yellow
 }
 
 # Wait for deployment to complete
@@ -223,10 +275,31 @@ do {
         break
     } elseif ($deploymentStatus -eq "Failed") {
         Write-Host "Application Gateway deployment failed!" -ForegroundColor Red
+        
+        # Get detailed error information
+        Write-Host "Getting detailed error information..." -ForegroundColor Yellow
         $deploymentError = az deployment group show --resource-group $mcResourceGroup --name $appGwName --query "properties.error" -o json 2>$null
         if ($deploymentError -and $deploymentError -ne "null") {
-            Write-Host "Deployment error: $deploymentError" -ForegroundColor Red
+            Write-Host "Deployment error details:" -ForegroundColor Red
+            Write-Host $deploymentError -ForegroundColor Red
         }
+        
+        # Get detailed operation errors
+        $operationErrors = az deployment operation group list --resource-group $mcResourceGroup --name $appGwName --query "[?properties.provisioningState=='Failed'].{operationId:operationId,error:properties.statusMessage.error}" -o json 2>$null
+        if ($operationErrors -and $operationErrors -ne "[]") {
+            Write-Host "Failed operations:" -ForegroundColor Red
+            Write-Host $operationErrors -ForegroundColor Red
+        }
+        
+        # Check AGIC pod logs for additional context
+        Write-Host "Checking AGIC pod logs for additional context..." -ForegroundColor Yellow
+        $agicLogs = kubectl logs -n kube-system deployment/ingress-appgw-deployment --tail=20 2>$null
+        if ($agicLogs) {
+            Write-Host "Recent AGIC logs:" -ForegroundColor Yellow
+            Write-Host $agicLogs -ForegroundColor Cyan
+        }
+        
+        Write-Host "Application Gateway deployment failed - manual intervention required" -ForegroundColor Red
         break
     }
 } while ((Get-Date) -lt $deploymentTimeout)
