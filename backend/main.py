@@ -435,6 +435,13 @@ def get_responder_data():
 @app.get("/api/user")
 def get_user_info(request: Request):
     """Get authenticated user information from OAuth2 Proxy headers"""
+    # Debug: log all headers to see what OAuth2 proxy is sending
+    print("=== DEBUG: All headers received ===")
+    for header_name, header_value in request.headers.items():
+        if header_name.lower().startswith('x-'):
+            print(f"Header: {header_name} = {header_value}")
+    print("=== END DEBUG ===")
+    
     # OAuth2 Proxy passes user information via headers
     user_email = request.headers.get("X-User")
     user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
