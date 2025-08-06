@@ -59,7 +59,7 @@ if ($Docker) {
         Write-Host "Backend is running, testing webhooks..." -ForegroundColor Green
         
         Set-Location backend
-        python test_webhook.py
+        py test_webhook.py
         
     } catch {
         Write-Host "Backend not running on localhost:8000" -ForegroundColor Red
