@@ -241,8 +241,22 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would verify DNS configuration" -ForegroundColor Cyan
 }
 
-# Step 6: Application Deployment
-Write-Host "`n📦 Step 6: Deploying Application with Authentication..." -ForegroundColor Yellow
+# Step 6: Secrets Creation
+Write-Host "`n🔑 Step 6: Creating Application Secrets..." -ForegroundColor Yellow
+Write-Host "===========================================" -ForegroundColor Yellow
+
+if (-not $DryRun) {
+    # Create secrets using the dedicated script
+    Write-Host "Generating application secrets..." -ForegroundColor Yellow
+    .\create-secrets.ps1 -ResourceGroupName $ResourceGroupName
+    Test-LastCommand "Secrets creation failed"
+    Write-Host "Application secrets created successfully" -ForegroundColor Green
+} else {
+    Write-Host "DRY RUN: Would create application secrets" -ForegroundColor Cyan
+}
+
+# Step 7: Application Deployment
+Write-Host "`n📦 Step 7: Deploying Application with Authentication..." -ForegroundColor Yellow
 Write-Host "======================================================" -ForegroundColor Yellow
 
 $deployArgs = @(
@@ -270,8 +284,8 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
 
-# Step 7: DNS and Connectivity Verification
-Write-Host "`n🌐 Step 7: DNS and Connectivity Verification..." -ForegroundColor Yellow
+# Step 8: DNS and Connectivity Verification
+Write-Host "`n🌐 Step 8: DNS and Connectivity Verification..." -ForegroundColor Yellow
 Write-Host "=================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {

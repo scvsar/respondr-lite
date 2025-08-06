@@ -38,5 +38,15 @@
     "eta_timestamp": "2025-08-05 16:34:00",
     "minutes_until_arrival": 14,
     "arrival_status": "On Route"
+  },
+  {
+    "name": "Test User",
+    "text": "I'm responding with SAR78, ETA 15 minutes",
+    "timestamp": "2021-07-28 08:00:00",
+    "vehicle": "SAR78",
+    "eta": "17:20",
+    "eta_timestamp": "2025-08-05 17:20:00",
+    "minutes_until_arrival": 14,
+    "arrival_status": "On Route"
   }
 ]

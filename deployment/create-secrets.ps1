@@ -161,11 +161,15 @@ try {
     # Read the template content
     $secretsContent = Get-Content -Path $secretsPath -Raw
     
+    # Generate a secure webhook API key (64-character hex string)
+    $webhookApiKey = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    
     # Replace placeholders with actual values
     $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
     $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_ENDPOINT_HERE', $openAIEndpoint
     $secretsContent = $secretsContent -replace 'YOUR_DEPLOYMENT_NAME_HERE', $actualDeploymentName
     $secretsContent = $secretsContent -replace 'YOUR_API_VERSION_HERE', $ApiVersion
+    $secretsContent = $secretsContent -replace 'YOUR_WEBHOOK_API_KEY_HERE', $webhookApiKey
     
     # Write the updated content
     Set-Content -Path $secretsPath -Value $secretsContent
@@ -182,11 +186,13 @@ Write-Host "`nVerifying secrets file..." -ForegroundColor Yellow
 
 $keyStatus = if ($openAIKey) { "Valid key found" } else { "MISSING" }
 $deploymentStatus = if ($deploymentValidated) { "Validated" } else { "⚠️  Placeholder (manual setup required)" }
+$webhookKeyStatus = if ($webhookApiKey) { "Generated (64-char hex)" } else { "MISSING" }
 
 Write-Host "  Azure OpenAI Endpoint: $openAIEndpoint" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI API Key: $keyStatus" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI Deployment: $actualDeploymentName ($deploymentStatus)" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI API Version: $ApiVersion" -ForegroundColor Cyan
+Write-Host "  Webhook API Key: $webhookKeyStatus" -ForegroundColor Cyan
 
 # Validate the secrets.yaml file was created with the correct format
 if (Test-Path $secretsPath) {
