@@ -211,8 +211,27 @@ def test_user_info_no_headers():
     assert response.status_code == 200
     
     data = response.json()
-    assert data["authenticated"] == True
+    assert data["authenticated"] == False  # Should be False when no headers present
     assert data["email"] is None
     assert data["name"] is None
     assert data["groups"] == []
+    assert data["logout_url"] == "/oauth2/sign_out"
+
+def test_user_info_oauth2_proxy_headers():
+    """Test the /api/user endpoint with OAuth2 Proxy standard headers"""
+    # Test with OAuth2 Proxy standard headers (X-Auth-Request-*)
+    headers = {
+        "X-Auth-Request-Email": "oauth2@example.com",
+        "X-Auth-Request-Preferred-Username": "OAuth2 User",
+        "X-Auth-Request-Groups": "admin, users, testers"
+    }
+    
+    response = client.get("/api/user", headers=headers)
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert data["authenticated"] == True
+    assert data["email"] == "oauth2@example.com"
+    assert data["name"] == "OAuth2 User"
+    assert data["groups"] == ["admin", "users", "testers"]
     assert data["logout_url"] == "/oauth2/sign_out"
