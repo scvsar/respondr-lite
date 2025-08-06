@@ -169,3 +169,50 @@ def test_static_files():
     
     # In test mode, static files should NOT be mounted for simplicity
     assert not static_route, "Static files should not be mounted in test mode"
+
+def test_user_info():
+    """Test the /api/user endpoint with OAuth2 headers"""
+    # Test with OAuth2 Proxy headers
+    headers = {
+        "X-User": "test@example.com",
+        "X-Preferred-Username": "Test User",
+        "X-User-Groups": "group1, group2, group3"
+    }
+    
+    response = client.get("/api/user", headers=headers)
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert data["authenticated"] == True
+    assert data["email"] == "test@example.com"
+    assert data["name"] == "Test User"
+    assert data["groups"] == ["group1", "group2", "group3"]
+    assert data["logout_url"] == "/oauth2/sign_out"
+
+def test_user_info_minimal_headers():
+    """Test the /api/user endpoint with minimal OAuth2 headers"""
+    headers = {
+        "X-User": "minimal@example.com"
+    }
+    
+    response = client.get("/api/user", headers=headers)
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert data["authenticated"] == True
+    assert data["email"] == "minimal@example.com"
+    assert data["name"] == "minimal@example.com"  # Should fallback to email
+    assert data["groups"] == []
+    assert data["logout_url"] == "/oauth2/sign_out"
+
+def test_user_info_no_headers():
+    """Test the /api/user endpoint with no OAuth2 headers"""
+    response = client.get("/api/user")
+    assert response.status_code == 200
+    
+    data = response.json()
+    assert data["authenticated"] == True
+    assert data["email"] is None
+    assert data["name"] is None
+    assert data["groups"] == []
+    assert data["logout_url"] == "/oauth2/sign_out"

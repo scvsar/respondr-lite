@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import "./App.css";
+import UserInfo from "./UserInfo";
 
 function App() {
   const [data, setData] = useState([]);
@@ -85,6 +86,7 @@ function App() {
           }}
         />
         <h1>SCVSAR Response Tracker</h1>
+        <UserInfo />
         {error && (
           <div className="error-message" style={{
             backgroundColor: '#ffcccc',

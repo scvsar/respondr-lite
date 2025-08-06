@@ -67,11 +67,9 @@ if (-not $clientSecret) {
     exit 1
 }
 
-# Generate secure cookie secret (32 bytes base64 encoded)
+# Generate secure cookie secret (32 characters for AES-256)
 Write-Host "Generating secure cookie secret..." -ForegroundColor Yellow
-$cookieSecretBytes = New-Object byte[] 32
-[System.Security.Cryptography.RNGCryptoServiceProvider]::Create().GetBytes($cookieSecretBytes)
-$cookieSecret = [Convert]::ToBase64String($cookieSecretBytes)
+$cookieSecret = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 
 # Create Kubernetes namespace if it doesn't exist
 Write-Host "Ensuring namespace exists..." -ForegroundColor Yellow
@@ -134,8 +132,22 @@ $deploymentYaml = $deploymentYaml -replace "{{ACR_IMAGE_PLACEHOLDER}}", $imageUr
 $deploymentYaml = $deploymentYaml -replace "{{HOSTNAME_PLACEHOLDER}}", $hostname
 $deploymentYaml = $deploymentYaml -replace "HOSTNAME_PLACEHOLDER", $hostname
 $deploymentYaml = $deploymentYaml -replace "{{AZURE_TENANT_ID}}", $tenantId
-$deploymentYaml = $deploymentYaml -replace "CLIENT_ID_PLACEHOLDER", $identityClientId
+$deploymentYaml = $deploymentYaml -replace "{{TENANT_ID_PLACEHOLDER}}", $tenantId
 $deploymentYaml = $deploymentYaml -replace "TENANT_ID_PLACEHOLDER", $tenantId
+$deploymentYaml = $deploymentYaml -replace "{{CLIENT_ID_PLACEHOLDER}}", $identityClientId
+$deploymentYaml = $deploymentYaml -replace "CLIENT_ID_PLACEHOLDER", $identityClientId
+
+# OAuth2 container markers (remove these as they're just template markers)
+$deploymentYaml = $deploymentYaml -replace "      {{OAUTH2_CONTAINER_START}}", ""
+$deploymentYaml = $deploymentYaml -replace "      {{OAUTH2_CONTAINER_END}}", ""
+
+# Service port configuration for OAuth2 mode (targets oauth2-proxy port 4180)
+$servicePortConfig = @"
+  - port: 80
+    protocol: TCP
+    targetPort: 4180
+"@
+$deploymentYaml = $deploymentYaml -replace "  {{SERVICE_PORT_CONFIG}}", $servicePortConfig
 
 # Save the final deployment file
 $deploymentYaml | Out-File -FilePath "respondr-k8s-oauth2.yaml" -Encoding UTF8
