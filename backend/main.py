@@ -432,6 +432,22 @@ def get_responder_data():
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
 
+@app.get("/api/user")
+def get_user_info(request: Request):
+    """Get authenticated user information from OAuth2 Proxy headers"""
+    # OAuth2 Proxy passes user information via headers
+    user_email = request.headers.get("X-User")
+    user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
+    user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
+    
+    return JSONResponse(content={
+        "authenticated": True,
+        "email": user_email,
+        "name": user_name or user_email,  # Fallback to email if name not available
+        "groups": [group.strip() for group in user_groups if group.strip()],
+        "logout_url": "/oauth2/sign_out"  # OAuth2 Proxy logout endpoint
+    })
+
 @app.get("/debug/pod-info")
 def get_pod_info():
     """Debug endpoint to show which pod is serving requests"""
