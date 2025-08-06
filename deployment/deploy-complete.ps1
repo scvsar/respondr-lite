@@ -174,8 +174,75 @@ if ($UseOAuth2) {
     Write-Host "============================================================================" -ForegroundColor Yellow
 }
 
-# Step 5: Application Deployment
-Write-Host "`nStep 5: Deploying Application with Authentication..." -ForegroundColor Yellow
+# Step 5: DNS Configuration Check and Prompt
+Write-Host "`n🌐 Step 5: DNS Configuration Verification..." -ForegroundColor Yellow
+Write-Host "=============================================" -ForegroundColor Yellow
+
+if (-not $DryRun) {
+    # Get the Application Gateway IP
+    $appGwIp = az network public-ip show --resource-group $mcResourceGroup --name "applicationgateway-appgwpip" --query "ipAddress" -o tsv 2>$null
+    
+    if ($appGwIp) {
+        Write-Host "Your Application Gateway IP is: $appGwIp" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "REQUIRED DNS CONFIGURATION:" -ForegroundColor Red
+        Write-Host "Before continuing, you MUST configure DNS:" -ForegroundColor Yellow
+        Write-Host "  1. Add an A record in your $Domain DNS zone:" -ForegroundColor Cyan
+        Write-Host "     Name: respondr" -ForegroundColor White
+        Write-Host "     Type: A" -ForegroundColor White
+        Write-Host "     Value: $appGwIp" -ForegroundColor White
+        Write-Host "     TTL: 300" -ForegroundColor White
+        Write-Host ""
+        Write-Host "  2. Wait for DNS propagation (usually 1-5 minutes)" -ForegroundColor Cyan
+        Write-Host "  3. Test with: nslookup respondr.$Domain" -ForegroundColor Cyan
+        Write-Host ""
+        
+        # Test current DNS resolution
+        Write-Host "Testing current DNS resolution..." -ForegroundColor Yellow
+        try {
+            $dnsResult = Resolve-DnsName -Name $hostname -ErrorAction Stop
+            $resolvedIp = $dnsResult.IPAddress
+            Write-Host "DNS currently resolves to: $resolvedIp" -ForegroundColor Green
+            
+            if ($resolvedIp -eq $appGwIp) {
+                Write-Host "✅ DNS is correctly configured!" -ForegroundColor Green
+            } else {
+                Write-Host "❌ DNS mismatch: Expected $appGwIp, got $resolvedIp" -ForegroundColor Red
+                Write-Host "Please update your DNS A record and wait for propagation." -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "❌ DNS resolution failed - $hostname does not resolve" -ForegroundColor Red
+            Write-Host "Please add the DNS A record as shown above." -ForegroundColor Yellow
+        }
+        
+        Write-Host ""
+        Write-Host "Press ENTER to continue once DNS is configured, or Ctrl+C to abort..." -ForegroundColor Yellow
+        Read-Host
+        
+        # Verify DNS again after user confirmation
+        Write-Host "Verifying DNS configuration..." -ForegroundColor Yellow
+        try {
+            $dnsResult = Resolve-DnsName -Name $hostname -ErrorAction Stop
+            $resolvedIp = $dnsResult.IPAddress
+            
+            if ($resolvedIp -eq $appGwIp) {
+                Write-Host "✅ DNS verification successful!" -ForegroundColor Green
+            } else {
+                Write-Host "⚠️  DNS still shows mismatch but continuing..." -ForegroundColor Yellow
+                Write-Host "Expected: $appGwIp, Got: $resolvedIp" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Host "⚠️  DNS still not resolving but continuing..." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "❌ Could not retrieve Application Gateway IP" -ForegroundColor Red
+    }
+} else {
+    Write-Host "DRY RUN: Would verify DNS configuration" -ForegroundColor Cyan
+}
+
+# Step 6: Application Deployment
+Write-Host "`n📦 Step 6: Deploying Application with Authentication..." -ForegroundColor Yellow
 Write-Host "======================================================" -ForegroundColor Yellow
 
 $deployArgs = @(
@@ -203,8 +270,8 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
 
-# Step 6: DNS and Connectivity Verification
-Write-Host "`n🌐 Step 6: DNS and Connectivity Verification..." -ForegroundColor Yellow
+# Step 7: DNS and Connectivity Verification
+Write-Host "`n🌐 Step 7: DNS and Connectivity Verification..." -ForegroundColor Yellow
 Write-Host "=================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {
