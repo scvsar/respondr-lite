@@ -190,7 +190,7 @@ Write-Host "=============================================" -ForegroundColor Yell
 
 if (-not $DryRun) {
     # Get the Application Gateway IP
-    $appGwIp = az network public-ip show --resource-group $mcResourceGroup --name "applicationgateway-appgwpip" --query "ipAddress" -o tsv 2>$null
+    $appGwIp = az network public-ip show --resource-group $mcResourceGroup --name "$appGwName-appgwpip" --query "ipAddress" -o tsv 2>$null
     
     if ($appGwIp) {
         Write-Host "Your Application Gateway IP is: $appGwIp" -ForegroundColor Green
