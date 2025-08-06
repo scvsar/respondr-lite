@@ -222,8 +222,8 @@ Write-Host "You can now deploy your application using:" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "📋 Deployment Options:" -ForegroundColor Blue
 Write-Host "  1. Unified deployment (recommended):" -ForegroundColor Yellow
-Write-Host "     .\deploy-unified.ps1                    # OAuth2 protected (secure)" -ForegroundColor Green
-Write-Host "     .\deploy-unified.ps1 -NoOAuth2          # Direct access (simple)" -ForegroundColor Cyan
+Write-Host "     .\deploy-complete.ps1 -ResourceGroupName respondr  # Complete end-to-end deployment" -ForegroundColor Green
+Write-Host "     .\deploy-to-k8s.ps1 -UseOAuth2 -ResourceGroupName respondr  # Application deployment only" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  2. Manual deployment:" -ForegroundColor Yellow
 Write-Host "     kubectl apply -f secrets.yaml" -ForegroundColor White

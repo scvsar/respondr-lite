@@ -49,6 +49,12 @@ spec:
             secretKeyRef:
               name: respondr-secrets
               key: WEBHOOK_API_KEY
+        - name: REDIS_HOST
+          value: redis-service
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
         resources:
           requests:
             memory: "256Mi"
@@ -95,6 +101,7 @@ spec:
         - --silence-ping-logging=true
         - --skip-auth-regex=^/webhook$
         - --skip-auth-regex=^/health$
+        - --whitelist-domain={{HOSTNAME_PLACEHOLDER}}
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
