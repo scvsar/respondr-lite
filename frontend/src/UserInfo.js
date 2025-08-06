@@ -29,11 +29,8 @@ function UserInfo() {
   }, []);
 
   const handleLogout = () => {
-    window.location.href = logoutUrl;
-  };
+window.location.href = logoutUrl;
 
-  const handleLogin = () => {
-    window.location.href = '/oauth2/start?rd=' + encodeURIComponent(window.location.pathname);
   };
 
   if (error) {

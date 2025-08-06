@@ -443,10 +443,17 @@ def get_user_info(request: Request):
             print(f"Header: {header_name} = {header_value}")
     print("=== END DEBUG ===")
     
-    # OAuth2 Proxy with --set-xauthrequest=true sends X-Auth-Request-* headers
-    # Check for the correct OAuth2 Proxy headers
-    user_email = request.headers.get("X-Auth-Request-Email") or request.headers.get("X-Auth-Request-User")
-    user_name = request.headers.get("X-Auth-Request-Preferred-Username") or request.headers.get("X-Auth-Request-User")
+    # Check for the correct OAuth2 Proxy headers, including forwarded headers
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+    )
+    user_name = (
+        request.headers.get("X-Auth-Request-Preferred-Username")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-preferred-username")
+    )
     user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
     
     # Fallback to legacy header names for backwards compatibility
