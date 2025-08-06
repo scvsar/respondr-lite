@@ -280,6 +280,11 @@ if (-not $DryRun) {
     & .\deploy-to-k8s.ps1 @deployArgs
     Test-LastCommand "Application deployment failed"
     Write-Host "Application with OAuth2 authentication deployed successfully" -ForegroundColor Green
+    
+    # Sync local .env file with Kubernetes secrets for development
+    Write-Host "Syncing local .env file with deployed secrets..." -ForegroundColor Yellow
+    .\sync-env.ps1
+    Write-Host "Local .env file updated for development use" -ForegroundColor Green
 } else {
     Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
