@@ -114,8 +114,21 @@ Write-Host "=================================================" -ForegroundColor 
 # Get Application Gateway details
 $deploy = az deployment group show --resource-group $ResourceGroupName --name main -o json | ConvertFrom-Json
 $aksClusterName = $deploy.properties.outputs.aksClusterName.value
-$appGwName = "$aksClusterName-appgw"
 $mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
+
+# Get the actual Application Gateway name from AGIC configuration
+Write-Host "Getting Application Gateway name from AGIC configuration..." -ForegroundColor Yellow
+$agicConfig = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.config.effectiveApplicationGatewayId" -o tsv 2>$null
+
+if ($agicConfig) {
+    # Extract the Application Gateway name from the resource ID
+    $appGwName = $agicConfig.Split('/')[-1]
+    Write-Host "Found Application Gateway: $appGwName" -ForegroundColor Green
+} else {
+    # Fallback to the expected name pattern
+    $appGwName = "$aksClusterName-appgw"
+    Write-Host "Could not get Application Gateway from AGIC - using fallback name: $appGwName" -ForegroundColor Yellow
+}
 
 Write-Host "Application Gateway: $appGwName" -ForegroundColor Cyan
 Write-Host "MC Resource Group: $mcResourceGroup" -ForegroundColor Cyan
