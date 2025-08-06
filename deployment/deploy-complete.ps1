@@ -85,7 +85,17 @@ if (-not $SkipInfrastructure) {
     Write-Host "=============================================" -ForegroundColor Yellow
     
     if (-not $DryRun) {
-        az deployment group create --resource-group $ResourceGroupName --template-file .\main.bicep
+        # check if RG exists and if not create it
+        $rgExists = az group exists --name $ResourceGroupName | ConvertFrom-Json
+        if (-not $rgExists) {
+            Write-Host "Resource group '$ResourceGroupName' does not exist. Creating..." -ForegroundColor Yellow
+            az group create --name $ResourceGroupName --location $Location | Out-Null
+            Test-LastCommand "Failed to create resource group $ResourceGroupName"
+            Write-Host "Resource group '$ResourceGroupName' created successfully." -ForegroundColor Green
+        } else {
+            Write-Host "Resource group '$ResourceGroupName' already exists." -ForegroundColor Green
+        }
+        az deployment group create --resource-group $ResourceGroupName --template-file .\main.bicep --parameters resourcePrefix=$ResourceGroupName location=$Location
         Test-LastCommand "Infrastructure deployment failed"
         Write-Host "Infrastructure deployed successfully" -ForegroundColor Green
     } else {
