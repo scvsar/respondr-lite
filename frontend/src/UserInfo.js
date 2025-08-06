@@ -25,8 +25,12 @@ function UserInfo() {
   }, []);
 
   const handleLogout = () => {
-    // Redirect to OAuth2 Proxy logout endpoint
-    window.location.href = '/oauth2/sign_out';
+    // First set a logout marker in session storage
+    sessionStorage.setItem('respondr_logging_out', 'true');
+    
+    // Then redirect to OAuth2 Proxy logout endpoint
+    const logoutUrl = `/oauth2/sign_out`;
+    window.location.href = logoutUrl;
   };
 
   if (error) {

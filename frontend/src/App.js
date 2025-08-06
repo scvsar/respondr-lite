@@ -1,8 +1,10 @@
 import React, { useEffect, useState, useCallback } from "react";
+import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import "./App.css";
 import UserInfo from "./UserInfo";
+import Logout from './Logout';
 
-function App() {
+function MainApp() {
   const [data, setData] = useState([]);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -134,6 +136,30 @@ function App() {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function App() {
+  // Check if user is logging out - this will show the logout page after auth redirect
+  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+  
+  React.useEffect(() => {
+    // Check for logout marker in sessionStorage
+    const loggingOut = sessionStorage.getItem('respondr_logging_out') === 'true';
+    if (loggingOut) {
+      // Clear the marker
+      sessionStorage.removeItem('respondr_logging_out');
+      setIsLoggingOut(true);
+    }
+  }, []);
+  
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={isLoggingOut ? <Logout /> : <MainApp />} />
+        <Route path="/logout" element={<Logout />} />
+      </Routes>
+    </Router>
   );
 }
 

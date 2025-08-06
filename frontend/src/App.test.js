@@ -1,3 +1,10 @@
+import React from 'react';
+// Mock react-router-dom to avoid module resolution issues during tests
+jest.mock('react-router-dom', () => ({
+  BrowserRouter: ({ children }) => <>{children}</>,
+  Routes: ({ children }) => <>{children}</>,
+  Route: ({ element }) => element,
+}));
 import { render, screen, waitFor, act } from '@testing-library/react';
 import App from './App';
 
