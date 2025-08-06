@@ -442,10 +442,19 @@ def get_user_info(request: Request):
             print(f"Header: {header_name} = {header_value}")
     print("=== END DEBUG ===")
     
-    # OAuth2 Proxy passes user information via headers
-    user_email = request.headers.get("X-User")
-    user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
-    user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
+    # OAuth2 Proxy with --set-xauthrequest=true sends X-Auth-Request-* headers
+    # Check for the correct OAuth2 Proxy headers
+    user_email = request.headers.get("X-Auth-Request-Email") or request.headers.get("X-Auth-Request-User")
+    user_name = request.headers.get("X-Auth-Request-Preferred-Username") or request.headers.get("X-Auth-Request-User")
+    user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
+    
+    # Fallback to legacy header names for backwards compatibility
+    if not user_email:
+        user_email = request.headers.get("X-User")
+    if not user_name:
+        user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
+    if not user_groups:
+        user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
     
     # Check if we have user information from OAuth2 proxy
     if user_email or user_name:
