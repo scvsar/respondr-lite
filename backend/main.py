@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 # Import fcntl only on Unix-like systems
 try:
@@ -472,7 +473,8 @@ def get_user_info(request: Request):
         "email": email,
         "name": display_name,
         "groups": [group.strip() for group in user_groups if group.strip()],
-        "logout_url": "/oauth2/sign_out"  # OAuth2 Proxy logout endpoint
+        # Redirect to root after logout so OAuth2 Proxy can initiate a new login
+        "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
     })
 
 @app.get("/debug/pod-info")
