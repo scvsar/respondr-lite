@@ -1,6 +1,11 @@
-# Kubernetes secrets - DO NOT COMMIT
+# Generated deployment files - DO NOT COMMIT
+# These are generated from templates and contain environment-specific values
 secrets.yaml
+respondr-k8s-oauth2.yaml
+respondr-k8s-redis-oauth2.yaml
+respondr-k8s-current.yaml
 respondr-k8s-temp.yaml
+values.yaml
 
 # Environment files with secrets
 .env

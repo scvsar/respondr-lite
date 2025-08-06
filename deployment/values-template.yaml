@@ -1,0 +1,32 @@
+# Environment Configuration Values
+# This file gets populated by deployment scripts from the current Azure environment
+# DO NOT commit this file - it's generated dynamically
+
+# Azure Environment
+azureSubscriptionId: ""
+azureTenantId: ""
+resourceGroupName: ""
+
+# Container Registry
+acrName: ""
+acrLoginServer: ""
+imageName: "respondr"
+imageTag: "latest"
+
+# Azure OpenAI
+azureOpenAIEndpoint: ""
+azureOpenAIDeployment: ""
+azureOpenAIApiVersion: ""
+
+# OAuth2 Configuration
+oauth2ClientId: ""
+oauth2TenantId: ""
+oauth2RedirectUrl: ""
+
+# Domain Configuration
+domain: ""
+hostname: ""
+
+# Application Configuration
+namespace: "respondr"
+replicas: 2
