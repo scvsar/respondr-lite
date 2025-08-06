@@ -4,6 +4,7 @@ import './UserInfo.css';
 function UserInfo() {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
+  const [logoutUrl, setLogoutUrl] = useState('/oauth2/sign_out?rd=/');
 
   useEffect(() => {
     const fetchUserInfo = async () => {
@@ -12,6 +13,9 @@ function UserInfo() {
         if (response.ok) {
           const userData = await response.json();
           setUser(userData);
+          if (userData.logout_url) {
+            setLogoutUrl(userData.logout_url);
+          }
         } else {
           setError('Failed to fetch user information');
         }
@@ -25,18 +29,21 @@ function UserInfo() {
   }, []);
 
   const handleLogout = () => {
-    // First set a logout marker in session storage
-    sessionStorage.setItem('respondr_logging_out', 'true');
-    
-    // Then redirect to OAuth2 Proxy logout endpoint
-    const logoutUrl = `/oauth2/sign_out`;
-    window.location.href = logoutUrl;
+window.location.href = logoutUrl;
+
   };
 
   if (error) {
     return (
       <div className="user-info error">
         <span>⚠️ {error}</span>
+        <button
+          className="logout-button"
+          onClick={handleLogin}
+          title="Sign in"
+        >
+          🔐 Sign In
+        </button>
       </div>
     );
   }
@@ -49,14 +56,13 @@ function UserInfo() {
     );
   }
 
-  // Handle case where user is not properly authenticated
   if (!user.authenticated || (!user.name && !user.email)) {
     return (
       <div className="user-info error">
         <span>⚠️ Not authenticated</span>
-        <button 
-          className="logout-button" 
-          onClick={handleLogout}
+        <button
+          className="logout-button"
+          onClick={handleLogin}
           title="Sign in"
         >
           🔐 Sign In
@@ -73,8 +79,8 @@ function UserInfo() {
           <span className="user-email">({user.email})</span>
         )}
       </div>
-      <button 
-        className="logout-button" 
+      <button
+        className="logout-button"
         onClick={handleLogout}
         title="Sign out"
       >
