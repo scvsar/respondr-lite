@@ -83,7 +83,8 @@ if ($useOAuth2) {
 Write-Host "✅ Generated $OutputFile from template" -ForegroundColor Green
 
 # Display key replacements made
-Write-Host "🔍 Key replacements made:" -ForegroundColor Yellow
+Write-Host "🔍 Key replacements made:" -ForegroundColor Cyan
 Write-Host "   Image: $($values['acrLoginServer'])/$($values['imageName']):$($values['imageTag'])" -ForegroundColor White
 Write-Host "   Hostname: $($values['hostname'])" -ForegroundColor White
 Write-Host "   Tenant ID: $($values['azureTenantId'])" -ForegroundColor White
+Write-Host "   Use OAuth2: $($values['useOAuth2'])" -ForegroundColor White
