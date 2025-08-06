@@ -10,19 +10,67 @@ This application processes incoming webhook notifications from GroupMe messages,
 
 - **Real-time Response Tracking**: Processes GroupMe webhook messages in real-time
 - **AI-powered Information Extraction**: Uses Azure OpenAI to parse vehicle assignments and ETAs from natural language messages
-- **Live Dashboard**: React-based frontend showing responder status and metrics
-- **OAuth2 Authentication**: Seamless Azure AD/Entra integration for secure access
+- **Live Dashboard**: React-based frontend showing responder status and metrics with real-time updates
+- **OAuth2 Authentication**: Seamless Azure AD/Entra integration for secure access with sidecar architecture
+- **Redis Shared Storage**: Cross-pod data synchronization eliminates session affinity issues
 - **Container-ready**: Full Docker containerization with multi-stage builds
 - **Kubernetes Deployment**: Production-ready Kubernetes manifests with Azure integration
+- **Auto-scaling**: Horizontal pod autoscaling with shared state management
+- **HTTPS/TLS**: Automatic Let's Encrypt certificate management
 
 ## Architecture
 
-The application consists of:
+The application uses a modern microservices architecture deployed on Kubernetes:
 
-- **Frontend**: React application served statically
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           Internet Traffic                          │
+└─────────────────────────┬───────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────┐
+│                  Azure Application Gateway                          │
+│           (HTTPS/TLS, Load Balancing, Session Affinity)             │
+└─────────────────────────┬───────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────┐
+│                    Kubernetes Ingress                               │
+│                   (respondr.paincave.pro)                           │
+└─────────────────────────┬───────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────┐
+│                   Kubernetes Service                                │
+│                  (ClusterIP, Port 80)                               │
+└─────────────────────────┬───────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────────┐
+│                    Pod Replicas (2x)                                │
+│  ┌─────────────────────────────┬─────────────────────────────────┐  │
+│  │       OAuth2 Proxy          │       Respondr App              │  │
+│  │    (Port 4180)              │     (Port 8000)                 │  │
+│  │  - Azure AD Auth            │ - FastAPI Backend               │  │
+│  │  - Session Management       │ - React Frontend                │  │
+│  │  - JWT Token Validation     │ - Webhook Processing            │  │
+│  └─────────────────────────────┴─────────────────────────────────┘  │
+└─────────────────────────┬───────────────────────────────────────────┘
+                          │
+              ┌───────────▼───────────┐
+              │     Redis Service     │
+              │   (Shared Storage)    │
+              │  - Message Persistence│
+              │  - Cross-Pod Sync     │
+              │  - Session Affinity   │
+              └───────────────────────┘
+```
+
+### Components:
+
+- **Frontend**: React application with OAuth2 authentication flow
 - **Backend**: FastAPI Python application with Azure OpenAI integration
-- **Authentication**: OAuth2 Proxy sidecar for Azure AD/Entra authentication
-- **Infrastructure**: Azure Kubernetes Service (AKS), Azure Container Registry (ACR), Azure OpenAI Service, and Azure Storage
+- **Authentication**: OAuth2 Proxy sidecar container for seamless Azure AD/Entra authentication
+- **Shared Storage**: Redis for cross-pod message synchronization and session management
+- **Infrastructure**: Azure Kubernetes Service (AKS), Azure Container Registry (ACR), Azure OpenAI Service
+- **Networking**: Application Gateway with HTTPS/TLS termination and session affinity
+- **Certificates**: Let's Encrypt for automatic SSL certificate management
 
 ## Quick Start - Complete End-to-End Deployment
 
@@ -77,6 +125,54 @@ Before starting, ensure you have:
 - AGIC pod may show `CrashLoopBackOff` during this time - **this is normal**
 - The deployment scripts handle this timing automatically
 
+### Redis Shared Storage Architecture
+
+This application uses Redis for shared storage to solve the "session affinity problem" where webhook messages sent to one pod weren't visible from other pods:
+
+- **Problem**: Multiple pod replicas using local file storage meant data wasn't shared
+- **Solution**: Redis-based centralized storage ensures all pods see the same data
+- **Benefits**: 
+  - No session affinity required at the load balancer level
+  - True horizontal scaling with shared state
+  - Real-time data synchronization across all pod instances
+  - Improved reliability and consistency
+
+**Data Flow**:
+1. Webhook receives message → Any pod can process it
+2. Pod saves to Redis → All pods see the update immediately  
+3. Dashboard requests → Any pod can serve consistent data
+4. Load balancer → Can route to any healthy pod without sticky sessions
+
+## Deployment Files and Architecture
+
+### Current Deployment Files (Cleaned Up)
+
+The project has been streamlined to use only essential deployment files:
+
+**Essential YAML Files:**
+- `respondr-k8s-redis-oauth2.yaml` - Main deployment with Redis + OAuth2 (actively used)
+- `redis-deployment.yaml` - Redis service for shared storage
+- `secrets-template.yaml` - Template for creating secrets
+- `letsencrypt-issuer.yaml` - TLS certificate issuer
+
+**Deployment Scripts:**
+- `deploy-complete.ps1` - Complete end-to-end deployment (recommended)
+- `deploy-to-k8s.ps1` - Application deployment only
+- `setup-oauth2.ps1` - OAuth2 configuration
+- `cleanup.ps1` - Resource cleanup and tenant reset
+
+**Template Files (for automation):**
+- `respondr-k8s-unified-template.yaml` - Template for parametrized deployments
+- `respondr-k8s-oauth2-template.yaml` - OAuth2 setup template
+
+### Removed/Obsolete Files
+
+During architecture cleanup, the following files were removed:
+- All PVC-related files (replaced by Redis)
+- Old deployment variants without Redis integration
+- Separate component files (integrated into main deployment)
+- `deploy-unified.ps1` (superseded by deploy-complete.ps1)
+
 ### Authentication Architecture
 Azure Application Gateway v2 does not support native Azure AD authentication. This deployment includes **OAuth2 Proxy sidecar authentication** for seamless Azure AD/Entra integration.
 
@@ -129,12 +225,18 @@ This step:
 
 ### Step 5: Deploy Application
 ```powershell
-# Build, push, and deploy application with OAuth2 authentication
+# Build, push, and deploy application with Redis + OAuth2 authentication
 .\deployment\deploy-to-k8s.ps1 -ResourceGroupName respondr -UseOAuth2
 
-# Alternative: Deploy without OAuth2 (not recommended for production)
-# .\deployment\deploy-to-k8s.ps1 -ResourceGroupName respondr
+# Note: Non-OAuth2 deployment is no longer supported due to security requirements
 ```
+
+**What this script does:**
+1. Deploys Redis for shared storage first
+2. Builds and pushes Docker image to ACR (if not skipped)
+3. Creates Kubernetes deployment with both containers (respondr + oauth2-proxy)
+4. Configures services, ingress, and Let's Encrypt certificates
+5. Waits for deployment readiness and certificate issuance
 
 ### Step 6: Configure DNS and SSL
 The deployment script will display the Application Gateway IP address. You must:
@@ -218,8 +320,9 @@ kubectl rollout status deployment/respondr-deployment
 
 ### Local Development
 
-For local development and testing:
+For local development and testing, you have several options:
 
+#### Option 1: Direct Development (Recommended for active development)
 ```powershell
 # Backend development
 cd backend
@@ -231,6 +334,36 @@ cd frontend
 npm install
 npm start
 ```
+
+#### Option 2: Full Stack Development
+```powershell
+# Start both backend and frontend in separate terminals
+.\dev-local.ps1 -Full
+# Backend: http://localhost:8000
+# Frontend: http://localhost:3000
+```
+
+#### Option 3: Containerized Development (Production Parity)
+```powershell
+# Use Docker Compose for container-based development
+.\dev-local.ps1 -Docker
+# Backend: http://localhost:8000 (containerized)
+```
+
+#### Option 4: Backend Only
+```powershell
+# Start just the backend for API testing
+.\dev-local.ps1
+# Backend: http://localhost:8000
+```
+
+#### Testing Webhooks
+```powershell
+# Test webhook functionality (requires backend running)
+.\dev-local.ps1 -Test
+```
+
+> **Note**: All local development options work correctly. The webhook testing successfully processes messages through Azure OpenAI and stores them locally when Redis is not available (which is expected in local development).
 
 ### Running Tests
 
@@ -272,20 +405,100 @@ kubectl set image deployment/respondr-deployment respondr="$acrLoginServer/respo
 kubectl rollout status deployment/respondr-deployment
 ```
 
-## Monitoring and Troubleshooting
+## Monitoring and Maintenance
+
+### Pod Health Monitoring
+```powershell
+# Check pod status - both containers should show READY 2/2
+kubectl get pods -n respondr
+
+# Monitor real-time pod status
+kubectl get pods -n respondr -w
+
+# Check resource usage
+kubectl top pods -n respondr
+kubectl describe pod -n respondr -l app=respondr
+```
+
+### Application Logs
+```powershell
+# View application logs (real-time)
+kubectl logs -n respondr -l app=respondr -c respondr --tail=50 -f
+
+# View OAuth2 proxy logs
+kubectl logs -n respondr -l app=respondr -c oauth2-proxy --tail=50 -f
+
+# View Redis logs
+kubectl logs -n respondr -l app=redis --tail=50 -f
+
+# Get logs from specific pod
+kubectl logs -n respondr <pod-name> -c respondr
+```
+
+### Redis Connectivity Verification
+```powershell
+# Test Redis connection from application pod
+kubectl exec -n respondr deployment/respondr-deployment -c respondr -- redis-cli -h redis-service ping
+# Should return: PONG
+
+# Check Redis service and endpoints
+kubectl get svc redis-service -n respondr
+kubectl get endpoints redis-service -n respondr
+
+# Verify shared storage working across pods
+kubectl exec -n respondr deployment/respondr-deployment -c respondr -- curl -s http://localhost:8000/debug/pod-info
+```
+
+### Certificate Management
+```powershell
+# Check Let's Encrypt certificate status
+kubectl get certificates -n respondr
+kubectl describe certificate respondr-tls-letsencrypt -n respondr
+
+# Check cert-manager logs
+kubectl logs -n cert-manager deployment/cert-manager
+
+# Force certificate renewal (if needed)
+kubectl delete certificate respondr-tls-letsencrypt -n respondr
+# Certificate will be automatically recreated
+```
+
+### Scaling and Performance
+```powershell
+# Scale deployment (Redis shared storage supports multiple replicas)
+kubectl scale deployment respondr-deployment --replicas=3 -n respondr
+
+# Check horizontal pod autoscaler (if configured)
+kubectl get hpa -n respondr
+
+# Monitor resource usage during scaling
+kubectl top pods -n respondr
+```
+
+## Troubleshooting
 
 ### Quick Status Checks
 
 ```powershell
 # Check overall deployment status
-kubectl get pods,svc,ingress -l app=respondr
+kubectl get pods,svc,ingress -n respondr
 kubectl get certificate respondr-tls-letsencrypt -n respondr
 
 # Check application logs
-kubectl logs -l app=respondr --tail=50 -f
+kubectl logs -l app=respondr -c respondr --tail=50 -f
 
 # Check OAuth2 proxy logs specifically
 kubectl logs -l app=respondr -c oauth2-proxy --tail=50
+
+# Check Redis connectivity and shared storage
+kubectl exec -n respondr deployment/respondr-deployment -c respondr -- curl -s http://localhost:8000/debug/pod-info
+
+# Verify both pods can access shared Redis storage
+$pods = kubectl get pods -n respondr -l app=respondr -o jsonpath="{.items[*].metadata.name}"
+foreach ($pod in ($pods -split " ")) {
+    Write-Host "Pod: $pod"
+    kubectl exec -n respondr $pod -c respondr -- curl -s http://localhost:8000/debug/pod-info | ConvertFrom-Json | Select-Object pod_name, redis_status, message_count
+}
 
 # Run deployment verification
 cd deployment
@@ -368,6 +581,31 @@ nslookup respondr.paincave.pro
 az network application-gateway list --resource-group $mcResourceGroup --output table
 ```
 
+#### Redis Shared Storage Issues
+**Symptoms**: Data not syncing between pods, pods showing different message counts
+**Cause**: Redis connectivity issues or misconfiguration
+**Solution**:
+```powershell
+# Check Redis pod status
+kubectl get pods -n respondr -l app=redis
+
+# Check Redis service and endpoints
+kubectl get svc redis-service -n respondr
+kubectl get endpoints redis-service -n respondr
+
+# Test Redis connectivity from application pods
+kubectl exec -n respondr deployment/respondr-deployment -c respondr -- curl http://localhost:8000/debug/pod-info
+
+# Check Redis logs
+kubectl logs -n respondr deployment/redis
+
+# Restart Redis if needed
+kubectl rollout restart deployment/redis -n respondr
+
+# Verify all pods have same message count (indicates shared storage working)
+kubectl exec -n respondr deployment/respondr-deployment -c respondr -- curl -s http://localhost:8000/api/responders | jq 'length'
+```
+
 #### Container and Image Issues
 **Symptoms**: Image pull errors or pod startup failures
 **Solution**:
@@ -385,23 +623,64 @@ az acr repository show-tags --name $acrName --repository respondr
 
 ## Resource Management
 
+## Resource Management
+
 ### Cleanup Resources
 
-To completely clean up the deployment:
+#### Standard Cleanup (Remove Deployment, Keep Infrastructure)
+```powershell
+# Remove Kubernetes resources only (keeps AKS cluster and Azure resources)
+kubectl delete -f deployment/respondr-k8s-redis-oauth2.yaml
+kubectl delete -f deployment/redis-deployment.yaml
+kubectl delete -f deployment/secrets.yaml
+
+# Remove namespace and all resources
+kubectl delete namespace respondr
+```
+
+#### Complete Infrastructure Cleanup
+```powershell
+# Clean up all Azure resources (WARNING: This deletes everything)
+cd deployment
+.\cleanup.ps1 -ResourceGroupName respondr -Force
+```
+
+#### Tenant-Wide Reset (Start Fresh)
+For completely starting over in a tenant (removes soft-deleted resources):
 
 ```powershell
-# Remove Kubernetes resources
-kubectl delete -f respondr-k8s-deployment.yaml
-kubectl delete -f secrets.yaml
+# Complete cleanup including soft-deleted resources and temp resource groups
+cd deployment
+.\cleanup.ps1 -ResourceGroupName "respondr" -PurgeSoftDeleted "respondr-" -Force -DeleteTempRgAfterPurge
+```
 
-# Clean up Azure resources (WARNING: This deletes everything)
-.\deployment\cleanup.ps1 -ResourceGroupName respondr -Force
+**What this does:**
+- Deletes the main resource group and all resources
+- Purges soft-deleted Azure Cognitive Services (OpenAI) accounts
+- Removes soft-deleted Key Vaults
+- Cleans up temporary resource groups created during deployment
+- Removes Azure AD app registrations for OAuth2
+- **⚠️ WARNING**: This is destructive and removes ALL traces of the deployment
+
+#### Selective Cleanup
+```powershell
+# Remove just the application (keep infrastructure)
+kubectl delete deployment respondr-deployment -n respondr
+kubectl delete deployment redis -n respondr
+
+# Remove OAuth2 configuration only
+kubectl delete secret oauth2-secrets -n respondr
+az ad app delete --id $(az ad app list --display-name "respondr-oauth2" --query "[0].appId" -o tsv)
+
+# Remove Let's Encrypt certificates (will be recreated automatically)
+kubectl delete certificate respondr-tls-letsencrypt -n respondr
 ```
 
 ### Resource Naming Convention
 
 All resources follow a consistent naming pattern:
 
+**Azure Resources:**
 - Resource Group: `respondr`
 - AKS Cluster: `respondr-aks-cluster-v2` (uses standard Azure CNI)
 - ACR: `respondr<uniqueString>acr`
@@ -409,6 +688,15 @@ All resources follow a consistent naming pattern:
 - Storage Account: `resp<uniqueString>store`
 - Virtual Network: `respondr-vnet`
 - Application Gateway: `respondr-aks-cluster-v2-appgw` (created by AGIC in MC resource group)
+
+**Kubernetes Resources:**
+- Namespace: `respondr`
+- Main Deployment: `respondr-deployment`
+- Redis Deployment: `redis`
+- Services: `respondr-service`, `redis-service`
+- Ingress: `respondr-ingress`
+- Secrets: `respondr-secrets`, `oauth2-secrets`
+- Certificates: `respondr-tls-letsencrypt`
 
 The v2 suffix indicates the use of standard Azure CNI networking for compatibility with Application Gateway.
 
