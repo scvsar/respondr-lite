@@ -14,13 +14,13 @@ spec:
     metadata:
       labels:
         app: respondr
-        azure.workload.identity/use: "true"  # Required for workload identity
+        azure.workload.identity/use: "true"
     spec:
       serviceAccountName: respondr-sa
       containers:
       # Main application container
       - name: respondr
-        image: {{ACR_IMAGE_PLACEHOLDER}}
+        image: respondrbt774d4d55kswacr.azurecr.io/respondr:latest
         ports:
         - containerPort: 8000
         env:
@@ -49,6 +49,12 @@ spec:
             secretKeyRef:
               name: respondr-secrets
               key: WEBHOOK_API_KEY
+        - name: REDIS_HOST
+          value: redis-service
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
         resources:
           requests:
             memory: "256Mi"
@@ -70,8 +76,7 @@ spec:
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
 
-      # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
-      {{OAUTH2_CONTAINER_START}}
+      # OAuth2 Proxy sidecar container
       - name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
         ports:
@@ -79,8 +84,8 @@ spec:
         args:
         - --provider=oidc
         - --provider-display-name="Microsoft Entra"
-        - --oidc-issuer-url=https://login.microsoftonline.com/{{TENANT_ID_PLACEHOLDER}}/v2.0
-        - --redirect-url=https://{{HOSTNAME_PLACEHOLDER}}/oauth2/callback
+        - --oidc-issuer-url=https://login.microsoftonline.com/5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d/v2.0
+        - --redirect-url=https://respondr.paincave.pro/oauth2/callback
         - --email-domain=*
         - --upstream=http://localhost:8000
         - --http-address=0.0.0.0:4180
@@ -95,6 +100,7 @@ spec:
         - --silence-ping-logging=true
         - --skip-auth-regex=^/webhook$
         - --skip-auth-regex=^/health$
+        - --whitelist-domain=respondr.paincave.pro
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
@@ -131,7 +137,6 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
-      {{OAUTH2_CONTAINER_END}}
 
 ---
 apiVersion: v1
@@ -140,8 +145,8 @@ metadata:
   name: respondr-sa
   namespace: respondr
   annotations:
-    azure.workload.identity/client-id: {{CLIENT_ID_PLACEHOLDER}}
-    azure.workload.identity/tenant-id: {{TENANT_ID_PLACEHOLDER}}
+    azure.workload.identity/client-id: c39ee3c1-4d22-4e62-bf67-04d33f93ddb5
+    azure.workload.identity/tenant-id: 5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d
 
 ---
 apiVersion: v1
@@ -158,8 +163,10 @@ spec:
     clientIP:
       timeoutSeconds: 10800  # 3 hours
   ports:
-  # Port configuration changes based on OAuth2 mode
-  {{SERVICE_PORT_CONFIG}}
+  - port: 80
+    targetPort: 4180
+    protocol: TCP
+    name: http
   selector:
     app: respondr
 
@@ -181,10 +188,10 @@ metadata:
 spec:
   tls:
   - hosts:
-    - {{HOSTNAME_PLACEHOLDER}}
+    - respondr.paincave.pro
     secretName: respondr-tls-letsencrypt
   rules:
-  - host: {{HOSTNAME_PLACEHOLDER}}
+  - host: respondr.paincave.pro
     http:
       paths:
       - path: /

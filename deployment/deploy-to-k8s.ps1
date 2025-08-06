@@ -248,49 +248,32 @@ if (-not $SkipImageBuild) {
 # Update the image and identity details in the deployment template
 # Select deployment template based on OAuth2 setting
 if ($UseOAuth2) {
-    $deploymentFile = "respondr-k8s-oauth2.yaml"
+    $deploymentFile = "respondr-k8s-redis-oauth2.yaml"
     if (-not (Test-Path $deploymentFile)) {
-        Write-Error "OAuth2 deployment file '$deploymentFile' not found. Please run setup-oauth2.ps1 first."
+        Write-Error "OAuth2 deployment file '$deploymentFile' not found. This is the main working deployment file."
         exit 1
     }
-    Write-Host "Using OAuth2-enabled deployment template" -ForegroundColor Green
-    $tempFile = $deploymentFile  # Use the OAuth2 file directly
+    Write-Host "Using Redis + OAuth2 deployment template" -ForegroundColor Green
+    $tempFile = $deploymentFile  # Use the Redis OAuth2 file directly
 } else {
-    $deploymentFile = "respondr-k8s-template.yaml"
-    $tempFile = "respondr-k8s-temp.yaml"
-    Write-Host "Using standard deployment template (no OAuth2)" -ForegroundColor Yellow
+    Write-Error "Non-OAuth2 deployment is no longer supported. Please use -UseOAuth2 flag."
+    exit 1
 }
 
 Write-Host "Preparing deployment configuration..." -ForegroundColor Yellow
 
-if (-not $UseOAuth2) {
-    # Get deployment outputs for identity configuration (only for non-OAuth2 deployments)
-    Write-Host "Getting identity configuration from Azure deployment..." -ForegroundColor Yellow
-    $deploy = az deployment group show --resource-group $ResourceGroupName --name main -o json | ConvertFrom-Json
-    $podIdentityClientId = $deploy.properties.outputs.podIdentityClientId.value
-    $tenantId = az account show --query tenantId -o tsv
+# For OAuth2 deployment, the file already contains all necessary configuration
+Write-Host "Using pre-configured Redis + OAuth2 deployment file" -ForegroundColor Green
+Write-Host "  Image: Will be updated to $fullImageName" -ForegroundColor Cyan
+Write-Host "  Authentication: OAuth2 Proxy with Azure AD" -ForegroundColor Cyan
+Write-Host "  Storage: Redis for shared data" -ForegroundColor Cyan
 
-    # Get DNS zone for hostname configuration
-    $hostname = "respondr.paincave.pro"  # Use actual domain
-    Write-Host "Using hostname: $hostname" -ForegroundColor Green
+# Set temp file name first
+$tempFile = "respondr-k8s-current.yaml"
 
-    # Replace placeholders in the template
-    (Get-Content $deploymentFile) `
-        -replace '{{ACR_IMAGE_PLACEHOLDER}}', $fullImageName `
-        -replace 'CLIENT_ID_PLACEHOLDER', $podIdentityClientId `
-        -replace 'TENANT_ID_PLACEHOLDER', $tenantId `
-        -replace 'HOSTNAME_PLACEHOLDER', $hostname | Set-Content $tempFile
-
-    Write-Host "Configuration prepared:" -ForegroundColor Green
-    Write-Host "  Image: $fullImageName" -ForegroundColor Cyan
-    Write-Host "  Client ID: $podIdentityClientId" -ForegroundColor Cyan
-    Write-Host "  Tenant ID: $tenantId" -ForegroundColor Cyan
-    Write-Host "  Hostname: $hostname" -ForegroundColor Cyan
-} else {
-    Write-Host "Using pre-configured OAuth2 deployment file" -ForegroundColor Green
-    Write-Host "  Image: Already configured in OAuth2 template" -ForegroundColor Cyan
-    Write-Host "  Authentication: OAuth2 Proxy with Azure AD" -ForegroundColor Cyan
-}
+# Update the image in the deployment file
+Write-Host "Updating image in deployment configuration..." -ForegroundColor Yellow
+(Get-Content $deploymentFile) -replace 'respondrbt774d4d55kswacr\.azurecr\.io/respondr:[^"]*', $fullImageName | Set-Content $tempFile
 
 # Deploy secrets first
 Write-Host "Deploying secrets..." -ForegroundColor Yellow
@@ -299,6 +282,25 @@ if (-not $DryRun) {
     if ($LASTEXITCODE -ne 0) {
         Write-Error "Failed to deploy secrets!"
         exit 1
+    }
+}
+
+# Deploy Redis (required for shared storage)
+Write-Host "Deploying Redis for shared storage..." -ForegroundColor Yellow
+if (-not $DryRun) {
+    kubectl apply -f "redis-deployment.yaml" -n $Namespace
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to deploy Redis!"
+        exit 1
+    }
+    
+    # Wait for Redis to be ready
+    Write-Host "Waiting for Redis to be ready..." -ForegroundColor Yellow
+    kubectl wait --for=condition=available --timeout=120s deployment/redis -n $Namespace
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Redis deployment may not be fully ready, continuing..."
+    } else {
+        Write-Host "Redis deployment is ready" -ForegroundColor Green
     }
 }
 

@@ -5,12 +5,7 @@ import logging
 import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
-
-# Import fcntl only on Unix-like systems
-try:
-    import fcntl
-except ImportError:
-    fcntl = None
+import redis
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
@@ -29,11 +24,11 @@ logger = logging.getLogger(__name__)
 # Load environment variables from .env file
 load_dotenv()
 
-# Data storage file path
-DATA_FILE = "/tmp/respondr_messages.json" if os.path.exists("/tmp") else "./respondr_messages.json"
-
-# Load environment variables from .env file
-load_dotenv()
+# Redis configuration
+REDIS_HOST = os.getenv("REDIS_HOST", "redis-service")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+REDIS_KEY = "respondr_messages"
 
 # Validate environment variables
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
@@ -46,6 +41,9 @@ webhook_api_key = os.getenv("WEBHOOK_API_KEY")
 
 # Check if we're running in test mode
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
+
+# Initialize Redis client
+redis_client = None
 
 if not is_testing and (not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment):
     logger.error("Missing required Azure OpenAI configuration")
@@ -102,44 +100,83 @@ app = FastAPI(
 
 messages = []
 
+def init_redis():
+    """Initialize Redis connection"""
+    global redis_client
+    
+    # Skip Redis in testing mode
+    if is_testing:
+        logger.info("Test mode: Using in-memory storage instead of Redis")
+        return
+        
+    if redis_client is None:
+        try:
+            redis_client = redis.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                db=REDIS_DB,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5
+            )
+            # Test connection
+            redis_client.ping()
+            logger.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Redis: {e}")
+            if not is_testing:
+                raise
+
 def load_messages():
-    """Load messages from shared file"""
+    """Load messages from Redis"""
     global messages
+    
+    # In testing mode, use in-memory storage
+    if is_testing:
+        if messages is None:
+            messages = []
+        logger.debug(f"Test mode: Using in-memory storage with {len(messages)} messages")
+        return
+        
     try:
-        if os.path.exists(DATA_FILE):
-            with open(DATA_FILE, 'r') as f:
-                messages = json.load(f)
-            logger.info(f"Loaded {len(messages)} messages from shared storage")
+        init_redis()
+        if redis_client:
+            data = redis_client.get(REDIS_KEY)
+            if data:
+                messages = json.loads(data)
+                logger.info(f"Loaded {len(messages)} messages from Redis")
+            else:
+                messages = []
+                logger.info("No existing messages in Redis, starting with empty list")
         else:
             messages = []
-            logger.info("No existing message file found, starting with empty list")
+            logger.warning("Redis not available, using empty message list")
     except Exception as e:
-        logger.error(f"Error loading messages: {e}")
+        logger.error(f"Error loading messages from Redis: {e}")
         messages = []
 
 def save_messages():
-    """Save messages to shared file with file locking"""
+    """Save messages to Redis"""
     global messages
-    try:
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
+    
+    # In testing mode, just keep in memory
+    if is_testing:
+        logger.debug(f"Test mode: Messages stored in memory ({len(messages)} messages)")
+        return
         
-        # Write with exclusive lock to prevent race conditions
-        with open(DATA_FILE, 'w') as f:
-            # Try to acquire exclusive lock (Unix-like systems)
-            try:
-                if fcntl:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-            except (ImportError, OSError):
-                # Windows or systems without fcntl - proceed without locking
-                pass
-            json.dump(messages, f, indent=2)
-        logger.debug(f"Saved {len(messages)} messages to shared storage")
+    try:
+        init_redis()
+        if redis_client:
+            data = json.dumps(messages)
+            redis_client.set(REDIS_KEY, data)
+            logger.debug(f"Saved {len(messages)} messages to Redis")
+        else:
+            logger.warning("Redis not available, cannot save messages")
     except Exception as e:
-        logger.error(f"Error saving messages: {e}")
+        logger.error(f"Error saving messages to Redis: {e}")
 
 def reload_messages():
-    """Reload messages from shared file to get latest data"""
+    """Reload messages from Redis to get latest data"""
     load_messages()
 
 # Load messages on startup
@@ -489,11 +526,22 @@ def get_pod_info():
     """Debug endpoint to show which pod is serving requests"""
     pod_name = os.getenv("HOSTNAME", "unknown-pod")
     pod_ip = os.getenv("POD_IP", "unknown-ip")
+    
+    # Check Redis connection status
+    redis_status = "disconnected"
+    try:
+        init_redis()
+        if redis_client:
+            redis_client.ping()
+            redis_status = "connected"
+    except:
+        redis_status = "error"
+    
     return JSONResponse(content={
         "pod_name": pod_name,
         "pod_ip": pod_ip,
         "message_count": len(messages),
-        "data_file_exists": os.path.exists(DATA_FILE)
+        "redis_status": redis_status
     })
 
 @app.get("/dashboard", response_class=HTMLResponse)

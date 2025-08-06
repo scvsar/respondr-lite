@@ -11,6 +11,11 @@ function MainApp() {
 
   const fetchData = useCallback(async () => {
     try {
+      // Don't fetch data if user just logged out
+      if (sessionStorage.getItem('loggedOut')) {
+        return;
+      }
+      
       setError(null);
       const res = await fetch("/api/responders");
       if (!res.ok) {
@@ -27,6 +32,12 @@ function MainApp() {
   }, []);
 
   useEffect(() => {
+    // Don't fetch data if user just logged out
+    if (sessionStorage.getItem('loggedOut')) {
+      setIsLoading(false);
+      return;
+    }
+
     fetchData();
     
     let pollInterval = 5000; // Start with 5 seconds
@@ -99,6 +110,25 @@ function MainApp() {
             border: '1px solid #d00'
           }}>
             ⚠️ Error loading data: {error}
+            <br />
+            <button 
+              onClick={() => {
+                setError(null);
+                setIsLoading(true);
+                fetchData();
+              }}
+              style={{
+                marginTop: '10px',
+                padding: '5px 10px',
+                backgroundColor: '#d00',
+                color: 'white',
+                border: 'none',
+                borderRadius: '3px',
+                cursor: 'pointer'
+              }}
+            >
+              🔄 Retry
+            </button>
           </div>
         )}
         {isLoading && !error && (
