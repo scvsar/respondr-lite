@@ -204,3 +204,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Respondr specific files
+backend/respondr_messages.json
+/node_modules/
+/package.json
+/package-lock.json
