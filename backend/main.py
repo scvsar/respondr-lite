@@ -447,10 +447,21 @@ def get_user_info(request: Request):
     user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
     user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
     
+    # Check if we have user information from OAuth2 proxy
+    if user_email or user_name:
+        authenticated = True
+        display_name = user_name or user_email
+        email = user_email
+    else:
+        # No OAuth2 headers - user might not be properly authenticated
+        authenticated = False
+        display_name = None
+        email = None
+    
     return JSONResponse(content={
-        "authenticated": True,
-        "email": user_email,
-        "name": user_name or user_email,  # Fallback to email if name not available
+        "authenticated": authenticated,
+        "email": email,
+        "name": display_name,
         "groups": [group.strip() for group in user_groups if group.strip()],
         "logout_url": "/oauth2/sign_out"  # OAuth2 Proxy logout endpoint
     })

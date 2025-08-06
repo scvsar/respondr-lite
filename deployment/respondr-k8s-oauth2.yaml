@@ -20,7 +20,7 @@ spec:
       containers:
       # Main application container
       - name: respondr
-        image: respondrbt774d4d55kswacr.azurecr.io/respondr:latest
+        image: respondrbt774d4d55kswacr.azurecr.io/respondr:v3
         ports:
         - containerPort: 8000
         env:

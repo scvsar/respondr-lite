@@ -45,10 +45,26 @@ function UserInfo() {
     );
   }
 
+  // Handle case where user is not properly authenticated
+  if (!user.authenticated || (!user.name && !user.email)) {
+    return (
+      <div className="user-info error">
+        <span>⚠️ Not authenticated</span>
+        <button 
+          className="logout-button" 
+          onClick={handleLogout}
+          title="Sign in"
+        >
+          🔐 Sign In
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="user-info">
       <div className="user-details">
-        <span className="user-name">👤 {user.name}</span>
+        <span className="user-name">👤 {user.name || user.email || 'Anonymous'}</span>
         {user.email && user.email !== user.name && (
           <span className="user-email">({user.email})</span>
         )}
