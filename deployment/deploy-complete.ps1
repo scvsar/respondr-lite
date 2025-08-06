@@ -259,21 +259,21 @@ if (-not $DryRun) {
 Write-Host "`n📦 Step 7: Deploying Application with Authentication..." -ForegroundColor Yellow
 Write-Host "======================================================" -ForegroundColor Yellow
 
-$deployArgs = @(
-    "-ResourceGroupName", $ResourceGroupName
-    "-Namespace", "respondr"
-)
+$deployArgs = @{
+    ResourceGroupName = $ResourceGroupName
+    Namespace = "respondr"
+}
 
 if ($UseOAuth2) {
-    $deployArgs += "-UseOAuth2"
+    $deployArgs.UseOAuth2 = $true
 }
 
 if ($SkipImageBuild) {
-    $deployArgs += "-SkipImageBuild"
+    $deployArgs.SkipImageBuild = $true
 }
 
 if ($DryRun) {
-    $deployArgs += "-DryRun"
+    $deployArgs.DryRun = $true
 }
 
 if (-not $DryRun) {
