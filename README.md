@@ -82,15 +82,13 @@ The application uses a modern microservices architecture deployed on Kubernetes:
 az login
 az account set --subscription <your-subscription-id>
 
-# Create resource group
-az group create --name respondr --location westus
-
 # Run complete automated deployment
 cd deployment
 .\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
 ```
 
 **This single command handles everything:**
+- Creates the resource group automatically if it doesn't exist
 - Deploys all Azure infrastructure (AKS, ACR, OpenAI, Storage, Networking)
 - Configures post-deployment settings and AGIC (waits for Application Gateway creation)
 - Creates Azure AD app registration and OAuth2 proxy configuration
