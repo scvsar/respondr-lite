@@ -122,6 +122,11 @@ Before starting, ensure you have:
 - Application Gateway Ingress Controller (AGIC) creates the Application Gateway automatically (5-10 minutes)
 - AGIC pod may show `CrashLoopBackOff` during this time - **this is normal**
 - The deployment scripts handle this timing automatically
+- **Enhanced Permission Handling**: The deployment script now automatically detects and fixes AGIC permission issues
+  - Grants Network Contributor role on VNet for subnet join operations
+  - Grants Contributor role on MC resource group where Application Gateway is created
+  - Automatically retries deployment after permission repair
+- If permission issues occur, the script provides detailed diagnostic information and manual recovery commands
 
 ### Redis Shared Storage Architecture
 
@@ -510,19 +515,34 @@ kubectl port-forward service/respondr-service 8080:80
 ### Common Issues and Solutions
 
 #### AGIC Pod Issues
-**Symptoms**: AGIC pod showing `CrashLoopBackOff`
+**Symptoms**: AGIC pod showing `CrashLoopBackOff` or Application Gateway deployment failures
 **Cause**: Application Gateway creation in progress (5-10 minutes) or permission issues
 **Solution**:
 ```powershell
 # Check if AGIC addon is enabled
 az aks addon list --resource-group respondr --name respondr-aks-cluster-v2 --query "[?name=='ingress-appgw'].enabled" -o tsv
 
-# Enable AGIC if needed
-$subnetId = az network vnet subnet show --resource-group respondr --vnet-name respondr-vnet --name appgw-subnet --query "id" -o tsv
-az aks enable-addons --resource-group respondr --name respondr-aks-cluster-v2 --addons ingress-appgw --appgw-subnet-id $subnetId
+# The deployment script now automatically detects and fixes permission issues, but if manual intervention is needed:
+
+# Get AGIC managed identity
+$agicIdentityId = az aks show --resource-group respondr --name respondr-aks-cluster-v2 --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv
+
+# Grant Network Contributor on VNet (required for subnet join)
+$vnetId = az network vnet show --resource-group respondr --vnet-name respondr-vnet --query "id" -o tsv
+az role assignment create --assignee $agicIdentityId --role "Network Contributor" --scope $vnetId
+
+# Grant Contributor on MC resource group (where Application Gateway is created)
+$mcResourceGroup = "MC_respondr_respondr-aks-cluster-v2_westus"
+az role assignment create --assignee $agicIdentityId --role "Contributor" --scope "/subscriptions/$((az account show --query id -o tsv))/resourceGroups/$mcResourceGroup"
+
+# Restart AGIC to retry deployment
+kubectl rollout restart deployment ingress-appgw-deployment -n kube-system
 
 # Check AGIC logs
 kubectl logs -n kube-system deployment/ingress-appgw-deployment --tail=20
+
+# Monitor Application Gateway creation progress
+az network application-gateway show --resource-group $mcResourceGroup --name "respondr-aks-cluster-v2-appgw" --query "provisioningState" -o tsv
 ```
 
 #### SSL Certificate Issues

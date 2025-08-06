@@ -210,3 +210,13 @@ backend/respondr_messages.json
 /node_modules/
 /package.json
 /package-lock.json
+
+# Template-based deployment - generated files (never commit)
+deployment/values.yaml
+deployment/secrets.yaml
+deployment/respondr-k8s-generated.yaml
+deployment/respondr-k8s-*.yaml
+!deployment/respondr-k8s-*-template.yaml
+respondr-k8s-generated.yaml
+respondr-k8s-*.yaml
+!respondr-k8s-*-template.yaml
