@@ -265,31 +265,92 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would create application secrets" -ForegroundColor Cyan
 }
 
-# Step 7: Application Deployment
-Write-Host "`n📦 Step 7: Deploying Application with Authentication..." -ForegroundColor Yellow
-Write-Host "======================================================" -ForegroundColor Yellow
-
-$deployArgs = @{
-    ResourceGroupName = $ResourceGroupName
-    Namespace = "respondr"
-}
-
-if ($UseOAuth2) {
-    $deployArgs.UseOAuth2 = $true
-}
-
-if ($SkipImageBuild) {
-    $deployArgs.SkipImageBuild = $true
-}
-
-if ($DryRun) {
-    $deployArgs.DryRun = $true
-}
+# Step 7: Generate Values and Process Templates
+Write-Host "`n📋 Step 7: Generating deployment configuration from environment..." -ForegroundColor Yellow
+Write-Host "=================================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {
-    & .\deploy-to-k8s.ps1 @deployArgs
+    # Generate values.yaml from current Azure environment
+    Write-Host "Generating values.yaml from current Azure environment..." -ForegroundColor Yellow
+    .\generate-values.ps1 -ResourceGroupName $ResourceGroupName -Domain $Domain
+    Test-LastCommand "Failed to generate values from environment"
+    Write-Host "Values generated successfully" -ForegroundColor Green
+    
+    # Process template to generate deployment file
+    Write-Host "Processing deployment template..." -ForegroundColor Yellow
+    $templateFile = "respondr-k8s-unified-template.yaml"
+    $outputFile = "respondr-k8s-generated.yaml"
+    
+    .\process-template.ps1 -TemplateFile $templateFile -OutputFile $outputFile
+    Test-LastCommand "Failed to process deployment template"
+    Write-Host "Deployment file generated from template" -ForegroundColor Green
+} else {
+    Write-Host "DRY RUN: Would generate values and process templates" -ForegroundColor Cyan
+}
+
+# Step 8: Application Deployment
+Write-Host "`n📦 Step 8: Deploying Application with Authentication..." -ForegroundColor Yellow
+Write-Host "======================================================" -ForegroundColor Yellow
+
+if (-not $DryRun) {
+    # Build and push Docker image if not skipped
+    if (-not $SkipImageBuild) {
+        Write-Host "Building and pushing Docker image..." -ForegroundColor Yellow
+        
+        # Get ACR details from values
+        $valuesContent = Get-Content "values.yaml" -Raw
+        $acrName = ($valuesContent | Select-String "acrName: `"([^`"]+)`"").Matches[0].Groups[1].Value
+        $acrLoginServer = ($valuesContent | Select-String "acrLoginServer: `"([^`"]+)`"").Matches[0].Groups[1].Value
+        $fullImageName = "$acrLoginServer/respondr:latest"
+        
+        # Navigate to project root
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $originalLocation = Get-Location
+        
+        try {
+            Set-Location $projectRoot
+            Write-Host "Building from: $projectRoot" -ForegroundColor Cyan
+            
+            # Login to ACR
+            az acr login --name $acrName | Out-Null
+            Test-LastCommand "Failed to login to ACR"
+            
+            # Build and push Docker image
+            docker build -t respondr:latest -t $fullImageName .
+            Test-LastCommand "Docker build failed"
+            
+            docker push $fullImageName
+            Test-LastCommand "Docker push failed"
+            
+            Write-Host "Docker image built and pushed successfully" -ForegroundColor Green
+        } finally {
+            Set-Location $originalLocation
+        }
+    }
+    
+    # Deploy Redis first
+    Write-Host "Deploying Redis for shared storage..." -ForegroundColor Yellow
+    kubectl apply -f "redis-deployment.yaml" -n respondr
+    Test-LastCommand "Failed to deploy Redis"
+    
+    # Wait for Redis to be ready
+    kubectl wait --for=condition=available --timeout=120s deployment/redis -n respondr
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Redis deployment may not be fully ready, continuing..."
+    } else {
+        Write-Host "Redis deployment is ready" -ForegroundColor Green
+    }
+    
+    # Deploy the generated application configuration
+    Write-Host "Deploying application..." -ForegroundColor Yellow
+    kubectl apply -f "respondr-k8s-generated.yaml" -n respondr
     Test-LastCommand "Application deployment failed"
-    Write-Host "Application with OAuth2 authentication deployed successfully" -ForegroundColor Green
+    
+    # Wait for deployment to be ready
+    kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment -n respondr
+    Test-LastCommand "Deployment did not become ready in time"
+    
+    Write-Host "Application deployed successfully" -ForegroundColor Green
     
     # Sync local .env file with Kubernetes secrets for development
     Write-Host "Syncing local .env file with deployed secrets..." -ForegroundColor Yellow
@@ -299,8 +360,8 @@ if (-not $DryRun) {
     Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
 
-# Step 8: DNS and Connectivity Verification
-Write-Host "`n🌐 Step 8: DNS and Connectivity Verification..." -ForegroundColor Yellow
+# Step 9: DNS and Connectivity Verification
+Write-Host "`n🌐 Step 9: DNS and Connectivity Verification..." -ForegroundColor Yellow
 Write-Host "=================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {

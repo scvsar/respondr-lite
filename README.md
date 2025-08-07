@@ -74,7 +74,7 @@ The application uses a modern microservices architecture deployed on Kubernetes:
 
 ## Quick Start - Complete End-to-End Deployment
 
-**Recommended for first-time setup**: Use the automated deployment script for a fully functional deployment with OAuth2 authentication:
+**Recommended for first-time setup**: Use the automated deployment script for a fully functional deployment with OAuth2 authentication and tenant-portable configuration:
 
 ```powershell
 # Prerequisites: Azure CLI, Docker Desktop, kubectl, PowerShell 7+
@@ -82,7 +82,7 @@ The application uses a modern microservices architecture deployed on Kubernetes:
 az login
 az account set --subscription <your-subscription-id>
 
-# Run complete automated deployment
+# Run complete automated deployment with template generation
 cd deployment
 .\deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
 ```
@@ -92,11 +92,27 @@ cd deployment
 - Deploys all Azure infrastructure (AKS, ACR, OpenAI, Storage, Networking)
 - Configures post-deployment settings and AGIC (waits for Application Gateway creation)
 - Creates Azure AD app registration and OAuth2 proxy configuration
+- **Generates tenant-specific deployment files from templates** (never committed to git)
 - Builds and deploys the application with OAuth2 sidecar authentication
 - Sets up Let's Encrypt SSL certificates (after you configure DNS)
 - Runs comprehensive tests and provides status verification
 
 **⚠️ Important**: You'll need to configure DNS during the deployment process when prompted. The script will pause and show you the Application Gateway IP address that needs to be added to your domain's DNS records.
+
+### Template-Based Deployment System
+
+This project uses a **template-based deployment system** for tenant portability:
+
+- **Templates**: `respondr-k8s-unified-template.yaml` contains placeholders like `{{ACR_IMAGE_PLACEHOLDER}}`
+- **Value Generation**: `generate-values.ps1` automatically discovers your Azure environment settings
+- **Processing**: `process-template.ps1` replaces placeholders with actual values
+- **Generated Files**: Created automatically and **never committed to git** (in .gitignore)
+
+**Benefits:**
+- ✅ **Tenant Portable**: No hardcoded values in deployment files
+- ✅ **Environment Specific**: Automatically detects and uses your Azure resources
+- ✅ **Git Safe**: Generated files are never committed, preventing credential leaks
+- ✅ **Consistent**: Same template works across all tenants and environments
 
 ## Prerequisites
 
@@ -181,7 +197,28 @@ Azure Application Gateway v2 does not support native Azure AD authentication. Th
 
 ## Step-by-Step Deployment (Alternative to Quick Start)
 
-If you prefer manual control over each deployment phase:
+If you prefer manual control over each deployment phase or want to understand the process:
+
+### Method 1: Template-Based Deployment (Recommended)
+
+```powershell
+# Set up the environment-specific configuration
+cd deployment
+.\generate-values.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+
+# Use the template-based deployment for portable configuration
+.\deploy-template-based.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+```
+
+This approach:
+- Automatically generates `values.yaml` from your Azure environment
+- Processes templates to create deployment files with actual values
+- Ensures deployments work across different tenants without hardcoded values
+- All generated files are ignored by git for security
+
+### Method 2: Manual Step-by-Step Deployment
+
+If you want complete control over each phase:
 
 ### Step 1: Environment Setup
 ```powershell
@@ -228,18 +265,27 @@ This step:
 
 ### Step 5: Deploy Application
 ```powershell
-# Build, push, and deploy application with Redis + OAuth2 authentication
+# RECOMMENDED: Use template-based deployment for tenant portability
+.\deployment\deploy-template-based.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+
+# ALTERNATIVE: Direct deployment (legacy, may require manual file creation)
 .\deployment\deploy-to-k8s.ps1 -ResourceGroupName respondr -UseOAuth2
 
 # Note: Non-OAuth2 deployment is no longer supported due to security requirements
 ```
 
-**What this script does:**
-1. Deploys Redis for shared storage first
-2. Builds and pushes Docker image to ACR (if not skipped)
-3. Creates Kubernetes deployment with both containers (respondr + oauth2-proxy)
-4. Configures services, ingress, and Let's Encrypt certificates
-5. Waits for deployment readiness and certificate issuance
+**Template-based deployment handles:**
+1. Automatic value generation from your Azure environment
+2. Processing templates to create tenant-specific deployment files
+3. Building and pushing Docker image to your ACR
+4. Deploying Redis for shared storage
+5. Deploying the application with OAuth2 authentication
+6. Setting up ingress and Let's Encrypt certificates
+
+**What this approach creates:**
+- `values.yaml` - Environment-specific configuration (never committed)
+- `respondr-k8s-generated.yaml` - Processed deployment file (never committed)
+- Both files are automatically ignored by git for security
 
 ### Step 6: Configure DNS and SSL
 The deployment script will display the Application Gateway IP address. You must:
