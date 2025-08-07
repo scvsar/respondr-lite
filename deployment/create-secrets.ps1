@@ -29,7 +29,10 @@ param(
     [string]$OpenAIDeploymentName,
     
     [Parameter(Mandatory=$false)]
-    [string]$ApiVersion = "2024-12-01-preview"
+    [string]$ApiVersion = "2024-12-01-preview",
+
+    [Parameter(Mandatory=$false)]
+    [string]$Namespace = "respondr"
 )
 
 Write-Host "Respondr - Creating Kubernetes Secrets File" -ForegroundColor Green
@@ -170,6 +173,13 @@ try {
     $secretsContent = $secretsContent -replace 'YOUR_DEPLOYMENT_NAME_HERE', $actualDeploymentName
     $secretsContent = $secretsContent -replace 'YOUR_API_VERSION_HERE', $ApiVersion
     $secretsContent = $secretsContent -replace 'YOUR_WEBHOOK_API_KEY_HERE', $webhookApiKey
+    # Namespace placeholder (optional, backward compatible if absent)
+    if ($secretsContent -match '\{\{NAMESPACE_PLACEHOLDER\}\}') {
+        $secretsContent = $secretsContent -replace '\{\{NAMESPACE_PLACEHOLDER\}\}', $Namespace
+    } elseif ($secretsContent -notmatch 'namespace:') {
+        # If no namespace field present, append one under metadata to ensure scoping
+        $secretsContent = $secretsContent -replace 'metadata:\s*\n\s*name: respondr-secrets', "metadata`n  name: respondr-secrets`n  namespace: $Namespace"
+    }
     
     # Write the updated content
     Set-Content -Path $secretsPath -Value $secretsContent
