@@ -2,6 +2,12 @@
 
 # Respondr Kubernetes Deployment Script
 # This script deploys the Respondr application to a Kubernetes cluster
+# 
+# ⚠️ DEPRECATED: This script is being phased out in favor of the template-based deployment system.
+# Please use deploy-template-based.ps1 or deploy-complete.ps1 for new deployments.
+# 
+# For tenant-portable deployments, use the template system which automatically generates
+# environment-specific configuration files that are never committed to git.
 
 param(
     [Parameter(Mandatory=$false)]
@@ -34,6 +40,21 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
 )
+
+Write-Host "⚠️ DEPRECATION WARNING ⚠️" -ForegroundColor Red
+Write-Host "This deploy-to-k8s.ps1 script is deprecated and will be removed in a future version." -ForegroundColor Yellow
+Write-Host "Please use one of the following modern deployment methods:" -ForegroundColor Yellow
+Write-Host "  • deploy-complete.ps1    - Full end-to-end deployment with templating" -ForegroundColor Cyan
+Write-Host "  • deploy-template-based.ps1 - Template-based deployment only" -ForegroundColor Cyan
+Write-Host "" -ForegroundColor Yellow
+Write-Host "These scripts provide:" -ForegroundColor Yellow
+Write-Host "  ✅ Tenant-portable deployments" -ForegroundColor Green
+Write-Host "  ✅ Environment-specific configuration generation" -ForegroundColor Green
+Write-Host "  ✅ No hardcoded values in deployment files" -ForegroundColor Green
+Write-Host "  ✅ Generated files that are never committed to git" -ForegroundColor Green
+Write-Host ""
+Write-Host "Continuing with legacy deployment..." -ForegroundColor Yellow
+Write-Host ""
 
 Write-Host "Respondr Kubernetes Deployment Script" -ForegroundColor Green
 Write-Host "=========================================" -ForegroundColor Green
@@ -248,13 +269,41 @@ if (-not $SkipImageBuild) {
 # Update the image and identity details in the deployment template
 # Select deployment template based on OAuth2 setting
 if ($UseOAuth2) {
-    $deploymentFile = "respondr-k8s-redis-oauth2.yaml"
-    if (-not (Test-Path $deploymentFile)) {
-        Write-Error "OAuth2 deployment file '$deploymentFile' not found. This is the main working deployment file."
+    # Try multiple possible deployment files for OAuth2
+    $possibleFiles = @(
+        "respondr-k8s-redis-oauth2.yaml",
+        "respondr-k8s-generated.yaml", 
+        "respondr-k8s-oauth2-template.yaml"
+    )
+    
+    $deploymentFile = $null
+    foreach ($file in $possibleFiles) {
+        if (Test-Path $file) {
+            $deploymentFile = $file
+            break
+        }
+    }
+    
+    if (-not $deploymentFile) {
+        Write-Error @"
+No OAuth2 deployment file found. This script expects one of:
+- respondr-k8s-redis-oauth2.yaml (legacy generated file)
+- respondr-k8s-generated.yaml (template-based generated file)
+- respondr-k8s-oauth2-template.yaml (fallback template)
+
+RECOMMENDED: Use deploy-complete.ps1 or deploy-template-based.ps1 instead.
+These scripts generate the deployment files automatically from templates.
+"@
         exit 1
     }
-    Write-Host "Using Redis + OAuth2 deployment template" -ForegroundColor Green
-    $tempFile = $deploymentFile  # Use the Redis OAuth2 file directly
+    
+    if ($deploymentFile -eq "respondr-k8s-oauth2-template.yaml") {
+        Write-Host "⚠️ Using template file directly - this may contain unresolved placeholders!" -ForegroundColor Yellow
+        Write-Host "RECOMMENDED: Use deploy-template-based.ps1 to generate proper deployment files." -ForegroundColor Yellow
+    }
+    
+    Write-Host "Using OAuth2 deployment file: $deploymentFile" -ForegroundColor Green
+    $tempFile = $deploymentFile  # Use the found file directly
 } else {
     Write-Error "Non-OAuth2 deployment is no longer supported. Please use -UseOAuth2 flag."
     exit 1

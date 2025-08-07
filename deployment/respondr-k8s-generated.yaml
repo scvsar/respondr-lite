@@ -49,12 +49,6 @@ spec:
             secretKeyRef:
               name: respondr-secrets
               key: WEBHOOK_API_KEY
-        - name: REDIS_HOST
-          value: redis-service
-        - name: REDIS_PORT
-          value: "6379"
-        - name: REDIS_DB
-          value: "0"
         resources:
           requests:
             memory: "256Mi"
@@ -76,9 +70,7 @@ spec:
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
 
-      # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
-      
-      - name: oauth2-proxy
+      # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)- name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
         ports:
         - containerPort: 4180
@@ -101,7 +93,6 @@ spec:
         - --silence-ping-logging=true
         - --skip-auth-regex=^/webhook$
         - --skip-auth-regex=^/health$
-        - --whitelist-domain=respondr.paincave.pro
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
@@ -137,10 +128,7 @@ spec:
             port: 4180
           initialDelaySeconds: 5
           periodSeconds: 5
-        imagePullPolicy: IfNotPresent
-      
-
----
+        imagePullPolicy: IfNotPresent---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -166,7 +154,10 @@ spec:
       timeoutSeconds: 10800  # 3 hours
   ports:
   # Port configuration changes based on OAuth2 mode
-  {{SERVICE_PORT_CONFIG}}
+  - name: http
+    port: 80
+    targetPort: 4180
+    protocol: TCP
   selector:
     app: respondr
 
@@ -201,4 +192,3 @@ spec:
             name: respondr-service
             port:
               number: 80
-

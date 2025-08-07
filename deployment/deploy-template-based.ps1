@@ -64,7 +64,7 @@ Write-Host "📝 Step 5: Generating deployment files from templates..." -Foregro
 
 # Choose the appropriate template based on OAuth2 setting
 if ($UseOAuth2) {
-    $templateFile = "respondr-k8s-unified-template.yaml"
+    $templateFile = "respondr-k8s-oauth2-template.yaml"
     $outputFile = "respondr-k8s-generated.yaml"
 } else {
     Write-Error "Non-OAuth2 deployment not yet supported in template system"
