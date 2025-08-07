@@ -20,7 +20,7 @@ spec:
       containers:
       # Main application container
       - name: respondr
-        image: respondrdqeunumstnsbmacr.azurecr.io/respondr:latest
+        image: respondrbt774d4d55kswacr.azurecr.io/respondr:latest
         ports:
         - containerPort: 8000
         env:
@@ -49,6 +49,12 @@ spec:
             secretKeyRef:
               name: respondr-secrets
               key: WEBHOOK_API_KEY
+        - name: REDIS_HOST
+          value: redis-service
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_DB
+          value: "0"
         resources:
           requests:
             memory: "256Mi"
@@ -71,6 +77,7 @@ spec:
         imagePullPolicy: IfNotPresent
 
       # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
+      
       - name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
         ports:
@@ -78,7 +85,7 @@ spec:
         args:
         - --provider=oidc
         - --provider-display-name="Microsoft Entra"
-        - --oidc-issuer-url=https://login.microsoftonline.com/d62aea99-b83c-45cb-919b-81127225d94a/v2.0
+        - --oidc-issuer-url=https://login.microsoftonline.com/5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d/v2.0
         - --redirect-url=https://respondr.paincave.pro/oauth2/callback
         - --email-domain=*
         - --upstream=http://localhost:8000
@@ -94,6 +101,7 @@ spec:
         - --silence-ping-logging=true
         - --skip-auth-regex=^/webhook$
         - --skip-auth-regex=^/health$
+        - --whitelist-domain=respondr.paincave.pro
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
@@ -130,6 +138,7 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
+      
 
 ---
 apiVersion: v1
@@ -138,8 +147,8 @@ metadata:
   name: respondr-sa
   namespace: respondr
   annotations:
-    azure.workload.identity/client-id: a5cf723e-97c0-4aae-a74a-d11375b14269
-    azure.workload.identity/tenant-id: d62aea99-b83c-45cb-919b-81127225d94a
+    azure.workload.identity/client-id: 277aff9d-67f9-4caa-872c-be940ba89dde
+    azure.workload.identity/tenant-id: 5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d
 
 ---
 apiVersion: v1

@@ -332,6 +332,12 @@ if (-not $DryRun) {
         Write-Error "Failed to deploy secrets!"
         exit 1
     }
+    # Verify secret exists (defensive)
+    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+        Write-Error "Secret 'respondr-secrets' not found in namespace '$Namespace' after apply"
+        exit 1
+    }
+    Write-Host "✅ Secret 'respondr-secrets' confirmed in namespace '$Namespace'" -ForegroundColor Green
 }
 
 # Deploy Redis (required for shared storage)
@@ -356,6 +362,11 @@ if (-not $DryRun) {
 # Deploy to Kubernetes
 Write-Host "Deploying application..." -ForegroundColor Yellow
 if (-not $DryRun) {
+    # Preflight: ensure secret still exists before deploying
+    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+        Write-Error "Blocking deployment: required secret 'respondr-secrets' missing in namespace '$Namespace'"
+        exit 1
+    }
     kubectl apply -f $tempFile -n $Namespace
       if ($LASTEXITCODE -eq 0) {
         Write-Host "Deployment successful!" -ForegroundColor Green
