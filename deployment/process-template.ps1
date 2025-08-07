@@ -66,11 +66,11 @@ $useOAuth2 = $values['useOAuth2'] -eq 'true'
 Write-Host "🔧 Processing OAuth2 conditional sections (useOAuth2: $useOAuth2)" -ForegroundColor Cyan
 
 if ($useOAuth2) {
-    # Remove OAuth2 conditional markers but keep the content
-    $processedContent = $processedContent -replace '\s*\{\{OAUTH2_CONTAINER_START\}\}\s*\n?', ''
-    $processedContent = $processedContent -replace '\s*\{\{OAUTH2_CONTAINER_END\}\}\s*\n?', ''
-    $processedContent = $processedContent -replace '\s*\{\{OAUTH2_INGRESS_START\}\}\s*\n?', ''
-    $processedContent = $processedContent -replace '\s*\{\{OAUTH2_INGRESS_END\}\}\s*\n?', ''
+    # Remove OAuth2 conditional markers but keep the content and preserve formatting
+    $processedContent = $processedContent -replace '\{\{OAUTH2_CONTAINER_START\}\}', ""
+    $processedContent = $processedContent -replace '\{\{OAUTH2_CONTAINER_END\}\}', ""
+    $processedContent = $processedContent -replace '\{\{OAUTH2_INGRESS_START\}\}', ""
+    $processedContent = $processedContent -replace '\{\{OAUTH2_INGRESS_END\}\}', ""
     
     # Replace SERVICE_PORT_CONFIG for OAuth2 mode (traffic goes through oauth2-proxy on port 4180)
     $servicePortConfig = @"
@@ -82,8 +82,8 @@ if ($useOAuth2) {
     $processedContent = $processedContent -replace '\{\{SERVICE_PORT_CONFIG\}\}', $servicePortConfig
     Write-Verbose "Applied OAuth2 service port configuration"
 } else {
-    # Remove entire OAuth2 sections including the markers
-    $processedContent = $processedContent -replace '(?s)\s*\{\{OAUTH2_CONTAINER_START\}\}.*?\{\{OAUTH2_CONTAINER_END\}\}\s*', ''
+    # Remove entire OAuth2 sections including the markers and preserve document structure
+    $processedContent = $processedContent -replace '(?s)      # OAuth2 Proxy sidecar container \(conditional - will be removed if ENABLE_OAUTH2=false\)\r?\n      \{\{OAUTH2_CONTAINER_START\}\}.*?\{\{OAUTH2_CONTAINER_END\}\}\r?\n', ''
     $processedContent = $processedContent -replace '(?s)\s*\{\{OAUTH2_INGRESS_START\}\}.*?\{\{OAUTH2_INGRESS_END\}\}\s*', ''
     
     # Replace SERVICE_PORT_CONFIG for non-OAuth2 mode (traffic goes directly to app on port 8000)
