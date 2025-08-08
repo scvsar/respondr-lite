@@ -62,14 +62,9 @@ if ($UseOAuth2) {
 # Step 5: Generate deployment files from templates
 Write-Host "📝 Step 5: Generating deployment files from templates..." -ForegroundColor Green
 
-# Choose the appropriate template based on OAuth2 setting
-if ($UseOAuth2) {
-    $templateFile = "respondr-k8s-oauth2-template.yaml"
-    $outputFile = "respondr-k8s-generated.yaml"
-} else {
-    Write-Error "Non-OAuth2 deployment not yet supported in template system"
-    exit 1
-}
+ # Always use unified template (supports conditional OAuth2 markers internally)
+ $templateFile = "respondr-k8s-unified-template.yaml"
+ $outputFile = "respondr-k8s-generated.yaml"
 
 & ".\process-template.ps1" -TemplateFile $templateFile -OutputFile $outputFile
 if ($LASTEXITCODE -ne 0) {
