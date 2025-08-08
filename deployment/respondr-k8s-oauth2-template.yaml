@@ -71,8 +71,7 @@ spec:
         imagePullPolicy: IfNotPresent
 
       # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
-      {{OAUTH2_CONTAINER_START}}
-      - name: oauth2-proxy
+      {{OAUTH2_CONTAINER_START}}- name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
         ports:
         - containerPort: 4180
@@ -131,8 +130,7 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
-      {{OAUTH2_CONTAINER_END}}
-
+{{OAUTH2_CONTAINER_END}}
 ---
 apiVersion: v1
 kind: ServiceAccount
