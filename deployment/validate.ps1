@@ -47,9 +47,8 @@ function Invoke-EnvValidation {
     $location = $deploy.properties.outputs.location.value
     $agicId = az aks show --resource-group $ResourceGroupName --name $aksName --query "addonProfiles.ingressApplicationGateway.config.effectiveApplicationGatewayId" -o tsv 2>$null
     if (-not $agicId) { throw "AGIC not enabled or Application Gateway ID not found" }
-    $appGwName = $agicId.Split('/')[-1]
-    $mcRg = "MC_${ResourceGroupName}_${aksName}_${location}"
-    $portsJson = az network application-gateway frontend-port list --gateway-name $appGwName --resource-group $mcRg -o json 2>$null
+    # Query the App Gateway directly by resource ID to avoid guessing its resource group
+    $portsJson = az network application-gateway show --ids $agicId --query "frontendPorts" -o json 2>$null
     if ($portsJson) {
         $ports = $portsJson | ConvertFrom-Json
         if ($ports | Where-Object { $_.port -eq 443 }) { Write-Host "✓ AppGW frontend port 443 present" -ForegroundColor Green }
