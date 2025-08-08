@@ -100,13 +100,10 @@ if ($LASTEXITCODE -eq 0) {
     exit 1
 }
 
-# Create the deployment file from template
-Write-Host "Creating deployment configuration..." -ForegroundColor Yellow
-
-if (-not (Test-Path "respondr-k8s-oauth2-template.yaml")) {
-    Write-Error "Template file respondr-k8s-oauth2-template.yaml not found"
-    exit 1
-}
+ # NOTE: Deployment file creation is now handled by process-template.ps1 using
+ # the unified template (respondr-k8s-unified-template.yaml). We retain only
+ # secret creation and app registration here for clarity.
+Write-Host "Skipping legacy per-script deployment file generation (handled later by unified template)" -ForegroundColor Yellow
 
 # Get ACR details
 $acrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv
@@ -126,33 +123,7 @@ if ($aksClusterName) {
     $identityClientId = "CLIENT_ID_PLACEHOLDER"
 }
 
-# Replace placeholders in template
-$deploymentYaml = Get-Content "respondr-k8s-oauth2-template.yaml" -Raw
-$deploymentYaml = $deploymentYaml -replace "{{ACR_IMAGE_PLACEHOLDER}}", $imageUri
-$deploymentYaml = $deploymentYaml -replace "{{HOSTNAME_PLACEHOLDER}}", $hostname
-$deploymentYaml = $deploymentYaml -replace "HOSTNAME_PLACEHOLDER", $hostname
-$deploymentYaml = $deploymentYaml -replace "{{AZURE_TENANT_ID}}", $tenantId
-$deploymentYaml = $deploymentYaml -replace "{{TENANT_ID_PLACEHOLDER}}", $tenantId
-$deploymentYaml = $deploymentYaml -replace "TENANT_ID_PLACEHOLDER", $tenantId
-$deploymentYaml = $deploymentYaml -replace "{{CLIENT_ID_PLACEHOLDER}}", $identityClientId
-$deploymentYaml = $deploymentYaml -replace "CLIENT_ID_PLACEHOLDER", $identityClientId
-
-# OAuth2 container markers (remove these as they're just template markers)
-$deploymentYaml = $deploymentYaml -replace "      {{OAUTH2_CONTAINER_START}}", ""
-$deploymentYaml = $deploymentYaml -replace "      {{OAUTH2_CONTAINER_END}}", ""
-
-# Service port configuration for OAuth2 mode (targets oauth2-proxy port 4180)
-$servicePortConfig = @"
-  - port: 80
-    protocol: TCP
-    targetPort: 4180
-"@
-$deploymentYaml = $deploymentYaml -replace "  {{SERVICE_PORT_CONFIG}}", $servicePortConfig
-
-# Save the final deployment file
-$deploymentYaml | Out-File -FilePath "respondr-k8s-oauth2.yaml" -Encoding UTF8
-
-Write-Host "✅ OAuth2 Proxy setup completed successfully!" -ForegroundColor Green
+Write-Host "✅ OAuth2 Proxy setup (app registration + secrets) completed successfully!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Configuration Summary:" -ForegroundColor Yellow
 Write-Host "  App Registration: $AppName ($appId)" -ForegroundColor Cyan
@@ -162,8 +133,7 @@ Write-Host "  Hostname: $hostname" -ForegroundColor Cyan
 Write-Host "  Image: $imageUri" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "Next Steps:" -ForegroundColor Yellow
-Write-Host "1. Deploy the OAuth2-enabled application:" -ForegroundColor White
-Write-Host "   kubectl apply -f respondr-k8s-oauth2.yaml" -ForegroundColor Cyan
+Write-Host "1. Continue with unified deployment generation (handled by deploy-complete/process-template)" -ForegroundColor White
 Write-Host ""
 Write-Host "2. Update your DNS to point to the Application Gateway IP" -ForegroundColor White
 Write-Host ""

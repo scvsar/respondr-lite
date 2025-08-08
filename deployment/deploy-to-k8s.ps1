@@ -271,9 +271,8 @@ if (-not $SkipImageBuild) {
 if ($UseOAuth2) {
     # Try multiple possible deployment files for OAuth2
     $possibleFiles = @(
-        "respondr-k8s-redis-oauth2.yaml",
-        "respondr-k8s-generated.yaml", 
-        "respondr-k8s-oauth2-template.yaml"
+        "respondr-k8s-generated.yaml",
+        "respondr-k8s-current.yaml"
     )
     
     $deploymentFile = $null
@@ -286,20 +285,13 @@ if ($UseOAuth2) {
     
     if (-not $deploymentFile) {
         Write-Error @"
-No OAuth2 deployment file found. This script expects one of:
-- respondr-k8s-redis-oauth2.yaml (legacy generated file)
-- respondr-k8s-generated.yaml (template-based generated file)
-- respondr-k8s-oauth2-template.yaml (fallback template)
+No generated deployment file found.
 
-RECOMMENDED: Use deploy-complete.ps1 or deploy-template-based.ps1 instead.
-These scripts generate the deployment files automatically from templates.
+Expected: respondr-k8s-generated.yaml (created by process-template.ps1)
+
+RECOMMENDED: Run deploy-complete.ps1 or deploy-template-based.ps1 first to generate it.
 "@
         exit 1
-    }
-    
-    if ($deploymentFile -eq "respondr-k8s-oauth2-template.yaml") {
-        Write-Host "⚠️ Using template file directly - this may contain unresolved placeholders!" -ForegroundColor Yellow
-        Write-Host "RECOMMENDED: Use deploy-template-based.ps1 to generate proper deployment files." -ForegroundColor Yellow
     }
     
     Write-Host "Using OAuth2 deployment file: $deploymentFile" -ForegroundColor Green
@@ -312,7 +304,7 @@ These scripts generate the deployment files automatically from templates.
 Write-Host "Preparing deployment configuration..." -ForegroundColor Yellow
 
 # For OAuth2 deployment, the file already contains all necessary configuration
-Write-Host "Using pre-configured Redis + OAuth2 deployment file" -ForegroundColor Green
+Write-Host "Using generated unified deployment file" -ForegroundColor Green
 Write-Host "  Image: Will be updated to $fullImageName" -ForegroundColor Cyan
 Write-Host "  Authentication: OAuth2 Proxy with Azure AD" -ForegroundColor Cyan
 Write-Host "  Storage: Redis for shared data" -ForegroundColor Cyan

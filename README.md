@@ -168,11 +168,11 @@ This application uses Redis for shared storage to solve the "session affinity pr
 
 The project has been streamlined to use only essential deployment files:
 
-**Essential YAML Files:**
-- `respondr-k8s-redis-oauth2.yaml` - Main deployment with Redis + OAuth2 (actively used)
+**Essential YAML Files (committed):**
 - `redis-deployment.yaml` - Redis service for shared storage
-- `secrets-template.yaml` - Template for creating secrets
-- `letsencrypt-issuer.yaml` - TLS certificate issuer
+- `respondr-k8s-unified-template.yaml` - Single authoritative application + ingress template (OAuth2 conditional sections)
+- `secrets-template.yaml` - Template for creating secrets (user fills or script generates secrets.yaml)
+- `letsencrypt-issuer.yaml` - TLS certificate issuer (static)
 
 **Deployment Scripts:**
 - `deploy-complete.ps1` - Complete end-to-end deployment (recommended)
@@ -180,17 +180,38 @@ The project has been streamlined to use only essential deployment files:
 - `setup-oauth2.ps1` - OAuth2 configuration
 - `cleanup.ps1` - Resource cleanup and tenant reset
 
-**Template Files (for automation):**
-- `respondr-k8s-unified-template.yaml` - Template for parametrized deployments
-- `respondr-k8s-oauth2-template.yaml` - OAuth2 setup template
+**Generated (gitignored) at deploy time:**
+- `values.yaml` - Environment discovery output
+- `secrets.yaml` - Populated secrets from Azure (never commit)
+- `respondr-k8s-generated.yaml` - Final manifest produced by template processor
+- `respondr-k8s-current.yaml` - Transient working copy (legacy path)
 
 ### Removed/Obsolete Files
 
-During architecture cleanup, the following files were removed:
-- All PVC-related files (replaced by Redis)
-- Old deployment variants without Redis integration
-- Separate component files (integrated into main deployment)
-- `deploy-unified.ps1` (superseded by deploy-complete.ps1)
+As part of deployment simplification the following were removed or deprecated:
+- Legacy per-mode templates (e.g. `respondr-k8s-oauth2-template.yaml`)
+- Zero-byte placeholder YAMLs
+- Legacy redis+oauth2 generated variants (`respondr-k8s-redis-oauth2.yaml`)
+- Deprecated direct-manifest editing paths (replaced by unified template + generator)
+
+Result: A single templated source of truth plus a minimal generator script path.
+
+### Why Not Helm (Yet)?
+This project emphasizes simplicity and tenant portability with minimal moving parts. A Helm chart would provide:
+- Pros: Built‑in values merging, packaging/versioning, diff/upgrade semantics
+- Cons: Additional toolchain dependency, template indirection, more abstraction than current needs
+
+Current unified PowerShell + placeholder approach already supplies:
+- Deterministic generation from Azure introspection
+- Clear, readable final manifest (no Helm template debugging)
+- Zero added learning curve for contributors
+
+Recommended path:
+1. Keep current template system until you need multi-environment packaging or advanced upgrade rollback features.
+2. Revisit Helm when you introduce staging/prod separation, multiple optional components, or chart reuse by external consumers.
+3. If adopting later, you can mechanically convert the unified template into a Chart (`templates/deployment.yaml`, `ingress.yaml`, etc.) and map existing values to a `values.yaml`.
+
+Net: Staying with the lean custom template flow is an intentional trade favoring clarity over abstraction right now.
 
 ### Authentication Architecture
 Azure Application Gateway v2 does not support native Azure AD authentication. This deployment includes **OAuth2 Proxy sidecar authentication** for seamless Azure AD/Entra integration.
