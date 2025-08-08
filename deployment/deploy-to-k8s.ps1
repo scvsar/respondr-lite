@@ -2,6 +2,12 @@
 
 # Respondr Kubernetes Deployment Script
 # This script deploys the Respondr application to a Kubernetes cluster
+# 
+# ⚠️ DEPRECATED: This script is being phased out in favor of the template-based deployment system.
+# Please use deploy-template-based.ps1 or deploy-complete.ps1 for new deployments.
+# 
+# For tenant-portable deployments, use the template system which automatically generates
+# environment-specific configuration files that are never committed to git.
 
 param(
     [Parameter(Mandatory=$false)]
@@ -34,6 +40,21 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
 )
+
+Write-Host "⚠️ DEPRECATION WARNING ⚠️" -ForegroundColor Red
+Write-Host "This deploy-to-k8s.ps1 script is deprecated and will be removed in a future version." -ForegroundColor Yellow
+Write-Host "Please use one of the following modern deployment methods:" -ForegroundColor Yellow
+Write-Host "  • deploy-complete.ps1    - Full end-to-end deployment with templating" -ForegroundColor Cyan
+Write-Host "  • deploy-template-based.ps1 - Template-based deployment only" -ForegroundColor Cyan
+Write-Host "" -ForegroundColor Yellow
+Write-Host "These scripts provide:" -ForegroundColor Yellow
+Write-Host "  ✅ Tenant-portable deployments" -ForegroundColor Green
+Write-Host "  ✅ Environment-specific configuration generation" -ForegroundColor Green
+Write-Host "  ✅ No hardcoded values in deployment files" -ForegroundColor Green
+Write-Host "  ✅ Generated files that are never committed to git" -ForegroundColor Green
+Write-Host ""
+Write-Host "Continuing with legacy deployment..." -ForegroundColor Yellow
+Write-Host ""
 
 Write-Host "Respondr Kubernetes Deployment Script" -ForegroundColor Green
 Write-Host "=========================================" -ForegroundColor Green
@@ -248,13 +269,33 @@ if (-not $SkipImageBuild) {
 # Update the image and identity details in the deployment template
 # Select deployment template based on OAuth2 setting
 if ($UseOAuth2) {
-    $deploymentFile = "respondr-k8s-redis-oauth2.yaml"
-    if (-not (Test-Path $deploymentFile)) {
-        Write-Error "OAuth2 deployment file '$deploymentFile' not found. This is the main working deployment file."
+    # Try multiple possible deployment files for OAuth2
+    $possibleFiles = @(
+        "respondr-k8s-generated.yaml",
+        "respondr-k8s-current.yaml"
+    )
+    
+    $deploymentFile = $null
+    foreach ($file in $possibleFiles) {
+        if (Test-Path $file) {
+            $deploymentFile = $file
+            break
+        }
+    }
+    
+    if (-not $deploymentFile) {
+        Write-Error @"
+No generated deployment file found.
+
+Expected: respondr-k8s-generated.yaml (created by process-template.ps1)
+
+RECOMMENDED: Run deploy-complete.ps1 or deploy-template-based.ps1 first to generate it.
+"@
         exit 1
     }
-    Write-Host "Using Redis + OAuth2 deployment template" -ForegroundColor Green
-    $tempFile = $deploymentFile  # Use the Redis OAuth2 file directly
+    
+    Write-Host "Using OAuth2 deployment file: $deploymentFile" -ForegroundColor Green
+    $tempFile = $deploymentFile  # Use the found file directly
 } else {
     Write-Error "Non-OAuth2 deployment is no longer supported. Please use -UseOAuth2 flag."
     exit 1
@@ -263,7 +304,7 @@ if ($UseOAuth2) {
 Write-Host "Preparing deployment configuration..." -ForegroundColor Yellow
 
 # For OAuth2 deployment, the file already contains all necessary configuration
-Write-Host "Using pre-configured Redis + OAuth2 deployment file" -ForegroundColor Green
+Write-Host "Using generated unified deployment file" -ForegroundColor Green
 Write-Host "  Image: Will be updated to $fullImageName" -ForegroundColor Cyan
 Write-Host "  Authentication: OAuth2 Proxy with Azure AD" -ForegroundColor Cyan
 Write-Host "  Storage: Redis for shared data" -ForegroundColor Cyan
@@ -283,6 +324,12 @@ if (-not $DryRun) {
         Write-Error "Failed to deploy secrets!"
         exit 1
     }
+    # Verify secret exists (defensive)
+    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+        Write-Error "Secret 'respondr-secrets' not found in namespace '$Namespace' after apply"
+        exit 1
+    }
+    Write-Host "✅ Secret 'respondr-secrets' confirmed in namespace '$Namespace'" -ForegroundColor Green
 }
 
 # Deploy Redis (required for shared storage)
@@ -307,6 +354,11 @@ if (-not $DryRun) {
 # Deploy to Kubernetes
 Write-Host "Deploying application..." -ForegroundColor Yellow
 if (-not $DryRun) {
+    # Preflight: ensure secret still exists before deploying
+    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+        Write-Error "Blocking deployment: required secret 'respondr-secrets' missing in namespace '$Namespace'"
+        exit 1
+    }
     kubectl apply -f $tempFile -n $Namespace
       if ($LASTEXITCODE -eq 0) {
         Write-Host "Deployment successful!" -ForegroundColor Green

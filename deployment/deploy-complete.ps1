@@ -29,13 +29,14 @@
     Skip the Docker image build step.
 
 .PARAMETER UseOAuth2
-    Use OAuth2 proxy for authentication (default: true). If false, uses Application Gateway authentication.
+    Disable OAuth2 proxy (default behavior is OAuth2 enabled). When specified, uses Application Gateway auth path.
 
 .EXAMPLE
     .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro"
     
 .EXAMPLE
     .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro" -UseOAuth2:$false
+    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro" -DisableOAuth2
 #>
 
 param(
@@ -47,6 +48,9 @@ param(
     
     [Parameter(Mandatory=$false)]
     [string]$Domain = "paincave.pro",
+
+    [Parameter(Mandatory=$false)]
+    [string]$Namespace = "respondr",
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipInfrastructure,
@@ -55,13 +59,24 @@ param(
     [switch]$SkipImageBuild,
     
     [Parameter(Mandatory=$false)]
-    [switch]$UseOAuth2 = $true,  # Default to OAuth2 authentication
+    [switch]$DisableOAuth2,  # Use -DisableOAuth2 to turn off OAuth2 (default is enabled)
     
     [Parameter(Mandatory=$false)]
     [switch]$DryRun
 )
 
 $hostname = "respondr.$Domain"
+
+# Derive internal flag (default true unless -DisableOAuth2 provided)
+$UseOAuth2 = -not $DisableOAuth2.IsPresent
+
+# Ensure we operate from the script's directory so relative paths resolve
+try {
+    $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    Set-Location $ScriptDir
+} catch {
+    Write-Warning "Could not change directory to script path: $_"
+}
 
 Write-Host "Complete Respondr Deployment" -ForegroundColor Green
 Write-Host "======================================" -ForegroundColor Green
@@ -95,7 +110,8 @@ if (-not $SkipInfrastructure) {
         } else {
             Write-Host "Resource group '$ResourceGroupName' already exists." -ForegroundColor Green
         }
-        az deployment group create --resource-group $ResourceGroupName --template-file .\main.bicep --parameters resourcePrefix=$ResourceGroupName location=$Location
+    $bicepFile = Join-Path $PSScriptRoot 'main.bicep'
+    az deployment group create --resource-group $ResourceGroupName --template-file $bicepFile --parameters resourcePrefix=$ResourceGroupName location=$Location
         Test-LastCommand "Infrastructure deployment failed"
         Write-Host "Infrastructure deployed successfully" -ForegroundColor Green
     } else {
@@ -110,7 +126,7 @@ Write-Host "`n🔧 Step 2: Post-deployment Configuration..." -ForegroundColor Ye
 Write-Host "=============================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {
-    .\post-deploy.ps1 -ResourceGroupName $ResourceGroupName -Location $Location
+    & (Join-Path $PSScriptRoot 'post-deploy.ps1') -ResourceGroupName $ResourceGroupName -Location $Location
     Test-LastCommand "Post-deployment configuration failed"
     Write-Host "Post-deployment configuration completed" -ForegroundColor Green
 } else {
@@ -144,27 +160,44 @@ Write-Host "Application Gateway: $appGwName" -ForegroundColor Cyan
 Write-Host "MC Resource Group: $mcResourceGroup" -ForegroundColor Cyan
 
 if (-not $DryRun) {
-    # Check if HTTPS port exists
-    $httpsPort = az network application-gateway frontend-port show --gateway-name $appGwName --resource-group $mcResourceGroup --name httpsPort 2>$null
-    
-    if (-not $httpsPort) {
-        Write-Host "Adding HTTPS frontend port..." -ForegroundColor Yellow
+    # Idempotent HTTPS port handling: skip creation if ANY frontend port already uses 443
+    $frontendPortsJson = az network application-gateway frontend-port list --gateway-name $appGwName --resource-group $mcResourceGroup -o json 2>$null
+    $existingHttpsPort = $false
+    if ($frontendPortsJson) {
+        try {
+            $frontendPorts = $frontendPortsJson | ConvertFrom-Json
+            if ($frontendPorts | Where-Object { $_.port -eq 443 }) { $existingHttpsPort = $true }
+        } catch {
+            Write-Warning "Could not parse existing frontend ports JSON: $_"
+        }
+    }
+
+    if ($existingHttpsPort) {
+        Write-Host "HTTPS frontend port (443) already exists (name: $((($frontendPorts | Where-Object { $_.port -eq 443 })[0]).name))" -ForegroundColor Green
+    } else {
+        Write-Host "Adding HTTPS frontend port (443)..." -ForegroundColor Yellow
         az network application-gateway frontend-port create `
             --gateway-name $appGwName `
             --resource-group $mcResourceGroup `
             --name httpsPort `
-            --port 443
-        Test-LastCommand "Failed to add HTTPS port"
-        Write-Host "HTTPS port added" -ForegroundColor Green
-    } else {
-        Write-Host "HTTPS port already exists" -ForegroundColor Green
+            --port 443 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            # Secondary guard: if failure due to duplicate, continue; else abort
+            $dupCheck = az network application-gateway frontend-port list --gateway-name $appGwName --resource-group $mcResourceGroup -o json 2>$null | ConvertFrom-Json
+            if ($dupCheck | Where-Object { $_.port -eq 443 }) {
+                Write-Host "Detected existing 443 port after create attempt; proceeding idempotently" -ForegroundColor Yellow
+            } else {
+                Test-LastCommand "Failed to add HTTPS port"
+            }
+        } else {
+            Write-Host "HTTPS port added" -ForegroundColor Green
+        }
     }
-    
+
     Write-Host "Application Gateway configured for HTTPS - Let's Encrypt certificates will be managed by cert-manager" -ForegroundColor Green
     Write-Host "Note: SSL certificates will be automatically provisioned when the ingress is deployed" -ForegroundColor Yellow
-    
 } else {
-    Write-Host "DRY RUN: Would configure Application Gateway for HTTPS with Let's Encrypt" -ForegroundColor Cyan
+    Write-Host "DRY RUN: Would configure (or verify existing) Application Gateway HTTPS port (443) and rely on cert-manager" -ForegroundColor Cyan
 }
 
 # Step 4: OAuth2 Authentication Setup
@@ -173,7 +206,7 @@ if ($UseOAuth2) {
     Write-Host "===============================================" -ForegroundColor Yellow
 
     if (-not $DryRun) {
-        .\setup-oauth2.ps1 -ResourceGroupName $ResourceGroupName -Domain $Domain
+        & (Join-Path $PSScriptRoot 'setup-oauth2.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
         Test-LastCommand "OAuth2 authentication setup failed"
         Write-Host "OAuth2 authentication configured successfully" -ForegroundColor Green
     } else {
@@ -190,7 +223,7 @@ Write-Host "=============================================" -ForegroundColor Yell
 
 if (-not $DryRun) {
     # Get the Application Gateway IP
-    $appGwIp = az network public-ip show --resource-group $mcResourceGroup --name "applicationgateway-appgwpip" --query "ipAddress" -o tsv 2>$null
+    $appGwIp = az network public-ip show --resource-group $mcResourceGroup --name "$appGwName-appgwpip" --query "ipAddress" -o tsv 2>$null
     
     if ($appGwIp) {
         Write-Host "Your Application Gateway IP is: $appGwIp" -ForegroundColor Green
@@ -258,55 +291,138 @@ Write-Host "===========================================" -ForegroundColor Yellow
 if (-not $DryRun) {
     # Create secrets using the dedicated script
     Write-Host "Generating application secrets..." -ForegroundColor Yellow
-    .\create-secrets.ps1 -ResourceGroupName $ResourceGroupName
+    & (Join-Path $PSScriptRoot 'create-secrets.ps1') -ResourceGroupName $ResourceGroupName -Namespace $Namespace
     Test-LastCommand "Secrets creation failed"
     Write-Host "Application secrets created successfully" -ForegroundColor Green
+
+    # NEW: Immediately apply secrets to cluster (idempotent) before any app deployment
+    $secretsPath = Join-Path $PSScriptRoot 'secrets.yaml'
+    if (Test-Path $secretsPath) {
+        Write-Host "Applying Kubernetes secrets file to namespace '$Namespace'..." -ForegroundColor Yellow
+        kubectl apply -f $secretsPath -n $Namespace | Out-Null
+        Test-LastCommand "Failed to apply secrets.yaml to cluster"
+        # Verify secret exists
+        if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+            Write-Error "Secret respondr-secrets not found in namespace '$Namespace' after apply"
+            exit 1
+        }
+        Write-Host "✅ Kubernetes secret 'respondr-secrets' present in namespace '$Namespace'" -ForegroundColor Green
+    } else {
+        Write-Error "Expected secrets.yaml at $secretsPath but file not found"
+        exit 1
+    }
 } else {
     Write-Host "DRY RUN: Would create application secrets" -ForegroundColor Cyan
 }
 
-# Step 7: Application Deployment
-Write-Host "`n📦 Step 7: Deploying Application with Authentication..." -ForegroundColor Yellow
-Write-Host "======================================================" -ForegroundColor Yellow
-
-$deployArgs = @{
-    ResourceGroupName = $ResourceGroupName
-    Namespace = "respondr"
-}
-
-if ($UseOAuth2) {
-    $deployArgs.UseOAuth2 = $true
-}
-
-if ($SkipImageBuild) {
-    $deployArgs.SkipImageBuild = $true
-}
-
-if ($DryRun) {
-    $deployArgs.DryRun = $true
-}
+# Step 7: Generate Values and Process Templates
+Write-Host "`n📋 Step 7: Generating deployment configuration from environment..." -ForegroundColor Yellow
+Write-Host "=================================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {
-    & .\deploy-to-k8s.ps1 @deployArgs
+    # Generate values.yaml from current Azure environment
+    Write-Host "Generating values.yaml from current Azure environment..." -ForegroundColor Yellow
+    & (Join-Path $PSScriptRoot 'generate-values.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
+    Test-LastCommand "Failed to generate values from environment"
+    Write-Host "Values generated successfully" -ForegroundColor Green
+    
+    # Process template to generate deployment file
+    Write-Host "Processing deployment template..." -ForegroundColor Yellow
+    $templateFile = "respondr-k8s-unified-template.yaml"
+    $outputFile = "respondr-k8s-generated.yaml"
+    
+    & (Join-Path $PSScriptRoot 'process-template.ps1') -TemplateFile $templateFile -OutputFile $outputFile
+    Test-LastCommand "Failed to process deployment template"
+    Write-Host "Deployment file generated from template" -ForegroundColor Green
+} else {
+    Write-Host "DRY RUN: Would generate values and process templates" -ForegroundColor Cyan
+}
+
+# Step 8: Application Deployment
+Write-Host "`n📦 Step 8: Deploying Application with Authentication..." -ForegroundColor Yellow
+Write-Host "======================================================" -ForegroundColor Yellow
+
+if (-not $DryRun) {
+    # Build and push Docker image if not skipped
+    if (-not $SkipImageBuild) {
+        Write-Host "Building and pushing Docker image..." -ForegroundColor Yellow
+        
+        # Get ACR details from values
+        $valuesContent = Get-Content "values.yaml" -Raw
+        $acrName = ($valuesContent | Select-String "acrName: `"([^`"]+)`"").Matches[0].Groups[1].Value
+        $acrLoginServer = ($valuesContent | Select-String "acrLoginServer: `"([^`"]+)`"").Matches[0].Groups[1].Value
+        $fullImageName = "$acrLoginServer/respondr:latest"
+        
+        # Navigate to project root
+        $projectRoot = Split-Path $PSScriptRoot -Parent
+        $originalLocation = Get-Location
+        
+        try {
+            Set-Location $projectRoot
+            Write-Host "Building from: $projectRoot" -ForegroundColor Cyan
+            
+            # Login to ACR
+            az acr login --name $acrName | Out-Null
+            Test-LastCommand "Failed to login to ACR"
+            
+            # Build and push Docker image
+            docker build -t respondr:latest -t $fullImageName .
+            Test-LastCommand "Docker build failed"
+            
+            docker push $fullImageName
+            Test-LastCommand "Docker push failed"
+            
+            Write-Host "Docker image built and pushed successfully" -ForegroundColor Green
+        } finally {
+            Set-Location $originalLocation
+        }
+    }
+    
+    # Deploy Redis first
+    Write-Host "Deploying Redis for shared storage..." -ForegroundColor Yellow
+    kubectl apply -f (Join-Path $PSScriptRoot 'redis-deployment.yaml') -n $Namespace
+    Test-LastCommand "Failed to deploy Redis"
+    
+    # Wait for Redis to be ready
+    kubectl wait --for=condition=available --timeout=120s deployment/redis -n $Namespace
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Redis deployment may not be fully ready, continuing..."
+    } else {
+        Write-Host "Redis deployment is ready" -ForegroundColor Green
+    }
+    
+    # Deploy the generated application configuration
+    Write-Host "Deploying application..." -ForegroundColor Yellow
+    # Preflight: ensure required secret exists (defensive check)
+    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+        Write-Error "Blocking deployment: required secret 'respondr-secrets' missing in namespace '$Namespace'"
+        exit 1
+    }
+    kubectl apply -f (Join-Path $PSScriptRoot 'respondr-k8s-generated.yaml') -n $Namespace
     Test-LastCommand "Application deployment failed"
-    Write-Host "Application with OAuth2 authentication deployed successfully" -ForegroundColor Green
+    
+    # Wait for deployment to be ready
+    kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment -n $Namespace
+    Test-LastCommand "Deployment did not become ready in time"
+    
+    Write-Host "Application deployed successfully" -ForegroundColor Green
     
     # Sync local .env file with Kubernetes secrets for development
     Write-Host "Syncing local .env file with deployed secrets..." -ForegroundColor Yellow
-    .\sync-env.ps1
+    & (Join-Path $PSScriptRoot 'sync-env.ps1')
     Write-Host "Local .env file updated for development use" -ForegroundColor Green
 } else {
     Write-Host "DRY RUN: Would deploy application with OAuth2 authentication" -ForegroundColor Cyan
 }
 
-# Step 8: DNS and Connectivity Verification
-Write-Host "`n🌐 Step 8: DNS and Connectivity Verification..." -ForegroundColor Yellow
+# Step 9: DNS and Connectivity Verification
+Write-Host "`n🌐 Step 9: DNS and Connectivity Verification..." -ForegroundColor Yellow
 Write-Host "=================================================" -ForegroundColor Yellow
 
 if (-not $DryRun) {
     # Get ingress IP
     Start-Sleep -Seconds 10  # Wait for ingress to be ready
-    $ingressIp = kubectl get ingress respondr-ingress -n respondr -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+    $ingressIp = kubectl get ingress respondr-ingress -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
     
     if ($ingressIp) {
         Write-Host "Application Gateway IP: $ingressIp" -ForegroundColor Green
@@ -385,7 +501,7 @@ if (-not $DryRun) {
     Write-Host "🔒 SSL Certificates:" -ForegroundColor Cyan
     Write-Host "  - Let's Encrypt certificates will be automatically provisioned" -ForegroundColor White
     Write-Host "  - Initial certificate request may take a few minutes" -ForegroundColor White
-    Write-Host "  - Check certificate status: kubectl get certificate -n respondr" -ForegroundColor White
+    Write-Host "  - Check certificate status: kubectl get certificate -n $Namespace" -ForegroundColor White
     Write-Host ""
     Write-Host "📝 Next Steps:" -ForegroundColor Cyan
     Write-Host "  1. Ensure DNS A record: respondr.$Domain → $ingressIp" -ForegroundColor White
@@ -395,9 +511,9 @@ if (-not $DryRun) {
     Write-Host "  5. Test API access after authentication: https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
     Write-Host "Certificate Status Commands:" -ForegroundColor Cyan
-    Write-Host "  kubectl get certificate -n respondr" -ForegroundColor White
-    Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n respondr" -ForegroundColor White
-    Write-Host "  kubectl get certificaterequests -n respondr" -ForegroundColor White
+    Write-Host "  kubectl get certificate -n $Namespace" -ForegroundColor White
+    Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+    Write-Host "  kubectl get certificaterequests -n $Namespace" -ForegroundColor White
 } else {
     Write-Host "DRY RUN completed - no changes made" -ForegroundColor Cyan
 }

@@ -14,7 +14,7 @@ spec:
     metadata:
       labels:
         app: respondr
-        azure.workload.identity/use: "true"
+        azure.workload.identity/use: "true"  # Required for workload identity
     spec:
       serviceAccountName: respondr-sa
       containers:
@@ -76,7 +76,8 @@ spec:
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
 
-      # OAuth2 Proxy sidecar container
+      # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
+      
       - name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
         ports:
@@ -137,6 +138,7 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
+      
 
 ---
 apiVersion: v1
@@ -145,7 +147,7 @@ metadata:
   name: respondr-sa
   namespace: respondr
   annotations:
-    azure.workload.identity/client-id: c39ee3c1-4d22-4e62-bf67-04d33f93ddb5
+    azure.workload.identity/client-id: 277aff9d-67f9-4caa-872c-be940ba89dde
     azure.workload.identity/tenant-id: 5c2d2c3d-ce9f-47f8-85f5-0f0fb30c218d
 
 ---
@@ -163,10 +165,11 @@ spec:
     clientIP:
       timeoutSeconds: 10800  # 3 hours
   ports:
-  - port: 80
+  # Port configuration changes based on OAuth2 mode
+  - name: http
+    port: 80
     targetPort: 4180
     protocol: TCP
-    name: http
   selector:
     app: respondr
 

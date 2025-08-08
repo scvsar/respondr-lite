@@ -16,6 +16,74 @@ param (
     [Parameter()][string]$Location = "westus"
 )
 
+# Function to handle AGIC permission issues and automatic recovery
+function Repair-AGICPermissions {
+    param(
+        [string]$ResourceGroupName,
+        [string]$AksClusterName,
+        [string]$Location,
+        [string]$ResourcePrefix
+    )
+    
+    Write-Host "🔧 Attempting to repair AGIC permissions..." -ForegroundColor Yellow
+    
+    # Get AGIC managed identity
+    $agicIdentityId = az aks show --resource-group $ResourceGroupName --name $AksClusterName --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv 2>$null
+    
+    if (-not $agicIdentityId) {
+        Write-Host "❌ Could not retrieve AGIC managed identity" -ForegroundColor Red
+        return $false
+    }
+    
+    Write-Host "AGIC Identity: $agicIdentityId" -ForegroundColor Cyan
+    
+    # Get required resource IDs
+    $vnetId = az network vnet show --resource-group $ResourceGroupName --name "$ResourcePrefix-vnet" --query "id" -o tsv 2>$null
+    $mcResourceGroup = "MC_$($ResourceGroupName)_$($AksClusterName)_$($Location)"
+    $subscriptionId = az account show --query id -o tsv
+    
+    $success = $true
+    
+    # Grant Network Contributor on VNet
+    if ($vnetId) {
+        Write-Host "Granting Network Contributor on VNet..." -ForegroundColor Yellow
+        $result = az role assignment create --assignee $agicIdentityId --role "Network Contributor" --scope $vnetId 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "✓ VNet permissions granted" -ForegroundColor Green
+        } else {
+            Write-Host "⚠️ VNet permission assignment failed: $result" -ForegroundColor Yellow
+            $success = $false
+        }
+    }
+    
+    # Grant Contributor on MC resource group
+    Write-Host "Granting Contributor on MC resource group..." -ForegroundColor Yellow
+    $mcScope = "/subscriptions/$subscriptionId/resourceGroups/$mcResourceGroup"
+    $result = az role assignment create --assignee $agicIdentityId --role "Contributor" --scope $mcScope 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "✓ MC resource group permissions granted" -ForegroundColor Green
+    } else {
+        Write-Host "⚠️ MC resource group permission assignment failed: $result" -ForegroundColor Yellow
+        $success = $false
+    }
+    
+    if ($success) {
+        Write-Host "🔧 Restarting AGIC deployment to retry..." -ForegroundColor Yellow
+        kubectl rollout restart deployment ingress-appgw-deployment -n kube-system
+        Start-Sleep 30  # Give it time to restart
+        return $true
+    }
+    
+    return $false
+}
+
+# Function to check if error is permission-related
+function Test-AGICPermissionError {
+    param([string]$ErrorMessage)
+    
+    return $ErrorMessage -match "InsufficientPermission|permission|join/action|Network/virtualNetworks"
+}
+
 Write-Host "Starting post-deployment configuration..." -ForegroundColor Green
 
 # 1) Retrieve deployment outputs
@@ -194,26 +262,60 @@ if ($LASTEXITCODE -ne 0) {
     Write-Host "AGIC addon enabled successfully!" -ForegroundColor Green
 }
 
-# Verify AGIC has proper permissions on the subnet
-Write-Host "Verifying AGIC managed identity has Network Contributor permissions on subnet..." -ForegroundColor Yellow
+# Verify AGIC has proper permissions for Application Gateway creation
+Write-Host "Verifying AGIC managed identity has required permissions..." -ForegroundColor Yellow
 $agicIdentityId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv 2>$null
 
 if ($agicIdentityId) {
     Write-Host "AGIC managed identity object ID: $agicIdentityId" -ForegroundColor Cyan
     
-    # Grant Network Contributor role on the Application Gateway subnet
+    # Get the VNet resource ID for broader permissions
+    $vnetId = az network vnet show --resource-group $ResourceGroupName --name "$resourcePrefix-vnet" --query "id" -o tsv 2>$null
+    $mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
+    
+    if ($vnetId) {
+        # Grant Network Contributor role on the entire VNet (required for subnet join operations)
+        Write-Host "Ensuring AGIC has Network Contributor role on VNet..." -ForegroundColor Yellow
+        $vnetRoleAssignment = az role assignment create `
+            --assignee $agicIdentityId `
+            --role "Network Contributor" `
+            --scope $vnetId 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "✓ Network Contributor role on VNet assigned successfully" -ForegroundColor Green
+        } else {
+            Write-Host "Warning: VNet role assignment may have failed: $vnetRoleAssignment" -ForegroundColor Yellow
+        }
+    }
+    
+    # Grant Contributor role on the MC resource group (where Application Gateway will be created)
+    Write-Host "Ensuring AGIC has Contributor role on MC resource group: $mcResourceGroup..." -ForegroundColor Yellow
+    $mcRoleAssignment = az role assignment create `
+        --assignee $agicIdentityId `
+        --role "Contributor" `
+        --scope "/subscriptions/$((az account show --query id -o tsv))/resourceGroups/$mcResourceGroup" 2>&1
+    
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "✓ Contributor role on MC resource group assigned successfully" -ForegroundColor Green
+    } else {
+        Write-Host "Warning: MC resource group role assignment may have failed: $mcRoleAssignment" -ForegroundColor Yellow
+        Write-Host "This might cause Application Gateway deployment to fail" -ForegroundColor Yellow
+    }
+    
+    # Also grant the original subnet-level permission for completeness
     Write-Host "Ensuring AGIC has Network Contributor role on Application Gateway subnet..." -ForegroundColor Yellow
-    $roleAssignment = az role assignment create `
+    $subnetRoleAssignment = az role assignment create `
         --assignee $agicIdentityId `
         --role "Network Contributor" `
         --scope $subnetId 2>&1
     
     if ($LASTEXITCODE -eq 0) {
-        Write-Host "Network Contributor role assigned successfully (or already exists)" -ForegroundColor Green
+        Write-Host "✓ Network Contributor role on subnet assigned successfully" -ForegroundColor Green
     } else {
-        Write-Host "Warning: Role assignment may have failed: $roleAssignment" -ForegroundColor Yellow
-        Write-Host "This might cause Application Gateway deployment to fail" -ForegroundColor Yellow
+        Write-Host "Warning: Subnet role assignment may have failed: $subnetRoleAssignment" -ForegroundColor Yellow
     }
+    
+    Write-Host "AGIC permissions configuration completed" -ForegroundColor Green
 } else {
     Write-Host "Warning: Could not retrieve AGIC managed identity - permissions may need manual configuration" -ForegroundColor Yellow
 }
@@ -299,7 +401,32 @@ do {
             Write-Host $agicLogs -ForegroundColor Cyan
         }
         
+        # Check if this is a permission error and attempt automatic repair
+        $errorText = "$deploymentError $operationErrors $agicLogs"
+        if (Test-AGICPermissionError -ErrorMessage $errorText) {
+            Write-Host "🔍 Permission error detected - attempting automatic repair..." -ForegroundColor Yellow
+            
+            # Get resource prefix from deployment outputs
+            $resourcePrefix = $ResourceGroupName  # Assuming resource prefix matches resource group name
+            
+            if (Repair-AGICPermissions -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Location $Location -ResourcePrefix $resourcePrefix) {
+                Write-Host "🔄 Permission repair completed - monitoring deployment retry..." -ForegroundColor Green
+                
+                # Reset timeout for retry attempt
+                $deploymentTimeout = (Get-Date).AddMinutes(10)
+                Start-Sleep 60  # Give AGIC time to retry
+                continue  # Continue monitoring the deployment
+            } else {
+                Write-Host "❌ Automatic permission repair failed" -ForegroundColor Red
+            }
+        }
+        
         Write-Host "Application Gateway deployment failed - manual intervention required" -ForegroundColor Red
+        Write-Host "Try running the following commands manually:" -ForegroundColor Yellow
+        Write-Host "  # Get AGIC identity: az aks show --resource-group $ResourceGroupName --name $aksClusterName --query 'addonProfiles.ingressApplicationGateway.identity.objectId' -o tsv" -ForegroundColor Cyan
+        Write-Host "  # Grant VNet permissions: az role assignment create --assignee <identity-id> --role 'Network Contributor' --scope <vnet-resource-id>" -ForegroundColor Cyan
+        Write-Host "  # Grant MC RG permissions: az role assignment create --assignee <identity-id> --role 'Contributor' --scope '/subscriptions/$((az account show --query id -o tsv))/resourceGroups/$mcResourceGroup'" -ForegroundColor Cyan
+        Write-Host "  # Restart AGIC: kubectl rollout restart deployment ingress-appgw-deployment -n kube-system" -ForegroundColor Cyan
         break
     }
 } while ((Get-Date) -lt $deploymentTimeout)
