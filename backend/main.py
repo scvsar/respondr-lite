@@ -237,80 +237,7 @@ def validate_realistic_eta(eta_minutes: int) -> Dict[str, Any]:
         return {"realistic": False, "error": str(e)}
 
 # Function definitions for Azure OpenAI function calling
-FUNCTION_DEFINITIONS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "calculate_eta_from_duration",
-            "description": "Calculate accurate ETA by adding duration in minutes to current time",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "current_time": {
-                        "type": "string",
-                        "description": "Current time in HH:MM format (24-hour)"
-                    },
-                    "duration_minutes": {
-                        "type": "integer", 
-                        "description": "Duration to add in minutes"
-                    }
-                },
-                "required": ["current_time", "duration_minutes"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "validate_and_format_time",
-            "description": "Validate time and convert to proper 24-hour format",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "time_string": {
-                        "type": "string",
-                        "description": "Time to validate (e.g., '9:15', '24:30', '23:45')"
-                    }
-                },
-                "required": ["time_string"]
-            }
-        }
-    },
-    {
-        "type": "function", 
-        "function": {
-            "name": "convert_duration_text",
-            "description": "Convert duration text to minutes with validation",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "duration_text": {
-                        "type": "string",
-                        "description": "Duration text like '30 minutes', '2 hours', 'half hour'"
-                    }
-                },
-                "required": ["duration_text"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "validate_realistic_eta",
-            "description": "Check if ETA is realistic for SAR operations",
-            "parameters": {
-                "type": "object", 
-                "properties": {
-                    "eta_minutes": {
-                        "type": "integer",
-                        "description": "ETA duration in minutes"
-                    }
-                },
-                "required": ["eta_minutes"]
-            }
-        }
-    }
-]
+# Function definitions removed - using simplified prompt-based approach
 
 def is_email_domain_allowed(email: str) -> bool:
     """Check if the user's email domain is in the allowed domains list"""
@@ -682,116 +609,35 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
         current_time_short = current_time.strftime("%H:%M")
 
-        # Enhanced prompt for function calling
+        # Simplified prompt for direct parsing (no function calling)
         prompt = (
-            "You are an expert SAR (Search and Rescue) responder message parser with access to calculation tools.\n"
-            "Use the provided functions to ensure accurate ETA calculations and validation.\n\n"
-            f"CURRENT TIME: {current_time_str} (24-hour format: {current_time_short})\n\n"
-            "INSTRUCTIONS:\n"
-            "1. Extract vehicle and ETA from the message\n"
-            "2. For ETAs involving durations (e.g., '30 minutes', '1 hour'), use convert_duration_text() then calculate_eta_from_duration()\n"
-            "3. For specific times (e.g., '9:15', '24:30'), use validate_and_format_time() to ensure proper format\n"
-            "4. Always use validate_realistic_eta() to check if calculated ETAs make sense\n"
-            "5. If any function returns warnings or errors, incorporate that into your response\n\n"
-            "VEHICLE RULES:\n"
-            "- SAR vehicles: Extract exact identifier (e.g., 'SAR-12', 'SAR-56')\n"
-            "- Personal vehicles: Return 'POV'\n"
-            "- Unknown/unclear: Return 'Unknown'\n"
-            "- Not responding: Return 'Not Responding'\n\n"
-            "If the message is off-topic or indicates not responding, return:\n"
-            '{\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n'
+            "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
+            f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
+            "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
+            "- Messages like \"can't make it\", \"cannot make it\", \"won't make it\", \"not coming\", \"family emergency\", \"sorry\"\n"
+            "- For ANY declining/negative response, return: {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
+            "For responding messages:\n"
+            "- Vehicle: Extract SAR identifier (e.g., 'SAR-12') or return 'POV' for personal vehicle or 'Unknown'\n"
+            "- ETA: Convert to 24-hour format (HH:MM) or 'Unknown'\n"
+            "- For durations like '30 minutes', add to current time\n"
+            "- For times like '9:15 PM', convert to 24-hour format (21:15)\n\n"
             f"MESSAGE: \"{text}\"\n\n"
-            "Use the calculation functions as needed, then return JSON: "
+            "Return ONLY this JSON format: "
             '{\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}'
         )
 
-        logger.info(f"Calling Azure OpenAI with function calling, deployment: {azure_openai_deployment}")
+        logger.info(f"Calling Azure OpenAI with simplified prompt, deployment: {azure_openai_deployment}")
         
-        # Call Azure OpenAI with function calling support
+        # Call Azure OpenAI with simplified approach (no function calling)
         response = cast(Any, client).chat.completions.create(
             model=cast(str, azure_openai_deployment),
             messages=[{"role": "user", "content": prompt}],
-            tools=FUNCTION_DEFINITIONS,
-            tool_choice="auto",  # Let AI decide when to use functions
             temperature=0,
-            max_tokens=1000,
+            max_tokens=500,
         )
         
         message = response.choices[0].message
-        
-        # Handle function calls (newer tools format)
-        if hasattr(message, 'tool_calls') and message.tool_calls:
-            # Execute all function calls
-            tool_responses = []
-            for tool_call in message.tool_calls:
-                function_name = tool_call.function.name
-                function_args = json.loads(tool_call.function.arguments)
-                
-                logger.info(f"AI called function: {function_name} with args: {function_args}")
-                
-                # Execute the function call
-                result = {"error": "Unknown function"}  # Default fallback
-                
-                if function_name == "calculate_eta_from_duration":
-                    result = calculate_eta_from_duration(
-                        function_args["current_time"], 
-                        function_args["duration_minutes"]
-                    )
-                    logger.info(f"Function result: {result}")
-                    
-                elif function_name == "validate_and_format_time":
-                    result = validate_and_format_time(function_args["time_string"])
-                    logger.info(f"Function result: {result}")
-                    
-                elif function_name == "convert_duration_text":
-                    result = convert_duration_text(function_args["duration_text"])
-                    logger.info(f"Function result: {result}")
-                    
-                elif function_name == "validate_realistic_eta":
-                    result = validate_realistic_eta(function_args["eta_minutes"])
-                    logger.info(f"Function result: {result}")
-                
-                # Add tool response for this function call
-                tool_responses.append({
-                    "role": "tool", 
-                    "tool_call_id": tool_call.id, 
-                    "content": json.dumps(result)
-                })
-            
-            # Get the AI's final response after function calling
-            if hasattr(message, 'content') and message.content:
-                reply = message.content.strip()
-            else:
-                # If no content, ask AI to continue with all function results
-                # Convert tool_calls to dict format for serialization
-                tool_calls_dict = []
-                for tc in message.tool_calls:
-                    tool_calls_dict.append({
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
-                        }
-                    })
-                
-                follow_up_messages = [
-                    {"role": "user", "content": prompt},
-                    {"role": "assistant", "content": None, "tool_calls": tool_calls_dict}
-                ] + tool_responses + [
-                    {"role": "user", "content": "Based on the function results, provide the final JSON response."}
-                ]
-                
-                follow_up_response = cast(Any, client).chat.completions.create(
-                    model=cast(str, azure_openai_deployment),
-                    messages=follow_up_messages,
-                    temperature=0,
-                    max_tokens=500,
-                )
-                reply = (follow_up_response.choices[0].message.content or "").strip()
-        else:
-            # No function call needed, use direct response
-            reply = (message.content or "").strip()
+        reply = (message.content or "").strip()
 
         # Parse JSON from reply
         parsed_json: Dict[str, str]
@@ -821,57 +667,14 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
             else:
                 logger.warning(f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}")
                 eta_value = "Unknown"
-            
-            # Optional: final reconciliation pass via AI (skipped in tests and when disabled)
-            if (
-                eta_value not in ("Unknown", "Not Responding")
-                and client is not None
-                and not FAST_LOCAL_PARSE
-                and not is_testing
-                and ENABLE_AI_FINALIZE
-            ):
-                try:
-                    current_time = now_tz()
-                    current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
-                    finalize_prompt = (
-                        "Finalization step: You are validating a proposed ETA.\n"
-                        f"Current time: {current_time_str} (24-hour).\n"
-                        f"Proposed ETA (HH:MM): {eta_value}.\n"
-                        "Rules: If the HH:MM is earlier than or equal to current time, interpret it as next-day arrival,"
-                        " but still return only the HH:MM in 24-hour format (no date). Ensure it's a valid time.\n"
-                        "Return ONLY compact JSON like {\"eta\": \"HH:MM\"} with no extra keys or text."
-                    )
-                    finalize_response = cast(Any, client).chat.completions.create(
-                        model=cast(str, azure_openai_deployment),
-                        messages=[{"role": "user", "content": finalize_prompt}],
-                        temperature=0,
-                        max_tokens=20,
-                    )
-                    finalize_reply = (finalize_response.choices[0].message.content or "").strip()
-                    # Extract JSON
-                    if finalize_reply.startswith("{") and finalize_reply.endswith("}"):
-                        final_json = json.loads(finalize_reply)
-                    else:
-                        m = re.search(r"\{[^}]+\}", finalize_reply)
-                        final_json = json.loads(m.group()) if m else {}
-                    final_eta = final_json.get("eta")
-                    if isinstance(final_eta, str) and re.match(r"^\d{2}:\d{2}$", final_eta):
-                        # Re-validate and apply
-                        vr = validate_and_format_time(final_eta)
-                        if vr.get("valid"):
-                            eta_value = vr["normalized"]
-                except Exception as e:
-                    logger.warning(f"AI finalization step failed, using prior ETA '{eta_value}': {e}")
-
-            parsed_json["eta"] = eta_value
-            
+        
         return parsed_json
         
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {e}")
         return {"vehicle": "Unknown", "eta": "Unknown"}
     except Exception as e:
-        logger.error(f"Azure OpenAI function calling error: {e}", exc_info=True)
+        logger.error(f"Azure OpenAI simplified parsing error: {e}", exc_info=True)
         # Fallback to basic extraction without function calling
         return {"vehicle": "Unknown", "eta": "Unknown"}
 
