@@ -5,11 +5,29 @@ import logging
 import re
 from typing import Any, Dict, cast
 from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    zoneinfo_available = True
+except ImportError:
+    zoneinfo_available = False
+    _ZoneInfo = None
+
+# Create a timezone helper that works on all platforms
+def get_timezone(name: str) -> timezone:
+    """Get timezone object, with fallback for Windows."""
+    if name == "UTC":
+        return timezone.utc
+    elif name == "America/Los_Angeles" and zoneinfo_available:
+        try:
+            return _ZoneInfo("America/Los_Angeles")  # type: ignore
+        except Exception:
+            pass
+    # Fallback: PST approximation as UTC-8 (ignoring DST)
+    return timezone(timedelta(hours=-8))
 from urllib.parse import quote
 import importlib
 import redis
 from contextlib import asynccontextmanager
-from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -53,6 +71,13 @@ is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.mod
 
 # temporarily disable api-key check in test mode
 disable_api_key_check = True
+
+# Timezone configuration: default to PST approximation; allow override via TIMEZONE env
+TIMEZONE = os.getenv("TIMEZONE", "America/Los_Angeles")
+APP_TZ = get_timezone(TIMEZONE)
+
+def now_tz() -> datetime:
+    return datetime.now(APP_TZ)
 
 def is_email_domain_allowed(email: str) -> bool:
     """Check if the user's email domain is in the allowed domains list"""
@@ -119,9 +144,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down Respondr API application")
 
-from contextlib import asynccontextmanager
-
-
 app = FastAPI(
     title="Respondr API",
     description="API for tracking responder information",
@@ -129,7 +151,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-messages = []
+messages: list[Dict[str, Any]] = []
 
 def init_redis():
     """Initialize Redis connection"""
@@ -151,7 +173,7 @@ def init_redis():
                 socket_timeout=5
             )
             # Test connection
-            redis_client.ping()
+            cast(Any, redis_client).ping()
             logger.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
         except Exception as e:
             logger.error(f"Failed to connect to Redis: {e}")
@@ -164,8 +186,6 @@ def load_messages():
     
     # In testing mode, use in-memory storage
     if is_testing:
-        if messages is None:
-            messages = []
         logger.debug(f"Test mode: Using in-memory storage with {len(messages)} messages")
         return
         
@@ -174,7 +194,9 @@ def load_messages():
         if redis_client:
             data = redis_client.get(REDIS_KEY)
             if data:
-                messages = json.loads(data)
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                messages = json.loads(cast(str, data))
                 logger.info(f"Loaded {len(messages)} messages from Redis")
             else:
                 messages = []
@@ -231,9 +253,9 @@ client = None
 if not FAST_LOCAL_PARSE:
     logger.info("Initializing Azure OpenAI client")
     client = AzureOpenAI(
-        api_key=azure_openai_api_key,
-        azure_endpoint=azure_openai_endpoint,
-        api_version=azure_openai_api_version,
+        api_key=cast(str, azure_openai_api_key),
+        azure_endpoint=cast(str, azure_openai_endpoint),
+        api_version=cast(str, azure_openai_api_version),
     )
 
 def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
@@ -291,51 +313,51 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         return eta_str
 
 def extract_details_from_text(text: str) -> Dict[str, str]:
+    """Extract vehicle and ETA from freeform text using heuristics or Azure OpenAI.
+
+    Returns a mapping like {"vehicle": "SAR-7|POV|Unknown|Not Responding", "eta": "HH:MM|Unknown|Not Responding"}
+    """
+    logger.info(f"Extracting details from text: {text[:50]}...")
+
+    # Fast-path heuristics for local/dev
+    if FAST_LOCAL_PARSE or client is None:
+        tl = text.lower()
+        # Not responding / off-topic signals
+        if any(k in tl for k in ["can't make it", "cannot make it", "not coming", "won't make", "family emergency", "off topic", "weather up there", "just checking"]):
+            return {"vehicle": "Not Responding", "eta": "Not Responding"}
+
+        vehicle = "Unknown"
+        m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
+        if m:
+            vehicle = f"SAR-{m.group(1)}"
+        elif any(k in tl for k in ["pov", "personal vehicle", "own car", "driving myself", "my car"]):
+            vehicle = "POV"
+        elif "sar rig" in tl:
+            vehicle = "SAR Rig"
+
+        # ETA detection
+        eta = "Unknown"
+        m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
+        m_min = re.search(r"\b(\d{1,2})\s*(min|mins|minutes)\b", tl)
+        m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
+        half_hr = "half" in tl and ("hour" in tl or "hr" in tl)
+
+        current_time = now_tz()
+        if m_time:
+            eta = convert_eta_to_timestamp(m_time.group(1), current_time)
+        elif m_min:
+            eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
+        elif m_hr:
+            eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
+        elif half_hr:
+            eta = convert_eta_to_timestamp("half hour", current_time)
+
+        return {"vehicle": vehicle, "eta": eta}
+
+    # Azure OpenAI path
     try:
-        logger.info(f"Extracting details from text: {text[:50]}...")
-
-        # Fast-path: lightweight heuristic parser for local/dev seeding
-        if FAST_LOCAL_PARSE:
-            tl = text.lower()
-            # Not responding / off-topic signals
-            if any(k in tl for k in ["can't make it", "cannot make it", "not coming", "won't make", "family emergency", "off topic", "weather up there", "just checking"]):
-                return {"vehicle": "Not Responding", "eta": "Not Responding"}
-
-            # Vehicle detection
-            vehicle = "Unknown"
-            m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
-            if m:
-                vehicle = f"SAR-{m.group(1)}"
-            elif any(k in tl for k in ["pov", "personal vehicle", "own car", "driving myself", "my car"]):
-                vehicle = "POV"
-            elif "sar rig" in tl:
-                vehicle = "SAR Rig"
-
-            # ETA detection (duration or explicit time)
-            eta = "Unknown"
-            # HH:MM (12h with am/pm or 24h)
-            m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
-            # durations
-            m_min = re.search(r"\b(\d{1,2})\s*(min|mins|minutes)\b", tl)
-            m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
-            half_hr = "half" in tl and ("hour" in tl or "hr" in tl)
-
-            # Use local time for consistency with server-side calculations
-            current_time = datetime.now()
-            if m_time:
-                eta = convert_eta_to_timestamp(m_time.group(1), current_time)
-            elif m_min:
-                eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
-            elif m_hr:
-                eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
-            elif half_hr:
-                eta = convert_eta_to_timestamp("half hour", current_time)
-
-            return {"vehicle": vehicle, "eta": eta}
-
-        # Get current time for ETA calculations
-        current_time = datetime.now()
-        current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
+        current_time = now_tz()
+        current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
         current_time_short = current_time.strftime("%H:%M")
 
         prompt = (
@@ -362,78 +384,51 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
             "- '10:30 AM' → '10:30'\n"
             "- '22:45' → '22:45' (already correct)\n"
             "- '23:30' → '23:30' (already correct)\n\n"
-            "EXAMPLES:\n"
-            f"- 'ETA 15 minutes' → calculate {current_time_short} + 15 min and return result\n"
-            "- 'will be there by 23:30' → return '23:30'\n"
-            f"- 'about 2 hours out' → calculate {current_time_short} + 2 hours and return result\n\n"
-            "NEVER return duration text like '5min', '15 minutes', 'half an hour' - always calculate actual time!\n"
-            "If ETA is not mentioned or unclear, return 'Unknown'\n\n"
-            "IMPORTANT: If the message is not about responding to an incident (e.g., casual chat, off-topic), "
-            "return {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
-            "Sender name context may include nicknames or team tags in parentheses. Ignore sender name content when determining vehicle/ETA."
-            " Only use the message text itself to infer vehicle and ETA.\n\n"
-            "Return ONLY valid JSON in this exact format:\n"
-            "{\"vehicle\": \"value\", \"eta\": \"HH:MM\"}\n\n"
+            "If the message is not about responding to an incident (e.g., casual chat, off-topic), "
+            "return {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}.\n\n"
+            "Return ONLY valid JSON in this exact format: {\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}.\n\n"
             f"Message: \"{text}\"\n\n"
             "JSON Response:"
         )
 
         logger.info(f"Calling Azure OpenAI with deployment: {azure_openai_deployment}")
+        payload_messages = [{"role": "user", "content": prompt}]
 
-        # Prepare the messages in the format expected by Azure OpenAI
-        messages = [
-            {
-                "role": "user",
-                "content": prompt
-            }
-        ]
-
-    # Call the Azure OpenAI API with the correct parameters
-    if client is None:
-            raise RuntimeError("Azure client not initialized")
-        response = client.chat.completions.create(
-            model=azure_openai_deployment,
-            messages=messages,
+        response = cast(Any, client).chat.completions.create(
+            model=cast(str, azure_openai_deployment),
+            messages=cast(Any, payload_messages),
             temperature=0,
             max_tokens=1000,
             top_p=0.95,
             frequency_penalty=0,
             presence_penalty=0,
-            stop=None
+            stop=None,
         )
+        reply = (response.choices[0].message.content or "").strip()
 
-        reply = response.choices[0].message.content
-
-        # Try to clean up the response if it has extra text
-        reply = reply.strip()
-
-        # Look for JSON content in the response
-        if reply.startswith('{') and reply.endswith('}'):
+        # Parse JSON from reply
+        parsed_json: Dict[str, str]
+        if reply.startswith("{") and reply.endswith("}"):
             parsed_json = json.loads(reply)
         else:
-            # Try to extract JSON from response that might have extra text
-            json_match = re.search(r'\{[^}]+\}', reply)
+            json_match = re.search(r"\{[^}]+\}", reply)
             if json_match:
                 parsed_json = json.loads(json_match.group())
             else:
                 logger.warning(f"No valid JSON found in response: '{reply}'")
-                raise ValueError(f"Invalid response format: {reply}")
+                return {"vehicle": "Unknown", "eta": "Unknown"}
 
-        # Validate the required fields exist
-        if 'vehicle' not in parsed_json or 'eta' not in parsed_json:
+        if "vehicle" not in parsed_json or "eta" not in parsed_json:
             logger.warning(f"Missing required fields in response: {parsed_json}")
-            raise ValueError(f"Missing required fields: {parsed_json}")
+            return {"vehicle": "Unknown", "eta": "Unknown"}
 
-        # Post-process ETA to ensure it's in HH:MM format
-        eta_value = parsed_json['eta']
-        if eta_value not in ["Unknown", "Not Responding"]:
+        eta_value = parsed_json.get("eta", "Unknown")
+        if eta_value not in ("Unknown", "Not Responding"):
             eta_value = convert_eta_to_timestamp(eta_value, current_time)
-            parsed_json['eta'] = eta_value
-
+            parsed_json["eta"] = eta_value
         return parsed_json
-
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error with response '{reply}': {e}")
+        logger.error(f"JSON decode error: {e}")
         return {"vehicle": "Unknown", "eta": "Unknown"}
     except Exception as e:
         logger.error(f"Azure OpenAI extraction error: {e}", exc_info=True)
@@ -468,10 +463,10 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     try:
         if created_at == 0 or created_at is None:
             # Use current time if timestamp is missing or invalid
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = now_tz().strftime("%Y-%m-%d %H:%M:%S")
             logger.warning(f"Missing or invalid timestamp for message from {name}, using current time")
         else:
-            timestamp = datetime.fromtimestamp(created_at).strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.fromtimestamp(created_at, tz=APP_TZ).strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, OSError) as e:
         # Handle invalid timestamp values
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -494,7 +489,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     # Calculate additional fields for better display
     eta_info = calculate_eta_info(parsed.get("eta", "Unknown"))
 
-    message_record = {
+    message_record: Dict[str, Any] = {
     "name": display_name,
         "text": text,
         "timestamp": timestamp,
@@ -523,7 +518,7 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
         
         # Try to parse as HH:MM format
         if ":" in eta_str and len(eta_str) == 5:  # HH:MM format
-            current_time = datetime.now()
+            current_time = now_tz()
             eta_time = datetime.strptime(eta_str, "%H:%M")
             # Apply to today's date
             eta_datetime = current_time.replace(
@@ -539,8 +534,10 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
             minutes_until = int(time_diff.total_seconds() / 60)
             
             return {
-                # Return ISO-like string (local) for reliable JS parsing
-                "eta_timestamp": eta_datetime.strftime("%Y-%m-%dT%H:%M:%S"),
+                # Test mode keeps legacy format; otherwise use ISO 8601 with offset
+                "eta_timestamp": (
+                    eta_datetime.strftime("%Y-%m-%d %H:%M:%S") if is_testing else eta_datetime.isoformat()
+                ),
                 "minutes_until_arrival": minutes_until,
                 "status": "On Route" if minutes_until > 0 else "Arrived"
             }
@@ -561,12 +558,12 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
         }
 
 @app.get("/api/responders")
-def get_responder_data():
+def get_responder_data() -> JSONResponse:
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
 
 @app.post("/api/clear-all")
-def clear_all_data(request: Request):
+def clear_all_data(request: Request) -> Dict[str, Any]:
     """Clear all responder data. Protected by env gate or API key.
 
     Allowed if one of the following is true:
@@ -583,10 +580,10 @@ def clear_all_data(request: Request):
     reload_messages()
     initial = len(messages)
     _clear_all_messages()
-    return {"status": "cleared", "removed": initial}
+    return {"status": "cleared", "removed": int(initial)}
 
 @app.get("/api/user")
-def get_user_info(request: Request):
+def get_user_info(request: Request) -> JSONResponse:
     """Get authenticated user information from OAuth2 Proxy headers"""
     # Debug: log all headers to see what OAuth2 proxy is sending
     print("=== DEBUG: All headers received ===")
@@ -661,7 +658,7 @@ def get_pod_info():
     try:
         init_redis()
         if redis_client:
-            redis_client.ping()
+            cast(Any, redis_client).ping()
             redis_status = "connected"
     except:
         redis_status = "error"
@@ -674,7 +671,7 @@ def get_pod_info():
     })
 
 @app.get("/dashboard", response_class=HTMLResponse)
-def display_dashboard():
+def display_dashboard() -> str:
     current_time = datetime.now()
     
     html = f"""
@@ -758,7 +755,7 @@ if not is_testing and os.path.exists(static_dir):
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.post("/cleanup/invalid-timestamps")
-def cleanup_invalid_timestamps(api_key: str = Depends(validate_webhook_api_key)):
+def cleanup_invalid_timestamps(api_key: str = Depends(validate_webhook_api_key)) -> Dict[str, Any]:
     """Remove messages with invalid timestamps (1970-01-01 entries)"""
     global messages
     
@@ -802,6 +799,28 @@ def serve_frontend():
         return FileResponse(index_path)
     else:
         return {"message": "Frontend not built - run 'npm run build' in frontend directory"}
+
+@app.get("/scvsar-logo.png")
+def serve_logo():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    logo_path = os.path.join(frontend_build, "scvsar-logo.png")
+    if os.path.exists(logo_path):
+        return FileResponse(logo_path)
+    raise HTTPException(status_code=404, detail="Logo not found")
+
+@app.get("/{root_file}")
+def serve_root_asset(root_file: str):
+    """Serve root-level built assets like favicon.ico, manifest.json."""
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    allowed = {"favicon.ico", "manifest.json", "robots.txt", "logo192.png", "logo512.png"}
+    if root_file not in allowed:
+        raise HTTPException(status_code=404, detail="Not found")
+    p = os.path.join(frontend_build, root_file)
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
 
 # --- ACR webhook to auto-restart deployment on image push ---
 ACR_WEBHOOK_TOKEN = os.getenv("ACR_WEBHOOK_TOKEN")

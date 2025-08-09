@@ -11,6 +11,7 @@ function MainApp() {
   const [vehicleFilter, setVehicleFilter] = useState([]); // e.g., ["POV","SAR-7"]
   const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
   const [live, setLive] = useState(true);
+  const [useUTC, setUseUTC] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
@@ -160,7 +161,11 @@ function MainApp() {
     if (e.eta_timestamp) {
       const d = new Date(e.eta_timestamp);
       if (!isNaN(d.getTime())) {
-        hhmm = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+        if (useUTC) {
+          hhmm = `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}Z`;
+        } else {
+          hhmm = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+        }
       }
     }
     if (!hhmm && e.eta && /\d{1,2}:\d{2}/.test(e.eta)) {
@@ -173,10 +178,10 @@ function MainApp() {
     if (e.eta_timestamp) {
       const d = new Date(e.eta_timestamp);
       if (!isNaN(d.getTime())) {
-        const now = new Date();
+  const now = new Date();
         const diff = Math.max(0, Math.round((d - now)/60000));
-        const hh = d.getHours().toString().padStart(2,'0');
-        const mm = d.getMinutes().toString().padStart(2,'0');
+  const hh = (useUTC ? d.getUTCHours() : d.getHours()).toString().padStart(2,'0');
+  const mm = (useUTC ? d.getUTCMinutes() : d.getMinutes()).toString().padStart(2,'0');
         return `in ${diff}m / ${hh}:${mm}`;
       }
     }
@@ -280,15 +285,23 @@ function MainApp() {
       <div className="toolbar">
         <input className="search-input" placeholder="Search name/message/vehicle…" value={query} onChange={e=>setQuery(e.target.value)} />
         <div className="chip-row" aria-label="Quick filters">
-          {Array.from(new Set(data.map(e => vehicleMap(e.vehicle)))).sort((a,b)=>String(a).localeCompare(String(b))).map(v => (
-            <div key={v} className={"chip "+(vehicleFilter.includes(v)?'active':'')} onClick={()=>toggleInArray(vehicleFilter, v, setVehicleFilter)}>{v}</div>
-          ))}
-          {['Responding','Not Responding','Unknown'].map(s => (
+          {Array.from(new Set(
+            data
+              .map(e => vehicleMap(e.vehicle))
+              // Exclude status-like values from vehicle chips to avoid duplicates
+              .filter(v => v && v !== 'Not Responding' && v !== 'Unknown')
+          ))
+            .sort((a,b)=>String(a).localeCompare(String(b)))
+            .map(v => (
+              <div key={v} className={"chip "+(vehicleFilter.includes(v)?'active':'')} onClick={()=>toggleInArray(vehicleFilter, v, setVehicleFilter)}>{v}</div>
+            ))}
+          {["Responding","Not Responding","Unknown"].map(s => (
             <div key={s} className={"chip "+(statusFilter.includes(s)?'active':'')} onClick={()=>toggleInArray(statusFilter, s, setStatusFilter)}>{s}</div>
           ))}
         </div>
         <div className="controls">
           <label className="toggle"><input type="checkbox" checked={live} onChange={e=>setLive(e.target.checked)} /> Live</label>
+          <label className="toggle"><input type="checkbox" checked={useUTC} onChange={e=>setUseUTC(e.target.checked)} /> UTC</label>
           <button className="btn" onClick={()=>fetchData()} title="Refresh now">Refresh</button>
           <button className="btn" onClick={exportCsv} title="Export CSV">Export</button>
           <button className="btn" onClick={clearAll} title="Clear all data">Clear</button>
