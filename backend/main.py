@@ -934,15 +934,17 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}")
 
     # Calculate additional fields for better display
-    eta_info = calculate_eta_info(parsed.get("eta", "Unknown"))
+    eta_info = calculate_eta_info(parsed.get("eta", "Unknown"), message_dt)
 
     message_record: Dict[str, Any] = {
     "name": display_name,
         "text": text,
         "timestamp": timestamp,
+        "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat() if message_dt else None,
         "vehicle": parsed.get("vehicle", "Unknown"),
         "eta": parsed.get("eta", "Unknown"),
         "eta_timestamp": eta_info.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_info.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
         "arrival_status": eta_info.get("status")
     }
@@ -953,30 +955,35 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     save_messages()  # Save to shared storage
     return {"status": "ok"}
 
-def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
+def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) -> Dict[str, Any]:
     """Calculate additional ETA information for better display"""
     try:
         if eta_str in ["Unknown", "Not Responding"]:
             return {
                 "eta_timestamp": None,
+                "eta_timestamp_utc": None,
                 "minutes_until_arrival": None,
                 "status": eta_str
             }
         
         # Try to parse as HH:MM format
         if ":" in eta_str and len(eta_str) == 5:  # HH:MM format
-            current_time = now_tz()
+            # Use message time as context if provided, otherwise use current time
+            reference_time = message_time or now_tz()
             eta_time = datetime.strptime(eta_str, "%H:%M")
-            # Apply to today's date
-            eta_datetime = current_time.replace(
+            # Apply to the reference date in the same timezone
+            eta_datetime = reference_time.replace(
                 hour=eta_time.hour,
                 minute=eta_time.minute,
                 second=0,
                 microsecond=0
             )
-            # If ETA is earlier/equal than current time, assume it's later today (or next day if needed)
-            if eta_datetime <= current_time:
+            # If ETA is earlier/equal than reference time, assume it's next day
+            if eta_datetime <= reference_time:
                 eta_datetime += timedelta(days=1)
+            
+            # Calculate minutes until arrival from current time (not reference time)
+            current_time = now_tz()
             time_diff = eta_datetime - current_time
             minutes_until = int(time_diff.total_seconds() / 60)
             
@@ -985,6 +992,7 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
                 "eta_timestamp": (
                     eta_datetime.strftime("%Y-%m-%d %H:%M:%S") if is_testing else eta_datetime.isoformat()
                 ),
+                "eta_timestamp_utc": eta_datetime.astimezone(timezone.utc).isoformat(),
                 "minutes_until_arrival": minutes_until,
                 "status": "On Route" if minutes_until > 0 else "Arrived"
             }
@@ -992,6 +1000,7 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
             # Fallback for non-standard formats
             return {
                 "eta_timestamp": None,
+                "eta_timestamp_utc": None,
                 "minutes_until_arrival": None,
                 "status": "ETA Format Unknown"
             }
@@ -1000,6 +1009,7 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
         logger.warning(f"Error calculating ETA info for '{eta_str}': {e}")
         return {
             "eta_timestamp": None,
+            "eta_timestamp_utc": None,
             "minutes_until_arrival": None,
             "status": "ETA Parse Error"
         }

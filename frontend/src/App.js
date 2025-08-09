@@ -134,6 +134,40 @@ function MainApp() {
     return isNaN(d.getTime()) ? null : d;
   };
   const pad2 = (n) => String(n).padStart(2, '0');
+  
+  // Simple function to format ISO timestamp as MM/DD/YYYY HH:MM:SS preserving original timezone
+  const formatTimestampDirect = (isoString) => {
+    if (!isoString) return '—';
+    try {
+      // For PST/PDT timestamps (e.g., "2025-08-09T12:00:00-08:00"), 
+      // we want to show the time exactly as it appears in the timestamp
+      // without any timezone conversion
+      
+      if (typeof isoString === 'string' && isoString.includes('T')) {
+        // Extract date and time parts directly from the ISO string
+        const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+        if (match) {
+          const [, year, month, day, hour, minute, second] = match;
+          return `${month}/${day}/${year} ${hour}:${minute}:${second}`;
+        }
+      }
+      
+      // Fallback to Date parsing if string format doesn't match
+      const d = new Date(isoString);
+      if (isNaN(d.getTime())) return '—';
+      
+      const M = d.getMonth() + 1;
+      const D = d.getDate();
+      const y = d.getFullYear();
+      const h = d.getHours();
+      const m = d.getMinutes();
+      const s = d.getSeconds();
+      return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+    } catch {
+      return '—';
+    }
+  };
+  
   const formatDateTime = (d, utc=false) => {
     if (!d) return '—';
     if (utc) {
@@ -145,28 +179,16 @@ function MainApp() {
       const s = d.getUTCSeconds();
       return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
     }
-    // Prefer rendering as Pacific (PST/PDT) using system local offset if Date has tz offset already applied.
-    // Since backend sends ISO with offset, new Date(iso) is absolute. We'll just output wall time in the user's local.
-    // For consistency across teams, explicitly format in America/Los_Angeles when supported.
-    try {
-      const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/Los_Angeles',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        hour12: false
-      });
-      const parts = fmt.formatToParts(d).reduce((acc, p) => (acc[p.type]=p.value, acc), {});
-      return `${parts.month}/${parts.day}/${parts.year} ${parts.hour}:${parts.minute}:${parts.second}`;
-    } catch {
-      // Fallback to local time if Intl/timeZone not available
-      const y = d.getFullYear();
-      const M = d.getMonth() + 1;
-      const D = d.getDate();
-      const h = d.getHours();
-      const m = d.getMinutes();
-      const s = d.getSeconds();
-      return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
-    }
+    // When useUTC is false, display times in local timezone
+    // The backend already provides timestamps in the correct timezone (PST/PDT)
+    // so we should use the local interpretation without additional timezone conversion
+    const y = d.getFullYear();
+    const M = d.getMonth() + 1;
+    const D = d.getDate();
+    const h = d.getHours();
+    const m = d.getMinutes();
+    const s = d.getSeconds();
+    return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
   };
   const computeEtaMillis = (entry) => {
     try {
@@ -179,10 +201,15 @@ function MainApp() {
       const base = parseTs(entry.timestamp);
       if (m && base) {
         const [hh, mm] = eta.split(':').map(Number);
-        // Compute ETA in the same zone as message timestamp by using the base Date instance
+        // Create ETA timestamp using the same timezone context as the base timestamp
+        // Since the backend already provides times in the correct timezone,
+        // we use the base timestamp's date and apply the ETA time
         const dt = new Date(base.getTime());
         dt.setHours(hh, mm, 0, 0);
-        if (dt.getTime() <= base.getTime()) dt.setDate(dt.getDate() + 1);
+        // If the ETA time is earlier than the message time, assume it's for the next day
+        if (dt.getTime() <= base.getTime()) {
+          dt.setDate(dt.getDate() + 1);
+        }
         return dt.getTime();
       }
     } catch {}
@@ -209,11 +236,15 @@ function MainApp() {
   }, [lastUpdated, nowTick]);
   const etaDisplay = (entry) => {
     if (!entry) return 'Unknown';
-    const ms = computeEtaMillis(entry);
-    if (!isNaN(ms)) return formatDateTime(new Date(ms), useUTC);
-    const d = parseTs(entry.eta_timestamp);
-    if (d) return formatDateTime(d, useUTC);
-    // Fallback to HH:MM text if no timestamp context
+    
+    // Use the appropriate timestamp based on UTC setting
+    const timestampToUse = useUTC ? entry.eta_timestamp_utc : entry.eta_timestamp;
+    
+    if (timestampToUse) {
+      return formatTimestampDirect(timestampToUse);
+    }
+    
+    // Fallback to raw ETA string if no timestamp
     return entry.eta || 'Unknown';
   };
 
@@ -256,7 +287,7 @@ function MainApp() {
   const exportCsv = () => {
     const rows = ['Time,Name,Message,Vehicle,ETA,Status'];
     sorted.forEach(r => {
-      const ts = formatDateTime(parseTs(r.timestamp), useUTC);
+      const ts = formatTimestampDirect(useUTC ? r.timestamp_utc : r.timestamp);
       const etaStr = etaDisplay(r);
       const row = [ts, r.name, (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
       rows.push(row.map(v => /[",\n]/.test(String(v)) ? '"'+String(v)+'"' : String(v)).join(','));
@@ -385,13 +416,13 @@ function MainApp() {
               const pillClass = s==='Responding' ? 'status-responding' : (s==='Not Responding' ? 'status-not' : 'status-unknown');
               return (
                 <tr key={index}>
-                  <td className="col-time" title={entry.timestamp}>{formatDateTime(parseTs(entry.timestamp), useUTC)}</td>
+                  <td className="col-time" title={formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}>{formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}</td>
                   <td>{entry.name}</td>
                   <td>
                     <div className="msg">{entry.text}</div>
                   </td>
                   <td>{vehicleMap(entry.vehicle)}</td>
-                  <td title={entry.eta_timestamp || entry.eta || ''}>{etaDisplay(entry)}</td>
+                  <td title={etaDisplay(entry)}>{etaDisplay(entry)}</td>
                   <td>
                     <span className={`status-pill ${pillClass}`} aria-label={`Status: ${s}`}>{s}</span>
                   </td>
