@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
 import "./App.css";
 import Logout from './Logout';
+import MobileView from './MobileView';
 
 function MainApp() {
   const [data, setData] = useState([]);
@@ -9,7 +10,7 @@ function MainApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [vehicleFilter, setVehicleFilter] = useState([]); // e.g., ["POV","SAR-7"]
-  const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
+  const [statusFilter, setStatusFilter] = useState(["Responding"]); // ["Responding","Not Responding","Unknown"]
   const [live, setLive] = useState(true);
   const [useUTC, setUseUTC] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -450,6 +451,21 @@ function MainApp() {
 function App() {
   // Check if user is logging out - this will show the logout page after auth redirect
   const [isLoggingOut, setIsLoggingOut] = React.useState(false);
+  const shouldUseMobile = React.useCallback(() => {
+    try {
+      if (typeof window === 'undefined') return false;
+      const params = new URLSearchParams(window.location.search);
+      const desktopParam = params.get('desktop');
+      if (desktopParam === '1' || desktopParam === 'true') {
+        try { window.localStorage.setItem('respondr_force_desktop','true'); } catch {}
+        return false;
+      }
+      const forced = (() => { try { return window.localStorage.getItem('respondr_force_desktop') === 'true'; } catch { return false; } })();
+      if (forced) return false;
+      const mq = window.matchMedia && window.matchMedia('(max-width: 900px)').matches;
+      return Boolean(mq);
+    } catch { return false; }
+  }, []);
   
   React.useEffect(() => {
     // Check for logout marker in sessionStorage
@@ -464,7 +480,8 @@ function App() {
   return (
     <Router>
       <Routes>
-        <Route path="/" element={isLoggingOut ? <Logout /> : <MainApp />} />
+  <Route path="/" element={isLoggingOut ? <Logout /> : (shouldUseMobile() ? <Navigate to="/m" replace /> : <MainApp />)} />
+  <Route path="/m" element={<MobileView />} />
         <Route path="/logout" element={<Logout />} />
       </Routes>
     </Router>

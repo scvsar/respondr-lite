@@ -208,3 +208,37 @@
   .dashboard-table { table-layout: auto; }
   .col-time { position: static; }
 }
+
+/* MobileView */
+.mobile-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 12px 16px;
+}
+.mobile-stat {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.mobile-stat-label { font-size: 12px; color: var(--muted); }
+.mobile-stat-value { font-size: 18px; font-weight: 600; }
+
+.mobile-list { padding: 8px 16px 80px; }
+.mobile-list-header { display:flex; justify-content: space-between; padding: 0 4px 8px; color: var(--muted); font-size: 12px; }
+.mobile-list-header-spacer { width: 50%; }
+.mobile-list-header-eta { text-align: right; width: 50%; padding-right: 4px; }
+.mobile-card {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+.mobile-row { display:flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.mobile-name { font-size: 16px; font-weight: 600; }
+.mobile-eta { font-size: 13px; color: var(--muted); }
+.mobile-vehicle { font-size: 13px; color: #eaeaea; margin-top: 6px; }
+
+.mobile-footer { position: sticky; bottom: 0; background: var(--bg-elev); border-top: 1px solid var(--divider); padding: 10px 16px; display:flex; align-items:center; }
