@@ -79,6 +79,9 @@ APP_TZ = get_timezone(TIMEZONE)
 def now_tz() -> datetime:
     return datetime.now(APP_TZ)
 
+# Feature flag: enable an extra AI finalization pass on ETA
+ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
+
 # ============================================================================
 # AI Function Calling - Calculation Functions for Azure OpenAI
 # ============================================================================
@@ -703,56 +706,80 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
         response = cast(Any, client).chat.completions.create(
             model=cast(str, azure_openai_deployment),
             messages=[{"role": "user", "content": prompt}],
-            functions=FUNCTION_DEFINITIONS,
-            function_call="auto",  # Let AI decide when to use functions
+            tools=FUNCTION_DEFINITIONS,
+            tool_choice="auto",  # Let AI decide when to use functions
             temperature=0,
             max_tokens=1000,
         )
         
         message = response.choices[0].message
         
-        # Handle function calls
-        if hasattr(message, 'function_call') and message.function_call:
-            function_name = message.function_call.name
-            function_args = json.loads(message.function_call.arguments)
-            
-            logger.info(f"AI called function: {function_name} with args: {function_args}")
-            
-            # Execute the function call
-            result = {"error": "Unknown function"}  # Default fallback
-            
-            if function_name == "calculate_eta_from_duration":
-                result = calculate_eta_from_duration(
-                    function_args["current_time"], 
-                    function_args["duration_minutes"]
-                )
-                logger.info(f"Function result: {result}")
+        # Handle function calls (newer tools format)
+        if hasattr(message, 'tool_calls') and message.tool_calls:
+            # Execute all function calls
+            tool_responses = []
+            for tool_call in message.tool_calls:
+                function_name = tool_call.function.name
+                function_args = json.loads(tool_call.function.arguments)
                 
-            elif function_name == "validate_and_format_time":
-                result = validate_and_format_time(function_args["time_string"])
-                logger.info(f"Function result: {result}")
+                logger.info(f"AI called function: {function_name} with args: {function_args}")
                 
-            elif function_name == "convert_duration_text":
-                result = convert_duration_text(function_args["duration_text"])
-                logger.info(f"Function result: {result}")
+                # Execute the function call
+                result = {"error": "Unknown function"}  # Default fallback
                 
-            elif function_name == "validate_realistic_eta":
-                result = validate_realistic_eta(function_args["eta_minutes"])
-                logger.info(f"Function result: {result}")
+                if function_name == "calculate_eta_from_duration":
+                    result = calculate_eta_from_duration(
+                        function_args["current_time"], 
+                        function_args["duration_minutes"]
+                    )
+                    logger.info(f"Function result: {result}")
+                    
+                elif function_name == "validate_and_format_time":
+                    result = validate_and_format_time(function_args["time_string"])
+                    logger.info(f"Function result: {result}")
+                    
+                elif function_name == "convert_duration_text":
+                    result = convert_duration_text(function_args["duration_text"])
+                    logger.info(f"Function result: {result}")
+                    
+                elif function_name == "validate_realistic_eta":
+                    result = validate_realistic_eta(function_args["eta_minutes"])
+                    logger.info(f"Function result: {result}")
+                
+                # Add tool response for this function call
+                tool_responses.append({
+                    "role": "tool", 
+                    "tool_call_id": tool_call.id, 
+                    "content": json.dumps(result)
+                })
             
             # Get the AI's final response after function calling
             if hasattr(message, 'content') and message.content:
                 reply = message.content.strip()
             else:
-                # If no content, ask AI to continue with the function result
+                # If no content, ask AI to continue with all function results
+                # Convert tool_calls to dict format for serialization
+                tool_calls_dict = []
+                for tc in message.tool_calls:
+                    tool_calls_dict.append({
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    })
+                
+                follow_up_messages = [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": None, "tool_calls": tool_calls_dict}
+                ] + tool_responses + [
+                    {"role": "user", "content": "Based on the function results, provide the final JSON response."}
+                ]
+                
                 follow_up_response = cast(Any, client).chat.completions.create(
                     model=cast(str, azure_openai_deployment),
-                    messages=[
-                        {"role": "user", "content": prompt},
-                        {"role": "assistant", "function_call": message.function_call},
-                        {"role": "function", "name": function_name, "content": json.dumps(result)},
-                        {"role": "user", "content": "Based on the function result, provide the final JSON response."}
-                    ],
+                    messages=follow_up_messages,
                     temperature=0,
                     max_tokens=500,
                 )
@@ -790,6 +817,47 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
                 logger.warning(f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}")
                 eta_value = "Unknown"
             
+            # Optional: final reconciliation pass via AI (skipped in tests and when disabled)
+            if (
+                eta_value not in ("Unknown", "Not Responding")
+                and client is not None
+                and not FAST_LOCAL_PARSE
+                and not is_testing
+                and ENABLE_AI_FINALIZE
+            ):
+                try:
+                    current_time = now_tz()
+                    current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
+                    finalize_prompt = (
+                        "Finalization step: You are validating a proposed ETA.\n"
+                        f"Current time: {current_time_str} (24-hour).\n"
+                        f"Proposed ETA (HH:MM): {eta_value}.\n"
+                        "Rules: If the HH:MM is earlier than or equal to current time, interpret it as next-day arrival,"
+                        " but still return only the HH:MM in 24-hour format (no date). Ensure it's a valid time.\n"
+                        "Return ONLY compact JSON like {\"eta\": \"HH:MM\"} with no extra keys or text."
+                    )
+                    finalize_response = cast(Any, client).chat.completions.create(
+                        model=cast(str, azure_openai_deployment),
+                        messages=[{"role": "user", "content": finalize_prompt}],
+                        temperature=0,
+                        max_tokens=20,
+                    )
+                    finalize_reply = (finalize_response.choices[0].message.content or "").strip()
+                    # Extract JSON
+                    if finalize_reply.startswith("{") and finalize_reply.endswith("}"):
+                        final_json = json.loads(finalize_reply)
+                    else:
+                        m = re.search(r"\{[^}]+\}", finalize_reply)
+                        final_json = json.loads(m.group()) if m else {}
+                    final_eta = final_json.get("eta")
+                    if isinstance(final_eta, str) and re.match(r"^\d{2}:\d{2}$", final_eta):
+                        # Re-validate and apply
+                        vr = validate_and_format_time(final_eta)
+                        if vr.get("valid"):
+                            eta_value = vr["normalized"]
+                except Exception as e:
+                    logger.warning(f"AI finalization step failed, using prior ETA '{eta_value}': {e}")
+
             parsed_json["eta"] = eta_value
             
         return parsed_json
