@@ -125,14 +125,45 @@ function MainApp() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : v));
   };
-  const relTime = (ts) => {
+  // Timestamp helpers
+  const parseTs = (ts) => {
+    if (!ts) return null;
+    // Support both ISO strings and "YYYY-MM-DD HH:mm:ss"
+    const s = typeof ts === 'string' ? ts.replace(' ', 'T') : ts;
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  };
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const formatDateTime = (d, utc=false) => {
+    if (!d) return '—';
+    const y = utc ? d.getUTCFullYear() : d.getFullYear();
+    const M = (utc ? d.getUTCMonth() : d.getMonth()) + 1;
+    const D = utc ? d.getUTCDate() : d.getDate();
+    const h = utc ? d.getUTCHours() : d.getHours();
+    const m = utc ? d.getUTCMinutes() : d.getMinutes();
+    const s = utc ? d.getUTCSeconds() : d.getSeconds();
+    return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+  };
+  const computeEtaMillis = (entry) => {
     try {
-      if (!ts) return '';
-      const d = new Date(ts);
-      const now = new Date();
-      const isToday = d.toDateString() === now.toDateString();
-      return `${d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})} • ${isToday ? 'Today' : d.toLocaleDateString()}`;
-    } catch { return ts; }
+      if (entry.eta_timestamp) {
+        const d = parseTs(entry.eta_timestamp);
+        if (d) return d.getTime();
+      }
+      const eta = entry.eta || '';
+      const m = eta.match(/^\d{1,2}:\d{2}$/);
+      const base = parseTs(entry.timestamp);
+      if (m && base) {
+        const [hh, mm] = eta.split(':').map(Number);
+        const dt = new Date(base.getTime());
+        dt.setHours(hh, mm, 0, 0);
+        if (dt.getTime() <= base.getTime()) {
+          dt.setDate(dt.getDate() + 1); // next day if not in future
+        }
+        return dt.getTime();
+      }
+    } catch {}
+    return NaN;
   };
 
   // Live-updating elapsed string for lastUpdated
@@ -153,39 +184,14 @@ function MainApp() {
     const days = Math.floor(hrs / 24);
     return `${days}d ago`;
   }, [lastUpdated, nowTick]);
-  const etaDisplay = (e) => {
-    if (!e) return 'Unknown';
-    // Prefer server-computed minutes to avoid client TZ drift
-    const hasServerMins = typeof e.minutes_until_arrival === 'number' && isFinite(e.minutes_until_arrival);
-    let hhmm = '';
-    if (e.eta_timestamp) {
-      const d = new Date(e.eta_timestamp);
-      if (!isNaN(d.getTime())) {
-        if (useUTC) {
-          hhmm = `${d.getUTCHours().toString().padStart(2,'0')}:${d.getUTCMinutes().toString().padStart(2,'0')}Z`;
-        } else {
-          hhmm = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
-        }
-      }
-    }
-    if (!hhmm && e.eta && /\d{1,2}:\d{2}/.test(e.eta)) {
-      hhmm = e.eta;
-    }
-    if (hasServerMins) {
-      return `in ${Math.max(0, Math.round(e.minutes_until_arrival))}m${hhmm ? ` / ${hhmm}` : ''}`;
-    }
-    // Fallback: compute on client when server mins missing
-    if (e.eta_timestamp) {
-      const d = new Date(e.eta_timestamp);
-      if (!isNaN(d.getTime())) {
-  const now = new Date();
-        const diff = Math.max(0, Math.round((d - now)/60000));
-  const hh = (useUTC ? d.getUTCHours() : d.getHours()).toString().padStart(2,'0');
-  const mm = (useUTC ? d.getUTCMinutes() : d.getMinutes()).toString().padStart(2,'0');
-        return `in ${diff}m / ${hh}:${mm}`;
-      }
-    }
-    return e.eta || 'Unknown';
+  const etaDisplay = (entry) => {
+    if (!entry) return 'Unknown';
+    const ms = computeEtaMillis(entry);
+    if (!isNaN(ms)) return formatDateTime(new Date(ms), useUTC);
+    const d = parseTs(entry.eta_timestamp);
+    if (d) return formatDateTime(d, useUTC);
+    // Fallback to HH:MM text if no timestamp context
+    return entry.eta || 'Unknown';
   };
 
   // Filtering and sorting
@@ -203,8 +209,8 @@ function MainApp() {
     const arr = [...filtered];
     arr.sort((a,b) => {
       let av, bv;
-      if (sortBy.key === 'timestamp') { av = new Date(a.timestamp).getTime(); bv = new Date(b.timestamp).getTime(); }
-      else if (sortBy.key === 'eta') { av = a.eta_timestamp ? new Date(a.eta_timestamp).getTime() : 0; bv = b.eta_timestamp ? new Date(b.eta_timestamp).getTime() : 0; }
+      if (sortBy.key === 'timestamp') { const ad=parseTs(a.timestamp); const bd=parseTs(b.timestamp); av = ad?ad.getTime():0; bv = bd?bd.getTime():0; }
+      else if (sortBy.key === 'eta') { av = computeEtaMillis(a); bv = computeEtaMillis(b); if (isNaN(av)) av = 0; if (isNaN(bv)) bv = 0; }
       else { av = 0; bv = 0; }
       return sortBy.dir === 'asc' ? av - bv : bv - av;
     });
@@ -227,7 +233,9 @@ function MainApp() {
   const exportCsv = () => {
     const rows = ['Time,Name,Message,Vehicle,ETA,Status'];
     sorted.forEach(r => {
-      const row = [r.timestamp, r.name, (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), (r.eta_timestamp||r.eta||''), statusOf(r)];
+      const ts = formatDateTime(parseTs(r.timestamp), useUTC);
+      const etaStr = etaDisplay(r);
+      const row = [ts, r.name, (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
       rows.push(row.map(v => /[",\n]/.test(String(v)) ? '"'+String(v)+'"' : String(v)).join(','));
     });
     const blob = new Blob([rows.join('\n')], {type: 'text/csv'});
@@ -354,7 +362,7 @@ function MainApp() {
               const pillClass = s==='Responding' ? 'status-responding' : (s==='Not Responding' ? 'status-not' : 'status-unknown');
               return (
                 <tr key={index}>
-                  <td className="col-time" title={entry.timestamp}>{relTime(entry.timestamp)}</td>
+                  <td className="col-time" title={entry.timestamp}>{formatDateTime(parseTs(entry.timestamp), useUTC)}</td>
                   <td>{entry.name}</td>
                   <td>
                     <div className="msg">{entry.text}</div>
