@@ -105,7 +105,7 @@ spec:
       - args:
         - --provider=oidc
         - --provider-display-name="Microsoft Entra"
-        - --oidc-issuer-url=https://login.microsoftonline.com/d62aea99-b83c-45cb-919b-81127225d94a/v2.0
+  - --oidc-issuer-url=https://login.microsoftonline.com/organizations/v2.0
         - --redirect-url=https://respondr.paincave.pro/oauth2/callback
         - --email-domain=*
         - --upstream=http://localhost:8000

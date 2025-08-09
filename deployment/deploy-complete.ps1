@@ -62,7 +62,10 @@ param(
     [switch]$DisableOAuth2,  # Use -DisableOAuth2 to turn off OAuth2 (default is enabled)
     
     [Parameter(Mandatory=$false)]
-    [switch]$DryRun
+    [switch]$DryRun,
+
+    [Parameter(Mandatory=$false)]
+    [switch]$SetupAcrWebhook
 )
 
 $hostname = "respondr.$Domain"
@@ -492,6 +495,10 @@ if (-not $DryRun) {
     Write-Host "  HTTPS: https://$hostname" -ForegroundColor White
     Write-Host "  API:   https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
+    Write-Host "🪝 ACR Webhook: Configure ACR to POST to https://$hostname/internal/acr-webhook on push" -ForegroundColor Cyan
+    Write-Host "  Header: X-ACR-Token with the value from deployment/secrets.yaml (ACR_WEBHOOK_TOKEN)" -ForegroundColor White
+    Write-Host "  Action: Push; Repo: respondr" -ForegroundColor White
+    Write-Host "" 
     Write-Host "🔐 Authentication:" -ForegroundColor Cyan
     Write-Host "  - OAuth2 Proxy with Azure AD authentication is ENABLED" -ForegroundColor White
     Write-Host "  - Users WILL be challenged to sign in with Entra/Azure AD" -ForegroundColor White
@@ -520,3 +527,8 @@ if (-not $DryRun) {
 
 Write-Host ""
 Write-Host "Deployment completed!" -ForegroundColor Green
+
+if ($SetupAcrWebhook -and -not $DryRun) {
+    Write-Host "\n🪝 Configuring ACR webhook..." -ForegroundColor Yellow
+    & (Join-Path $PSScriptRoot 'configure-acr-webhook.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
+}

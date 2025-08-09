@@ -58,14 +58,14 @@ if not WEBHOOK_API_KEY:
 def get_webhook_url(production=False):
     """Get the appropriate webhook URL based on environment"""
     if production:
-        return "https://respondr.paincave.pro/webhook"
+        return "https://respondr.rtreit.com/webhook"
     else:
         return "http://localhost:8000/webhook"
 
 def get_api_url(production=False):
     """Get the appropriate API URL based on environment"""
     if production:
-        return "https://respondr.paincave.pro/api/responders"
+        return "https://respondr.rtreit.com/api/responders"
     else:
         return "http://localhost:8000/api/responders"
 
@@ -234,7 +234,7 @@ def validate_api_responses(production=False):
     if production:
         print("\n⚠️  Production API validation requires OAuth2 authentication")
         print("   Please manually verify in browser:")
-        print(f"   1. Visit: https://respondr.paincave.pro")
+        print(f"   1. Visit: https://respondr.rtreit.com")
         print("   2. Sign in with Azure AD credentials")
         print(f"   3. Check API: {api_url}")
         return True
@@ -342,7 +342,7 @@ def test_webhook_endpoint(production=False):
             print("\nProduction Webhook Testing Complete!")
             print("   Webhook endpoint bypasses OAuth2 authentication")
             print("   Manual verification required for processed data:")
-            print("   1. Visit: https://respondr.paincave.pro")
+            print("   1. Visit: https://respondr.rtreit.com")
             print("   2. Sign in with Azure AD credentials")
             print("   3. Verify test messages appear in dashboard")
         else:
@@ -372,7 +372,7 @@ def main():
     parser.add_argument(
         "--production", 
         action="store_true", 
-        help="Test production endpoint (https://respondr.paincave.pro)"
+        help="Test production endpoint (https://respondr.rtreit.com)"
     )
     
     args = parser.parse_args()

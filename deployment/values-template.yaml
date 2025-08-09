@@ -20,7 +20,11 @@ azureOpenAIApiVersion: ""
 
 # OAuth2 Configuration
 oauth2ClientId: ""
-oauth2TenantId: ""
+oauth2TenantId: ""  # kept for backward compatibility if single-tenant is desired
+multiTenantAuth: true
+allowedEmailDomains:
+	- scvsar.org
+	- rtreit.com
 oauth2RedirectUrl: ""
 
 # Domain Configuration

@@ -8,7 +8,8 @@ param(
     [string]$Location = "westus",
     [switch]$SkipInfrastructure,
     [switch]$SkipImageBuild,
-    [bool]$UseOAuth2 = $true
+    [bool]$UseOAuth2 = $true,
+    [switch]$SetupAcrWebhook
 )
 
 Write-Host "🚀 Template-Based Respondr Deployment" -ForegroundColor Cyan
@@ -111,3 +112,11 @@ Write-Host ""
 Write-Host "🔗 Your application is available at: https://respondr.$Domain" -ForegroundColor Green
 Write-Host ""
 Write-Host "⚠️  IMPORTANT: All generated files are in .gitignore and should never be committed!" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "🪝 ACR Webhook (optional): Configure your ACR to POST to https://respondr.$Domain/internal/acr-webhook" -ForegroundColor Cyan
+Write-Host "   Header: X-ACR-Token (value is in deployment/secrets.yaml under ACR_WEBHOOK_TOKEN)" -ForegroundColor White
+
+if ($SetupAcrWebhook) {
+    Write-Host "Configuring ACR webhook now..." -ForegroundColor Yellow
+    & ".\configure-acr-webhook.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain
+}

@@ -28,27 +28,44 @@ $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
 Write-Host "   ACR: $acrName" -ForegroundColor White
 Write-Host "   Login Server: $acrLoginServer" -ForegroundColor White
 
-# Get Azure OpenAI details
+# Get Azure OpenAI details (best-effort; continue on failure)
 Write-Host "🤖 Getting Azure OpenAI details..." -ForegroundColor Green
-$openAIAccount = az cognitiveservices account show -g $ResourceGroupName -n respondr-openai-account --query "{endpoint: properties.endpoint}" -o json | ConvertFrom-Json
-$azureOpenAIEndpoint = $openAIAccount.endpoint
-
-# Get deployment names
-$deployments = az cognitiveservices account deployment list -g $ResourceGroupName -n respondr-openai-account --query "[].name" -o tsv
-$azureOpenAIDeployment = $deployments | Select-Object -First 1
-
+$azureOpenAIEndpoint = ""
+$azureOpenAIDeployment = ""
+try {
+    $openAIAccountRaw = az cognitiveservices account show -g $ResourceGroupName -n respondr-openai-account --query "{endpoint: properties.endpoint}" -o json 2>$null
+    if ($openAIAccountRaw) {
+        $openAIAccount = $openAIAccountRaw | ConvertFrom-Json
+        $azureOpenAIEndpoint = $openAIAccount.endpoint
+    } else {
+        Write-Host "   Azure OpenAI account not found under expected name; leaving endpoint empty" -ForegroundColor Yellow
+    }
+    $deploymentsRaw = az cognitiveservices account deployment list -g $ResourceGroupName -n respondr-openai-account --query "[].name" -o tsv 2>$null
+    if ($deploymentsRaw) { $azureOpenAIDeployment = ($deploymentsRaw | Select-Object -First 1) }
+} catch {
+    Write-Host "   Skipping Azure OpenAI discovery due to error: $($_.Exception.Message)" -ForegroundColor Yellow
+}
 Write-Host "   Endpoint: $azureOpenAIEndpoint" -ForegroundColor White
 Write-Host "   Deployment: $azureOpenAIDeployment" -ForegroundColor White
 
-# Get OAuth2 app details if they exist
+# Get OAuth2 app details if they exist (best-effort; don't fail generation)
 Write-Host "🔐 Getting OAuth2 configuration..." -ForegroundColor Green
-$oauth2Apps = az ad app list --display-name "respondr-oauth2" --query "[].{appId:appId}" -o json | ConvertFrom-Json
-if ($oauth2Apps.Length -gt 0) {
-    $oauth2ClientId = $oauth2Apps[0].appId
-    Write-Host "   OAuth2 Client ID: $oauth2ClientId" -ForegroundColor White
-} else {
-    $oauth2ClientId = ""
-    Write-Host "   OAuth2 app not found - will be created during OAuth2 setup" -ForegroundColor Yellow
+$oauth2ClientId = ""
+try {
+    $oauth2AppsRaw = az ad app list --display-name "respondr-oauth2" --query "[].{appId:appId}" -o json 2>$null
+    if ($oauth2AppsRaw) {
+        $oauth2Apps = $oauth2AppsRaw | ConvertFrom-Json
+        if ($oauth2Apps -and $oauth2Apps.Length -gt 0) {
+            $oauth2ClientId = $oauth2Apps[0].appId
+            Write-Host "   OAuth2 Client ID: $oauth2ClientId" -ForegroundColor White
+        } else {
+            Write-Host "   OAuth2 app not found - will be created during OAuth2 setup" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "   Unable to query OAuth2 app (no output) - continuing" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "   Skipping OAuth2 app lookup due to error: $($_.Exception.Message)" -ForegroundColor Yellow
 }
 
 # Construct full hostname
@@ -82,6 +99,10 @@ azureOpenAIApiVersion: "2024-02-15-preview"
 oauth2ClientId: "$oauth2ClientId"
 oauth2TenantId: "$azureTenantId"
 oauth2RedirectUrl: "$oauth2RedirectUrl"
+multiTenantAuth: "true"
+allowedEmailDomains:
+    - "scvsar.org"
+    - "rtreit.com"
 
 # Domain Configuration
 domain: "$Domain"

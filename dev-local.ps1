@@ -24,7 +24,7 @@ if ($Help) {
     Write-Host "Access URLs:" -ForegroundColor Yellow
     Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
-    Write-Host "  Frontend: http://localhost:3000 (if -Full)" -ForegroundColor Cyan
+    Write-Host "  Frontend: http://localhost:3100 (if -Full)" -ForegroundColor Cyan
     exit 0
 }
 
@@ -71,22 +71,26 @@ if ($Docker) {
     Write-Host ""
     Write-Host "This will open two terminals:" -ForegroundColor Yellow
     Write-Host "  1. Backend (FastAPI) on http://localhost:8000" -ForegroundColor Cyan
-    Write-Host "  2. Frontend (React) on http://localhost:3000" -ForegroundColor Cyan
+    Write-Host "  2. Frontend (React) on http://localhost:3100" -ForegroundColor Cyan
     Write-Host ""
     
-    # Start backend in new terminal
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    # Start backend in new terminal using venv python if available
+    $venvPy = Join-Path $PWD "backend\.venv\Scripts\python.exe"
+    $pyCmd = if (Test-Path $venvPy) { $venvPy } else { 'python' }
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
     
     # Start frontend in new terminal
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; Write-Host 'Starting Frontend...' -ForegroundColor Blue; npm start"
+    # - Auto-install dependencies if react-scripts is missing
+    # - Escape `$ so env var is set in the child
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; if (!(Test-Path 'node_modules\\.bin\\react-scripts') -and !(Test-Path 'node_modules\\react-scripts')) { Write-Host 'Installing frontend dependencies (npm ci)…' -ForegroundColor Yellow; npm ci }; Write-Host 'Starting Frontend on :3100...' -ForegroundColor Blue; `$env:PORT=3100; npm start"
     
     Write-Host "Both services starting in separate terminals..." -ForegroundColor Green
     Write-Host ""
     Write-Host "Access URLs:" -ForegroundColor Yellow
-    Write-Host "  • Frontend: http://localhost:3000" -ForegroundColor Cyan
+    Write-Host "  • Frontend: http://localhost:3100" -ForegroundColor Cyan
     Write-Host "  • Backend: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
     
@@ -103,5 +107,8 @@ if ($Docker) {
     Write-Host ""
     
     Set-Location backend
-    python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    $venvPy = Join-Path $PWD "..\backend\.venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPy)) { $venvPy = 'python' }
+    $env:TIMEZONE='America/Los_Angeles'
+    & $venvPy -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 }
