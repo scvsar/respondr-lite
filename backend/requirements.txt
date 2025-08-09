@@ -15,3 +15,4 @@ pytest
 pytest-asyncio
 httpx
 pytest-cov
+kubernetes>=29.0.0

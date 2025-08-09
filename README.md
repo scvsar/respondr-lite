@@ -72,6 +72,26 @@ cd deployment
 ./cleanup.ps1 -ResourceGroupName respondr -Force   # full resource group cleanup
 ```
 
+## Automatic rollouts on new images (ACR webhook)
+
+When a new image is pushed to ACR, you can auto-restart the AKS deployment to pull the latest tag:
+
+- Backend exposes an authenticated endpoint: `POST /internal/acr-webhook`
+  - Requires header `X-ACR-Token: <token>` (or `?token=<token>`)
+  - Token is stored in Kubernetes secret `respondr-secrets` key `ACR_WEBHOOK_TOKEN`
+- The handler patches the Deployment pod template with a restart timestamp, triggering a rolling restart
+- RBAC (Role/RoleBinding) allows the service account to patch Deployments in namespace `respondr`
+- OAuth2 Proxy skips auth for this path
+
+Wire it up in ACR:
+1) In Azure Portal → Container Registry → Webhooks → Add
+   - Name: respondr-restart
+   - Service URI: https://respondr.paincave.pro/internal/acr-webhook
+   - Actions: Push
+   - Custom headers: X-ACR-Token: <same token as in secret>
+2) Ensure your Deployment uses `imagePullPolicy: Always` (templates updated)
+3) Verify by pushing a new image tag or re-pushing latest; watch rollout: `kubectl rollout status deploy/respondr-deployment -n respondr`
+
 ## Local development
 
 Pick a mode that suits your workflow:

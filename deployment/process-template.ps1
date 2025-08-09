@@ -48,6 +48,9 @@ $placeholderMap = @{
     '{{REDIRECT_URL_PLACEHOLDER}}' = $values['oauth2RedirectUrl']
     '{{NAMESPACE_PLACEHOLDER}}' = $values['namespace']
     '{{DOMAIN_PLACEHOLDER}}' = $values['domain']
+    '{{OIDC_TENANT_SEGMENT}}' = ''  # computed below
+    '{{EMAIL_DOMAIN_ARGS}}' = ''    # computed below
+    '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}' = ''  # computed below
 }
 
 # Apply all basic placeholder replacements
@@ -58,6 +61,77 @@ foreach ($placeholder in $placeholderMap.Keys) {
         Write-Verbose "Replaced: $placeholder -> $value"
     } else {
         Write-Warning "No value found for placeholder: $placeholder"
+    }
+}
+
+# Compute multi-tenant issuer segment and email domain args
+$multiTenant = ($values['multiTenantAuth'] -eq 'true' -or $values['multiTenantAuth'] -eq 'True' -or $values['multiTenantAuth'] -eq '1')
+if ($multiTenant) {
+    $placeholderMap['{{OIDC_TENANT_SEGMENT}}'] = 'common'
+} else {
+    $placeholderMap['{{OIDC_TENANT_SEGMENT}}'] = $values['azureTenantId']
+}
+
+# Build allowed email domains args for oauth2-proxy
+$emailArgs = ''
+if ($multiTenant) {
+    # For multi-tenant apps, let the application handle domain validation
+    $emailArgs = "        - --email-domain=*"
+} else {
+    # For single-tenant apps, use configured domains
+    try {
+        $domainLines = @()
+        $inDomains = $false
+        foreach ($line in (Get-Content $ValuesFile)) {
+            if ($line -match '^allowedEmailDomains\s*:') { $inDomains = $true; continue }
+            if ($inDomains) {
+                if ($line -match '^\s*-\s*(.+)') {
+                    $v = $matches[1].Trim()
+                    if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length - 2) }
+                    if ($v.StartsWith("'") -and $v.EndsWith("'")) { $v = $v.Substring(1, $v.Length - 2) }
+                    $domainLines += $v
+                } else { break }
+            }
+        }
+        if ($domainLines.Count -gt 0) {
+            foreach ($d in $domainLines) { $emailArgs += "        - --email-domain=`"$d`"`n" }
+        } else {
+            $emailArgs = "        - --email-domain=*"
+        }
+    $emailArgs = $emailArgs.TrimEnd("`n")
+    } catch { $emailArgs = "        - --email-domain=*" }
+}
+$placeholderMap['{{EMAIL_DOMAIN_ARGS}}'] = $emailArgs
+
+# Build allowed email domains string for application environment variable
+try {
+    $domainList = @()
+    $inDomains = $false
+    foreach ($line in (Get-Content $ValuesFile)) {
+        if ($line -match '^allowedEmailDomains\s*:') { $inDomains = $true; continue }
+        if ($inDomains) {
+            if ($line -match '^\s*-\s*(.+)') {
+                $v = $matches[1].Trim()
+                if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length - 2) }
+                if ($v.StartsWith("'") -and $v.EndsWith("'")) { $v = $v.Substring(1, $v.Length - 2) }
+                $domainList += $v
+            } else { break }
+        }
+    }
+    $allowedDomains = $domainList -join ","
+} catch { 
+    $allowedDomains = "scvsar.org,rtreit.com" 
+}
+$placeholderMap['{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}'] = $allowedDomains
+
+# Apply replacements for computed placeholders
+foreach ($computed in @('{{OIDC_TENANT_SEGMENT}}','{{EMAIL_DOMAIN_ARGS}}','{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}')) {
+    $val = $placeholderMap[$computed]
+    if ($val -ne $null -and $val -ne '') {
+    $processedContent = $processedContent -replace [regex]::Escape($computed), $val
+        Write-Verbose "Replaced computed: $computed -> $val"
+    } else {
+        Write-Warning "Computed placeholder had no value: $computed"
     }
 }
 
@@ -72,8 +146,8 @@ if ($useOAuth2) {
     $processedContent = $processedContent -replace '\{\{OAUTH2_INGRESS_START\}\}', ""
     $processedContent = $processedContent -replace '\{\{OAUTH2_INGRESS_END\}\}', ""
     
-    # Replace SERVICE_PORT_CONFIG for OAuth2 mode (traffic goes through oauth2-proxy on port 4180)
-    $servicePortConfig = @"
+        # Replace SERVICE_PORT_CONFIG for OAuth2 mode (traffic goes through oauth2-proxy on port 4180)
+        $servicePortConfig = @"
 - name: http
     port: 80
     targetPort: 4180
@@ -86,8 +160,8 @@ if ($useOAuth2) {
     $processedContent = $processedContent -replace '(?s)      # OAuth2 Proxy sidecar container \(conditional - will be removed if ENABLE_OAUTH2=false\)\r?\n      \{\{OAUTH2_CONTAINER_START\}\}.*?\{\{OAUTH2_CONTAINER_END\}\}\r?\n', ''
     $processedContent = $processedContent -replace '(?s)\s*\{\{OAUTH2_INGRESS_START\}\}.*?\{\{OAUTH2_INGRESS_END\}\}\s*', ''
     
-    # Replace SERVICE_PORT_CONFIG for non-OAuth2 mode (traffic goes directly to app on port 8000)
-    $servicePortConfig = @"
+        # Replace SERVICE_PORT_CONFIG for non-OAuth2 mode (traffic goes directly to app on port 8000)
+        $servicePortConfig = @"
 - name: http
     port: 80
     targetPort: 8000
