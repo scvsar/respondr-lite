@@ -38,13 +38,15 @@ GroupMe → Webhook Caller                    ACR → ACR Webhook
 
 ## Application endpoints
 
-Replace <host> with your DNS name (e.g., respondr.example.com).
+Examples (using respondr.example.com):
 
-- Dashboard (OAuth2‑protected): https://<host>
-- API (OAuth2‑protected via ingress): https://<host>/api/responders
-- Webhook (API key header, OAuth2 bypassed): https://<host>/webhook
-- ACR Webhook (token header, OAuth2 bypassed): https://<host>/internal/acr-webhook
-- Health (proxy ping): https://<host>/ping
+- Dashboard (OAuth2‑protected): https://respondr.example.com
+- API (OAuth2‑protected via ingress): https://respondr.example.com/api/responders
+- Webhook (API key header, OAuth2 bypassed): https://respondr.example.com/webhook
+- ACR Webhook (token header, OAuth2 bypassed): https://respondr.example.com/internal/acr-webhook
+- Health (proxy ping): https://respondr.example.com/ping
+
+For your deployment, replace `respondr.example.com` with your actual host.
 
 Notes
 - OAuth2 Proxy protects routes by default. `/webhook` and `/internal/acr-webhook` are regex‑exempt and require headers `X-API-Key` and `X-ACR-Token` respectively.

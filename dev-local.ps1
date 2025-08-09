@@ -24,7 +24,7 @@ if ($Help) {
     Write-Host "Access URLs:" -ForegroundColor Yellow
     Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
-    Write-Host "  Frontend: http://localhost:3000 (if -Full)" -ForegroundColor Cyan
+    Write-Host "  Frontend: http://localhost:3100 (if -Full)" -ForegroundColor Cyan
     exit 0
 }
 
@@ -71,7 +71,7 @@ if ($Docker) {
     Write-Host ""
     Write-Host "This will open two terminals:" -ForegroundColor Yellow
     Write-Host "  1. Backend (FastAPI) on http://localhost:8000" -ForegroundColor Cyan
-    Write-Host "  2. Frontend (React) on http://localhost:3000" -ForegroundColor Cyan
+    Write-Host "  2. Frontend (React) on http://localhost:3100" -ForegroundColor Cyan
     Write-Host ""
     
     # Start backend in new terminal
@@ -81,12 +81,14 @@ if ($Docker) {
     Start-Sleep -Seconds 3
     
     # Start frontend in new terminal
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; Write-Host 'Starting Frontend...' -ForegroundColor Blue; npm start"
+    # - Auto-install dependencies if react-scripts is missing
+    # - Escape `$ so env var is set in the child
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; if (!(Test-Path 'node_modules\\.bin\\react-scripts') -and !(Test-Path 'node_modules\\react-scripts')) { Write-Host 'Installing frontend dependencies (npm ci)…' -ForegroundColor Yellow; npm ci }; Write-Host 'Starting Frontend on :3100...' -ForegroundColor Blue; `$env:PORT=3100; npm start"
     
     Write-Host "Both services starting in separate terminals..." -ForegroundColor Green
     Write-Host ""
     Write-Host "Access URLs:" -ForegroundColor Yellow
-    Write-Host "  • Frontend: http://localhost:3000" -ForegroundColor Cyan
+    Write-Host "  • Frontend: http://localhost:3100" -ForegroundColor Cyan
     Write-Host "  • Backend: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
     
