@@ -1,4 +1,55 @@
-# SCVSAR Response Tracker
+# A web application that tracks responses to Search and Rescue mission call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder det## Application endpoints
+
+- Dashboard (OAu## Notes on architecture
+
+- ```
+GroupMe → Webhook Caller                    ACR → ACR Webhook  
+         (X-API-Key)                              (X-ACR-Token)
+              │                                        │
+              ▼                                        ▼
+        Ingress (AGIC) ←─────────────────────────── Ingress (AGIC)
+           │       └── TLS (Let's Encrypt)
+           ▼
+    OAuth2 Proxy (sidecar)
+     ├─ /webhook → skipped (regex)
+     ├─ /internal/acr-webhook → skipped (regex)  
+     └─ other paths → OAuth2 (Azure AD Multi-tenant)
+           │
+           ▼
+       Respondr Backend (FastAPI)
+        ├─ GroupMe: Azure OpenAI (extract vehicle, ETA)
+        ├─ GroupMe: Normalize ETA → HH:MM and compute minutes/status
+        ├─ GroupMe: Save to Redis (shared state)
+        └─ ACR: Validate token & trigger K8s deployment restart
+           │
+           ▼
+       Dashboard/API (OAuth2‑protected)
+        └─ Domain validation (scvsar.org, rtreit.com) a sidecar to protect the app behind Azure AD/Entra with multi-tenant support.
+- Application-level domain validation ensures only users from allowed email domains can access the system.
+- Redis provides shared state so replicas don't need sticky sessions.
+- A single unified template drives the Kubernetes manifests for simplicity and tenant portability.
+- ACR webhook integration enables automatic redeployments when new images are pushed.rotected): https://respondr.rtreit.com
+- API (OAuth2‑protected via ingress): https://respondr.rtreit.com/api/responders
+- Webhook (API key header, OAuth2 bypassed): https://respondr.rtreit.com/webhook
+- ACR Webhook (token header, OAuth2 bypassed): https://respondr.rtreit.com/internal/acr-webhook
+- Health (proxy ping): https://respondr.rtreit.com/ping
+
+Notes
+- The OAuth2 Proxy protects all routes by default. In our deployment, `/webhook` and `/internal/acr-webhook` are exempted from OAuth2 and instead require specific headers (`X-API-Key` and `X-ACR-Token` respectively).
+- `/api/responders` is not exempted; when accessed through ingress it's OAuth2‑protected. Liveness/readiness probes hit the pod directly.
+- `/ping` is served by OAuth2 Proxy and returns 200 without auth; useful for external health checks.
+- Multi-tenant authentication allows users from any Azure AD tenant, but the application validates email domains.hows them on a secure, real‑time dashboard.
+
+## Key Features
+
+- **Multi-tenant Azure AD Authentication**: Supports users from any Azure AD tenant with domain-based authorization
+- **Automatic CI/CD**: ACR webhook integration for automatic redeployments on image push
+- **Domain Validation**: Application-level email domain validation (scvsar.org, rtreit.com)
+- **OAuth2 Proxy Security**: Sidecar authentication protecting all routes except webhooks
+- **Real-time Dashboard**: Live updates of responder status and ETAs
+- **AI-powered Extraction**: Azure OpenAI processes natural language responses
+
+## What's in the boxSAR Response Tracker
 
 A web application that tracks responses to Search and Rescue mission call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder details, and shows them on a secure, real‑time dashboard.
 
@@ -19,7 +70,10 @@ az login
 az account set --subscription <your-subscription-id>
 
 cd deployment
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+
+# Include ACR webhook setup for automatic redeployments
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
 ```
 
 What this does:
@@ -31,7 +85,18 @@ What this does:
 - Prompts you to add DNS A record and then obtains Let’s Encrypt certs
 - Runs validation and smoke checks
 
-DNS step: When prompted, add an A record for your host (e.g., respondr.paincave.pro) to the shown App Gateway IP, then continue. Propagation typically takes 5–60 minutes.
+DNS step: When prompted, add an A record for your host (e.g., respondr.rtreit.com) to the shown App Gateway IP, then continue. Propagation typically takes 5–60 minutes.
+
+## Multi-tenant authentication
+
+The application supports **multi-tenant Azure AD authentication** with domain-based authorization:
+
+- **OAuth2 Configuration**: Uses Azure AD common endpoint to accept users from any tenant
+- **Domain Validation**: Application validates user email domains against allowed list
+- **Allowed Domains**: Configured in `values.yaml` under `allowedEmailDomains` (default: scvsar.org, rtreit.com)
+- **Flexible Access**: Users from any Azure AD tenant can authenticate, but only allowed domains are granted access
+
+This provides true multi-tenant capabilities while maintaining security through application-level domain validation.
 
 ## Template‑based deployment (portable config)
 
@@ -47,8 +112,11 @@ Source templates you can read and version:
 Manual template flow (optional):
 ```powershell
 cd deployment
-./generate-values.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "paincave.pro"
+./generate-values.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+
+# Include ACR webhook setup for automatic redeployments
+./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
 ```
 
 ## Validate, redeploy, and cleanup
@@ -83,11 +151,23 @@ When a new image is pushed to ACR, you can auto-restart the AKS deployment to pu
 - RBAC (Role/RoleBinding) allows the service account to patch Deployments in namespace `respondr`
 - OAuth2 Proxy skips auth for this path
 
+### Automated Setup (Recommended)
+Use the deployment scripts with the `-SetupAcrWebhook` flag:
+```powershell
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
+# OR
+./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
+# OR manually configure existing deployment
+./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+```
+
+### Manual Setup
 Wire it up in ACR:
 1) In Azure Portal → Container Registry → Webhooks → Add
-   - Name: respondr-restart
-   - Service URI: https://respondr.paincave.pro/internal/acr-webhook
+   - Name: respondrrestart (alphanumeric only)
+   - Service URI: https://respondr.rtreit.com/internal/acr-webhook
    - Actions: Push
+   - Scope: respondr:*
    - Custom headers: X-ACR-Token: <same token as in secret>
 2) Ensure your Deployment uses `imagePullPolicy: Always` (templates updated)
 3) Verify by pushing a new image tag or re-pushing latest; watch rollout: `kubectl rollout status deploy/respondr-deployment -n respondr`
@@ -140,7 +220,8 @@ Notes
   - Check cert status: `kubectl get certificate -n respondr` and `kubectl logs -n cert-manager deploy/cert-manager`.
 
 - OAuth2 login loops
-  - Recreate OAuth config: `./setup-oauth2.ps1 -ResourceGroupName respondr -Domain "paincave.pro"` then `kubectl rollout restart deploy/respondr-deployment -n respondr`.
+  - Recreate OAuth config: `./setup-oauth2.ps1 -ResourceGroupName respondr -Domain "rtreit.com"` then `kubectl rollout restart deploy/respondr-deployment -n respondr`.
+  - For multi-tenant issues, verify allowed domains in `values.yaml` under `allowedEmailDomains`.
 
 - Image pull issues
   - Use the redeploy action (`-Action build`) which handles ACR tagging/push and updates the deployment.

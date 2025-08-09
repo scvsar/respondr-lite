@@ -6,7 +6,7 @@ param(
     [string]$Domain,
 
     [Parameter(Mandatory = $false)]
-    [string]$WebhookName = "respondr-restart"
+    [string]$WebhookName = "respondrrestart"
 )
 
 Write-Host "🪝 Configuring ACR webhook for automatic AKS rollouts..." -ForegroundColor Cyan
@@ -21,8 +21,8 @@ if (-not (Test-Path "values.yaml")) {
     exit 1
 }
 $values = Get-Content "values.yaml" -Raw
-$acrName = ($values | Select-String "acrName: \"([^"]+)\"").Matches[0].Groups[1].Value
-$hostname = ($values | Select-String "hostname: \"([^"]+)\"").Matches[0].Groups[1].Value
+$acrName = ($values | Select-String 'acrName: "([^"]+)"').Matches[0].Groups[1].Value
+$hostname = ($values | Select-String 'hostname: "([^"]+)"').Matches[0].Groups[1].Value
 if (-not $hostname) { $hostname = "respondr.$Domain" }
 
 # Load secrets.yaml for ACR_WEBHOOK_TOKEN
@@ -31,7 +31,7 @@ if (-not (Test-Path "secrets.yaml")) {
     exit 1
 }
 $secretsRaw = Get-Content "secrets.yaml" -Raw
-$acrTokenMatch = $secretsRaw | Select-String "ACR_WEBHOOK_TOKEN:\s*\"?([^\"\r\n]+)\"?"
+$acrTokenMatch = $secretsRaw | Select-String 'ACR_WEBHOOK_TOKEN:\s*"?([^"\r\n]+)"?'
 if (-not $acrTokenMatch) {
     Write-Error "ACR_WEBHOOK_TOKEN not found in secrets.yaml"
     exit 1
