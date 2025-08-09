@@ -1,68 +1,66 @@
-# A web application that tracks responses to Search and Rescue mission call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder det## Application endpoints
+# Respondr — SAR Response Tracker
 
-- Dashboard (OAu## Notes on architecture
+A web app to track responses to Search and Rescue call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder details (vehicle and ETA), normalizes data, and shows it on a secure, real‑time dashboard.
 
-- ```
+## Highlights
+
+- Multi‑tenant Azure AD auth via OAuth2 Proxy sidecar (domain‑based allow list)
+- AI‑assisted message parsing (vehicle + ETA to HH:MM)
+- Redis for shared state across replicas
+- Single, template‑driven Kubernetes manifest
+- Optional ACR webhook to auto‑rollout on new images
+
+## Topology (high level)
+
+```
 GroupMe → Webhook Caller                    ACR → ACR Webhook  
          (X-API-Key)                              (X-ACR-Token)
               │                                        │
               ▼                                        ▼
         Ingress (AGIC) ←─────────────────────────── Ingress (AGIC)
-           │       └── TLS (Let's Encrypt)
+           │       └── TLS (Let’s Encrypt)
            ▼
     OAuth2 Proxy (sidecar)
      ├─ /webhook → skipped (regex)
-     ├─ /internal/acr-webhook → skipped (regex)  
-     └─ other paths → OAuth2 (Azure AD Multi-tenant)
+     ├─ /internal/acr-webhook → skipped (regex)
+     └─ other paths → OAuth2 (Azure AD multi‑tenant)
            │
            ▼
        Respondr Backend (FastAPI)
         ├─ GroupMe: Azure OpenAI (extract vehicle, ETA)
-        ├─ GroupMe: Normalize ETA → HH:MM and compute minutes/status
-        ├─ GroupMe: Save to Redis (shared state)
-        └─ ACR: Validate token & trigger K8s deployment restart
+        ├─ Normalize ETA → HH:MM; compute minutes/status
+        ├─ Persist to Redis (shared state)
+        └─ ACR: Validate token & trigger K8s restart
            │
            ▼
        Dashboard/API (OAuth2‑protected)
-        └─ Domain validation (scvsar.org, rtreit.com) a sidecar to protect the app behind Azure AD/Entra with multi-tenant support.
-- Application-level domain validation ensures only users from allowed email domains can access the system.
-- Redis provides shared state so replicas don't need sticky sessions.
-- A single unified template drives the Kubernetes manifests for simplicity and tenant portability.
-- ACR webhook integration enables automatic redeployments when new images are pushed.rotected): https://respondr.rtreit.com
-- API (OAuth2‑protected via ingress): https://respondr.rtreit.com/api/responders
-- Webhook (API key header, OAuth2 bypassed): https://respondr.rtreit.com/webhook
-- ACR Webhook (token header, OAuth2 bypassed): https://respondr.rtreit.com/internal/acr-webhook
-- Health (proxy ping): https://respondr.rtreit.com/ping
+```
+
+## Application endpoints
+
+Replace <host> with your DNS name (e.g., respondr.example.com).
+
+- Dashboard (OAuth2‑protected): https://<host>
+- API (OAuth2‑protected via ingress): https://<host>/api/responders
+- Webhook (API key header, OAuth2 bypassed): https://<host>/webhook
+- ACR Webhook (token header, OAuth2 bypassed): https://<host>/internal/acr-webhook
+- Health (proxy ping): https://<host>/ping
 
 Notes
-- The OAuth2 Proxy protects all routes by default. In our deployment, `/webhook` and `/internal/acr-webhook` are exempted from OAuth2 and instead require specific headers (`X-API-Key` and `X-ACR-Token` respectively).
-- `/api/responders` is not exempted; when accessed through ingress it's OAuth2‑protected. Liveness/readiness probes hit the pod directly.
-- `/ping` is served by OAuth2 Proxy and returns 200 without auth; useful for external health checks.
-- Multi-tenant authentication allows users from any Azure AD tenant, but the application validates email domains.hows them on a secure, real‑time dashboard.
+- OAuth2 Proxy protects routes by default. `/webhook` and `/internal/acr-webhook` are regex‑exempt and require headers `X-API-Key` and `X-ACR-Token` respectively.
+- `/api/responders` is protected when accessed through ingress; liveness/readiness probes target the pod directly.
+- `/ping` is served by OAuth2 Proxy and returns 200 without auth, useful for external health checks.
 
-## Key Features
-
-- **Multi-tenant Azure AD Authentication**: Supports users from any Azure AD tenant with domain-based authorization
-- **Automatic CI/CD**: ACR webhook integration for automatic redeployments on image push
-- **Domain Validation**: Application-level email domain validation (scvsar.org, rtreit.com)
-- **OAuth2 Proxy Security**: Sidecar authentication protecting all routes except webhooks
-- **Real-time Dashboard**: Live updates of responder status and ETAs
-- **AI-powered Extraction**: Azure OpenAI processes natural language responses
-
-## What's in the boxSAR Response Tracker
-
-A web application that tracks responses to Search and Rescue mission call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder details, and shows them on a secure, real‑time dashboard.
-
-## What’s in the box
+## What’s included
 
 - FastAPI backend + React frontend
-- OAuth2 Proxy sidecar for Azure AD/Entra auth
+- OAuth2 Proxy for Azure AD/Entra auth (multi‑tenant)
 - Redis for shared state across replicas
 - Containerized, Kubernetes‑ready with AGIC + Let’s Encrypt
 
 ## End‑to‑end deployment (recommended)
 
-Use the single command flow for a complete setup, including infra, OAuth2, template generation, app deploy, and validation.
+One command flow for infra, OAuth2, templates, app deploy, and validation.
 
 ```powershell
 # Prereqs: Azure CLI, Docker Desktop, kubectl, PowerShell 7+
@@ -70,71 +68,68 @@ az login
 az account set --subscription <your-subscription-id>
 
 cd deployment
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
 
 # Include ACR webhook setup for automatic redeployments
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
 ```
 
 What this does:
-- Creates/uses the resource group and deploys infra (AKS, ACR, OpenAI, networking)
-- Enables AGIC and cert‑manager, waits for the Application Gateway
+- Creates/uses the resource group; deploys AKS, ACR, OpenAI, networking
+- Enables AGIC and cert‑manager; waits for Application Gateway
 - Creates Azure AD app and configures OAuth2 Proxy
 - Generates tenant‑specific files from templates (gitignored)
 - Builds, pushes, and deploys the app with OAuth2
-- Prompts you to add DNS A record and then obtains Let’s Encrypt certs
+- Prompts for DNS A record; obtains Let’s Encrypt certs
 - Runs validation and smoke checks
 
-DNS step: When prompted, add an A record for your host (e.g., respondr.rtreit.com) to the shown App Gateway IP, then continue. Propagation typically takes 5–60 minutes.
+DNS step: When prompted, add an A record for your host (e.g., respondr.<your-domain>) to the shown App Gateway IP, then continue. Propagation typically takes 5–60 minutes.
 
-## Multi-tenant authentication
+## Multi‑tenant authentication
 
-The application supports **multi-tenant Azure AD authentication** with domain-based authorization:
+- Uses Azure AD “common” endpoint to accept users from any tenant
+- Application validates user email domains against allowed list
+- Allowed domains configured in `deployment/values.yaml` under `allowedEmailDomains`
 
-- **OAuth2 Configuration**: Uses Azure AD common endpoint to accept users from any tenant
-- **Domain Validation**: Application validates user email domains against allowed list
-- **Allowed Domains**: Configured in `values.yaml` under `allowedEmailDomains` (default: scvsar.org, rtreit.com)
-- **Flexible Access**: Users from any Azure AD tenant can authenticate, but only allowed domains are granted access
-
-This provides true multi-tenant capabilities while maintaining security through application-level domain validation.
+This yields multi‑tenant sign‑in with app‑level authorization.
 
 ## Template‑based deployment (portable config)
 
-Generated at deploy time and never committed:
-- `values.yaml` (environment discovery)
-- `secrets.yaml` (OAuth2 + app secrets)
-- `respondr-k8s-generated.yaml` (final manifest)
+Generated at deploy time (not committed):
+- `deployment/values.yaml` (environment discovery)
+- `deployment/secrets.yaml` (OAuth2 + app secrets)
+- `deployment/respondr-k8s-generated.yaml` (final manifest)
 
 Source templates you can read and version:
-- `respondr-k8s-unified-template.yaml` (single source of truth)
-- `secrets-template.yaml`, `letsencrypt-issuer.yaml`, `redis-deployment.yaml`
+- `deployment/respondr-k8s-unified-template.yaml` (single source of truth)
+- `deployment/secrets-template.yaml`, `deployment/letsencrypt-issuer.yaml`, `deployment/redis-deployment.yaml`
 
 Manual template flow (optional):
 ```powershell
 cd deployment
-./generate-values.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
+./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
 
 # Include ACR webhook setup for automatic redeployments
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
+./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
 ```
 
 ## Validate, redeploy, and cleanup
 
-- Validate environment or app:
+Validate environment or app:
 ```powershell
 cd deployment
 ./validate.ps1 -ResourceGroupName respondr -Phase env   # AKS/AGIC/ACR/cert‑manager
 ./validate.ps1 -ResourceGroupName respondr -Phase app   # Workload smoke
 ```
 
-- Redeploy after code changes (build, push, rollout):
+Redeploy after code changes (build, push, rollout):
 ```powershell
 cd deployment
 ./redeploy.ps1 -Action build -ResourceGroupName respondr
 ```
 
-- Cleanup:
+Cleanup:
 ```powershell
 cd deployment
 ./cleanup.ps1 -ResourceGroupName respondr -Force   # full resource group cleanup
@@ -142,40 +137,36 @@ cd deployment
 
 ## Automatic rollouts on new images (ACR webhook)
 
-When a new image is pushed to ACR, you can auto-restart the AKS deployment to pull the latest tag:
+When a new image is pushed to ACR, auto‑restart the AKS deployment to pull the latest tag.
 
-- Backend exposes an authenticated endpoint: `POST /internal/acr-webhook`
-  - Requires header `X-ACR-Token: <token>` (or `?token=<token>`)
-  - Token is stored in Kubernetes secret `respondr-secrets` key `ACR_WEBHOOK_TOKEN`
-- The handler patches the Deployment pod template with a restart timestamp, triggering a rolling restart
-- RBAC (Role/RoleBinding) allows the service account to patch Deployments in namespace `respondr`
+- Endpoint: `POST /internal/acr-webhook`
+  - Header: `X-ACR-Token: <token>` (or `?token=<token>`)
+  - Token stored in secret `respondr-secrets` key `ACR_WEBHOOK_TOKEN`
+- Handler patches the Deployment pod template with a restart timestamp → rolling restart
+- RBAC permits patching Deployments in namespace `respondr`
 - OAuth2 Proxy skips auth for this path
 
-### Automated Setup (Recommended)
-Use the deployment scripts with the `-SetupAcrWebhook` flag:
+Automated setup (recommended):
 ```powershell
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
 # OR
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "rtreit.com" -SetupAcrWebhook
+./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
 # OR manually configure existing deployment
-./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "rtreit.com"
+./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
 ```
 
-### Manual Setup
-Wire it up in ACR:
-1) In Azure Portal → Container Registry → Webhooks → Add
+Manual ACR wiring:
+1) Azure Portal → Container Registry → Webhooks → Add
    - Name: respondrrestart (alphanumeric only)
-   - Service URI: https://respondr.rtreit.com/internal/acr-webhook
-   - Actions: Push
-   - Scope: respondr:*
-   - Custom headers: X-ACR-Token: <same token as in secret>
-2) Ensure your Deployment uses `imagePullPolicy: Always` (templates updated)
-3) Verify by pushing a new image tag or re-pushing latest; watch rollout: `kubectl rollout status deploy/respondr-deployment -n respondr`
+   - Service URI: https://<host>/internal/acr-webhook
+   - Actions: Push; Scope: respondr:*
+   - Custom header: X-ACR-Token: <same token as in secret>
+2) Ensure `imagePullPolicy: Always`
+3) Verify by pushing a new tag; watch: `kubectl rollout status deploy/respondr-deployment -n respondr`
 
 ## Local development
 
-Pick a mode that suits your workflow:
-
+Pick a mode:
 ```powershell
 # Full stack (backend + frontend)
 ./dev-local.ps1 -Full
@@ -194,83 +185,19 @@ Tests:
 (cd frontend; npm test)
 ```
 
-## Application endpoints
+## How AI processes responder messages
 
-- Dashboard (OAuth2‑protected): https://respondr.paincave.pro
-- API (OAuth2‑protected via ingress): https://respondr.paincave.pro/api/responders
-- Webhook (API key header, OAuth2 bypassed): https://respondr.paincave.pro/webhook
-- Health (proxy ping): https://respondr.paincave.pro/ping
-
-Notes
-- The OAuth2 Proxy protects all routes by default. In our deployment, `/webhook` is exempted from OAuth2 and instead requires the header `X-API-Key` matching `WEBHOOK_API_KEY`.
-- `/api/responders` is not exempted; when accessed through ingress it’s OAuth2‑protected. Liveness/readiness probes hit the pod directly.
-- `/ping` is served by OAuth2 Proxy and returns 200 without auth; useful for external health checks.
-
-## Real‑world troubleshooting (short list)
-
-- AGIC/App Gateway timing
-  - First creation typically takes 5–10 minutes. The deployment waits automatically.
-  - If validation shows a transient warning, re‑run: `./validate.ps1 -ResourceGroupName respondr -Phase env`.
-
-- Can’t get AppGW ports in validation
-  - Script now queries by resource ID (no MC RG guess). If it still warns, re‑run once after a few minutes.
-
-- SSL not issued
-  - Ensure DNS A record points to the Application Gateway public IP and has propagated.
-  - Check cert status: `kubectl get certificate -n respondr` and `kubectl logs -n cert-manager deploy/cert-manager`.
-
-- OAuth2 login loops
-  - Recreate OAuth config: `./setup-oauth2.ps1 -ResourceGroupName respondr -Domain "rtreit.com"` then `kubectl rollout restart deploy/respondr-deployment -n respondr`.
-  - For multi-tenant issues, verify allowed domains in `values.yaml` under `allowedEmailDomains`.
-
-- Image pull issues
-  - Use the redeploy action (`-Action build`) which handles ACR tagging/push and updates the deployment.
-
-## Notes on architecture
-
-- OAuth2 Proxy runs as a sidecar to protect the app behind Azure AD/Entra.
-- Redis provides shared state so replicas don’t need sticky sessions.
-- A single unified template drives the Kubernetes manifests for simplicity and tenant portability.
-
-### How AI processes responder messages
-
-- Inbound message arrives via `/webhook` (requires `X-API-Key`).
-- Backend builds a time‑aware prompt that instructs the model to:
-  - Extract `vehicle` (exact SAR unit, POV, Unknown) from free text
-  - Convert ETA durations (e.g., “15 min”, “half hour”, “2 hours”) into an actual 24‑hour `HH:MM` time using current time
-  - Normalize clock times (e.g., “11:45 PM” → `23:45`)
-  - Return strict JSON: `{ "vehicle": "...", "eta": "HH:MM" }`
-- The response is parsed and validated; ETA is post‑processed to ensure format and to compute:
-  - `eta_timestamp` (full datetime), `minutes_until_arrival`, and `arrival_status`
-- The message record is appended to storage and served by the dashboard/API.
+- Inbound message via `/webhook` (requires `X-API-Key`)
+- Backend builds a time‑aware prompt to extract:
+  - `vehicle` (exact SAR unit, POV, Unknown)
+  - `eta` → strict `HH:MM` (normalize clock times and durations)
+- Response parsed and validated; post‑process to compute:
+  - `eta_timestamp`, `minutes_until_arrival`, `arrival_status`
+- Append message to storage and serve via API/dashboard
 
 Model/runtime
-- Azure OpenAI Chat Completions via `openai` Azure client
-- Deployment, endpoint, API key, and version are provided via env vars
-
-### High‑level data flow
-
-```
-GroupMe → Webhook Caller
-         (X-API-Key)
-              │
-              ▼
-        Ingress (AGIC)
-           │       └── TLS (Let’s Encrypt)
-           ▼
-    OAuth2 Proxy (sidecar)
-     ├─ /webhook → skipped (regex)
-     └─ other paths → OAuth2 (Azure AD)
-           │
-           ▼
-       Respondr Backend (FastAPI)
-        ├─ Azure OpenAI (extract vehicle, ETA)
-        ├─ Normalize ETA → HH:MM and compute minutes/status
-        └─ Save to Redis (shared state)
-           │
-           ▼
-       Dashboard/API (OAuth2‑protected)
-```
+- Azure OpenAI Chat Completions via Azure `openai` client
+- Deployment, endpoint, API key, and version from env vars
 
 ## Contributing
 
