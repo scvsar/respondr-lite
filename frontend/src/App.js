@@ -128,21 +128,45 @@ function MainApp() {
   // Timestamp helpers
   const parseTs = (ts) => {
     if (!ts) return null;
-    // Support both ISO strings and "YYYY-MM-DD HH:mm:ss"
-    const s = typeof ts === 'string' ? ts.replace(' ', 'T') : ts;
+    // Support both ISO strings and "YYYY-MM-DD HH:mm:ss" (testing mode)
+    const s = typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
     const d = new Date(s);
     return isNaN(d.getTime()) ? null : d;
   };
   const pad2 = (n) => String(n).padStart(2, '0');
   const formatDateTime = (d, utc=false) => {
     if (!d) return '—';
-    const y = utc ? d.getUTCFullYear() : d.getFullYear();
-    const M = (utc ? d.getUTCMonth() : d.getMonth()) + 1;
-    const D = utc ? d.getUTCDate() : d.getDate();
-    const h = utc ? d.getUTCHours() : d.getHours();
-    const m = utc ? d.getUTCMinutes() : d.getMinutes();
-    const s = utc ? d.getUTCSeconds() : d.getSeconds();
-    return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+    if (utc) {
+      const y = d.getUTCFullYear();
+      const M = d.getUTCMonth() + 1;
+      const D = d.getUTCDate();
+      const h = d.getUTCHours();
+      const m = d.getUTCMinutes();
+      const s = d.getUTCSeconds();
+      return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+    }
+    // Prefer rendering as Pacific (PST/PDT) using system local offset if Date has tz offset already applied.
+    // Since backend sends ISO with offset, new Date(iso) is absolute. We'll just output wall time in the user's local.
+    // For consistency across teams, explicitly format in America/Los_Angeles when supported.
+    try {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false
+      });
+      const parts = fmt.formatToParts(d).reduce((acc, p) => (acc[p.type]=p.value, acc), {});
+      return `${parts.month}/${parts.day}/${parts.year} ${parts.hour}:${parts.minute}:${parts.second}`;
+    } catch {
+      // Fallback to local time if Intl/timeZone not available
+      const y = d.getFullYear();
+      const M = d.getMonth() + 1;
+      const D = d.getDate();
+      const h = d.getHours();
+      const m = d.getMinutes();
+      const s = d.getSeconds();
+      return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+    }
   };
   const computeEtaMillis = (entry) => {
     try {
@@ -155,11 +179,10 @@ function MainApp() {
       const base = parseTs(entry.timestamp);
       if (m && base) {
         const [hh, mm] = eta.split(':').map(Number);
+        // Compute ETA in the same zone as message timestamp by using the base Date instance
         const dt = new Date(base.getTime());
         dt.setHours(hh, mm, 0, 0);
-        if (dt.getTime() <= base.getTime()) {
-          dt.setDate(dt.getDate() + 1); // next day if not in future
-        }
+        if (dt.getTime() <= base.getTime()) dt.setDate(dt.getDate() + 1);
         return dt.getTime();
       }
     } catch {}

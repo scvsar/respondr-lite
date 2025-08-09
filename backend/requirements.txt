@@ -16,3 +16,4 @@ pytest-asyncio
 httpx
 pytest-cov
 kubernetes>=29.0.0
+tzdata>=2024.1

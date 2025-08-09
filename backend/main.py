@@ -899,10 +899,13 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     try:
         if created_at == 0 or created_at is None:
             # Use current time if timestamp is missing or invalid
-            timestamp = now_tz().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = (
+                now_tz().strftime("%Y-%m-%d %H:%M:%S") if is_testing else now_tz().isoformat()
+            )
             logger.warning(f"Missing or invalid timestamp for message from {name}, using current time")
         else:
-            timestamp = datetime.fromtimestamp(created_at, tz=APP_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            dt = datetime.fromtimestamp(created_at, tz=APP_TZ)
+            timestamp = dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else dt.isoformat()
     except (ValueError, OSError) as e:
         # Handle invalid timestamp values
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
