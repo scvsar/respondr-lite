@@ -56,15 +56,16 @@ try {
     $hasClientId = $null -ne $secrets.data.'client-id'
     $hasClientSecret = $null -ne $secrets.data.'client-secret'
     $hasCookieSecret = $null -ne $secrets.data.'cookie-secret'
-    $hasTenantId = $null -ne $secrets.data.'tenant-id'
+    # tenant-id is not required in multi-tenant mode
+    $hasTenantId = $false
     
     Test-Check "OAuth2 secrets exist" $true
     Test-Check "Client ID configured" $hasClientId
     Test-Check "Client Secret configured" $hasClientSecret
     Test-Check "Cookie Secret configured" $hasCookieSecret
-    Test-Check "Tenant ID configured" $hasTenantId
+    Test-Check "Tenant ID configured (single-tenant only)" $hasTenantId "Not required for multi-tenant"
     
-    $allSecretsPresent = $hasClientId -and $hasClientSecret -and $hasCookieSecret -and $hasTenantId
+    $allSecretsPresent = $hasClientId -and $hasClientSecret -and $hasCookieSecret
     Test-Check "All required secrets present" $allSecretsPresent
 } catch {
     Test-Check "OAuth2 secrets exist" $false "Secret 'oauth2-secrets' not found"

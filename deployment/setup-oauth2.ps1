@@ -37,16 +37,16 @@ if ($existingApp) {
     Write-Host "Found existing app registration: $($existingApp.displayName)" -ForegroundColor Green
     $appId = $existingApp.appId
     
-    # Update redirect URI
-    Write-Host "Updating redirect URI..." -ForegroundColor Yellow
-    az ad app update --id $appId --web-redirect-uris $redirectUri 2>$null
+    # Update to multi-tenant and redirect URI
+    Write-Host "Updating app to multi-tenant and refreshing redirect URI..." -ForegroundColor Yellow
+    az ad app update --id $appId --sign-in-audience "AzureADMultipleOrgs" --web-redirect-uris $redirectUri 2>$null
 } else {
     # Create new app registration
     Write-Host "Creating new Azure AD app registration..." -ForegroundColor Yellow
     $app = az ad app create `
         --display-name $AppName `
         --web-redirect-uris $redirectUri `
-        --sign-in-audience "AzureADMyOrg" `
+        --sign-in-audience "AzureADMultipleOrgs" `
         -o json | ConvertFrom-Json
     
     if (-not $app) {
@@ -88,7 +88,6 @@ data:
   client-id: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($appId)))
   client-secret: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($clientSecret)))
   cookie-secret: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookieSecret)))
-  tenant-id: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($tenantId)))
 "@
 
 $secretYaml | kubectl apply -f -
@@ -127,7 +126,7 @@ Write-Host "✅ OAuth2 Proxy setup (app registration + secrets) completed succes
 Write-Host ""
 Write-Host "Configuration Summary:" -ForegroundColor Yellow
 Write-Host "  App Registration: $AppName ($appId)" -ForegroundColor Cyan
-Write-Host "  Tenant ID: $tenantId" -ForegroundColor Cyan
+Write-Host "  Sign-in audience: AzureADMultipleOrgs (multi-tenant)" -ForegroundColor Cyan
 Write-Host "  Redirect URI: $redirectUri" -ForegroundColor Cyan
 Write-Host "  Hostname: $hostname" -ForegroundColor Cyan
 Write-Host "  Image: $imageUri" -ForegroundColor Cyan

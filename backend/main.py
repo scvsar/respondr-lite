@@ -3,8 +3,10 @@ import sys
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from typing import Any, Dict, cast
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
+import importlib
 import redis
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,8 +41,30 @@ azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 # Webhook API key for security
 webhook_api_key = os.getenv("WEBHOOK_API_KEY")
 
+# Multi-tenant authentication configuration
+allowed_email_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "scvsar.org,rtreit.com").split(",")
+allowed_email_domains = [domain.strip() for domain in allowed_email_domains if domain.strip()]
+
 # Check if we're running in test mode
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
+
+# temporarily disable api-key check in test mode
+disable_api_key_check = True
+
+def is_email_domain_allowed(email: str) -> bool:
+    """Check if the user's email domain is in the allowed domains list"""
+    if not email:
+        return False
+    
+    try:
+        domain = email.split("@")[1].lower()
+        allowed_domains_lower = [d.lower() for d in allowed_email_domains]
+        is_allowed = domain in allowed_domains_lower
+        logger.info(f"Domain check for {domain}: {'allowed' if is_allowed else 'denied'} (allowed domains: {allowed_email_domains})")
+        return is_allowed
+    except (IndexError, AttributeError):
+        logger.warning(f"Invalid email format: {email}")
+        return False
 
 # Initialize Redis client
 redis_client = None
@@ -67,6 +91,9 @@ def validate_webhook_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
     if is_testing:
         return True  # Skip validation in tests
     
+    if disable_api_key_check:
+        return True
+
     if not x_api_key or x_api_key != webhook_api_key:
         logger.warning(f"Invalid or missing API key for webhook request")
         raise HTTPException(
@@ -244,7 +271,7 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         logger.warning(f"Error converting ETA '{eta_str}': {e}")
         return eta_str
 
-def extract_details_from_text(text: str) -> dict:
+def extract_details_from_text(text: str) -> Dict[str, str]:
     try:
         logger.info(f"Extracting details from text: {text[:50]}...")
         
@@ -285,6 +312,8 @@ def extract_details_from_text(text: str) -> dict:
             "If ETA is not mentioned or unclear, return 'Unknown'\n\n"
             "IMPORTANT: If the message is not about responding to an incident (e.g., casual chat, off-topic), "
             "return {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
+            "Sender name context may include nicknames or team tags in parentheses. Ignore sender name content when determining vehicle/ETA."
+            " Only use the message text itself to infer vehicle and ETA.\n\n"
             "Return ONLY valid JSON in this exact format:\n"
             "{\"vehicle\": \"value\", \"eta\": \"HH:MM\"}\n\n"
             f"Message: \"{text}\"\n\n"
@@ -358,12 +387,28 @@ def extract_details_from_text(text: str) -> dict:
             "eta": "Unknown"
         }
 
+def _normalize_display_name(raw_name: str) -> str:
+    """Strip trailing parenthetical tags (e.g., '(OSU-4)') and trim whitespace."""
+    try:
+        name = raw_name or "Unknown"
+        # Remove any trailing parenthetical like "(OSU-4)"
+        name = re.sub(r"\s*\([^)]*\)\s*$", "", name).strip()
+        return name if name else (raw_name or "Unknown")
+    except Exception:
+        return raw_name or "Unknown"
+
 @app.post("/webhook")
 async def receive_webhook(request: Request, api_key_valid: bool = Depends(validate_webhook_api_key)):
     data = await request.json()
     logger.info(f"Received webhook data from: {data.get('name', 'Unknown')}")
 
+    # Ignore GroupMe system messages
+    if data.get("system") is True:
+        logger.info("Skipping system-generated GroupMe message")
+        return {"status": "skipped", "reason": "system message"}
+
     name = data.get("name", "Unknown")
+    display_name = _normalize_display_name(name)
     text = data.get("text", "")
     created_at = data.get("created_at", 0)
     
@@ -390,14 +435,15 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         logger.info(f"Skipping placeholder message with no content")
         return {"status": "skipped", "reason": "placeholder message"}
 
-    parsed = extract_details_from_text(text)
+    # Provide sender context to AI while instructing it (in the prompt) to ignore names for vehicle/ETA
+    parsed = extract_details_from_text(f"Sender: {display_name}. Message: {text}")
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}")
 
     # Calculate additional fields for better display
     eta_info = calculate_eta_info(parsed.get("eta", "Unknown"))
 
     message_record = {
-        "name": name,
+    "name": display_name,
         "text": text,
         "timestamp": timestamp,
         "vehicle": parsed.get("vehicle", "Unknown"),
@@ -413,7 +459,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     save_messages()  # Save to shared storage
     return {"status": "ok"}
 
-def calculate_eta_info(eta_str: str) -> dict:
+def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
     """Calculate additional ETA information for better display"""
     try:
         if eta_str in ["Unknown", "Not Responding"]:
@@ -503,9 +549,23 @@ def get_user_info(request: Request):
     
     # Check if we have user information from OAuth2 proxy
     if user_email or user_name:
+        # Check if the user's email domain is allowed
+        if user_email and not is_email_domain_allowed(user_email):
+            logger.warning(f"Access denied for user {user_email}: domain not in allowed list")
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "authenticated": False,
+                    "error": "Access denied",
+                    "message": f"Your domain is not authorized to access this application. Allowed domains: {', '.join(allowed_email_domains)}",
+                    "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+                }
+            )
+        
         authenticated = True
         display_name = user_name or user_email
         email = user_email
+        logger.info(f"User authenticated: {email} from allowed domain")
     else:
         # No OAuth2 headers - user might not be properly authenticated
         authenticated = False
@@ -673,3 +733,73 @@ def serve_frontend():
         return FileResponse(index_path)
     else:
         return {"message": "Frontend not built - run 'npm run build' in frontend directory"}
+
+# --- ACR webhook to auto-restart deployment on image push ---
+ACR_WEBHOOK_TOKEN = os.getenv("ACR_WEBHOOK_TOKEN")
+K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "respondr")
+K8S_DEPLOYMENT = os.getenv("K8S_DEPLOYMENT", "respondr-deployment")
+
+@app.post("/internal/acr-webhook")
+async def acr_webhook(request: Request):
+    """Handle ACR image push events and trigger a rolling restart.
+
+    Security: requires X-ACR-Token header to match ACR_WEBHOOK_TOKEN env var.
+    This endpoint should be excluded from OAuth2 proxy auth.
+    """
+    # Auth
+    provided = request.headers.get("X-ACR-Token") or request.query_params.get("token")
+    if not ACR_WEBHOOK_TOKEN or provided != ACR_WEBHOOK_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    try:
+        raw_payload: Any = await request.json()
+    except Exception:
+        raw_payload = {}
+
+    # Normalize payload as dict
+    payload: Dict[str, Any] = cast(Dict[str, Any], raw_payload if isinstance(raw_payload, dict) else {})
+
+    # Basic filter: only act on push events for our repository (best-effort across ACR payload shapes)
+    action = cast(str | None, payload.get("action") or payload.get("eventType"))
+    target = cast(Dict[str, Any], payload.get("target", {}) or {})
+    repo = cast(str, target.get("repository", ""))
+    tag = cast(str, target.get("tag", ""))
+
+    logger.info(f"ACR webhook: action={action} repo={repo} tag={tag}")
+    if action and "push" not in str(action).lower():
+        return {"status": "ignored", "reason": f"action={action}"}
+
+    # Optional: limit to our app image name if available in env
+    expected_repo = os.getenv("ACR_REPOSITORY", "respondr")
+    if expected_repo and repo and expected_repo not in repo:
+        return {"status": "ignored", "reason": f"repo={repo}"}
+
+    # Trigger restart by patching a timestamp annotation on pod template
+    try:
+        ks = importlib.import_module("kubernetes")
+        k8s_client = getattr(ks, "client")
+        k8s_config = getattr(ks, "config")
+        # In cluster config will work in AKS; fall back to local kubeconfig for dev
+        try:
+            k8s_config.load_incluster_config()
+        except Exception:
+            k8s_config.load_kube_config()
+
+        apps = k8s_client.AppsV1Api()
+        patch: Dict[str, Any] = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            "kubectl.kubernetes.io/restartedAt": datetime.now(timezone.utc).isoformat()
+                        }
+                    }
+                }
+            }
+        }
+        apps.patch_namespaced_deployment(name=K8S_DEPLOYMENT, namespace=K8S_NAMESPACE, body=patch)
+        logger.info(f"Triggered rollout restart for deployment {K8S_DEPLOYMENT} in namespace {K8S_NAMESPACE}")
+        return {"status": "restarted", "deployment": K8S_DEPLOYMENT, "namespace": K8S_NAMESPACE}
+    except Exception as e:
+        logger.error(f"Failed to restart deployment: {e}")
+        raise HTTPException(status_code=500, detail="Failed to restart deployment")

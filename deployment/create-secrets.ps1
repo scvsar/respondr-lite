@@ -164,8 +164,9 @@ try {
     # Read the template content
     $secretsContent = Get-Content -Path $secretsPath -Raw
     
-    # Generate a secure webhook API key (64-character hex string)
+    # Generate secure tokens (64-character hex strings)
     $webhookApiKey = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    $acrWebhookToken = -join ((1..64) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
     
     # Replace placeholders with actual values
     $secretsContent = $secretsContent -replace 'YOUR_AZURE_OPENAI_API_KEY_HERE', $openAIKey
@@ -173,6 +174,9 @@ try {
     $secretsContent = $secretsContent -replace 'YOUR_DEPLOYMENT_NAME_HERE', $actualDeploymentName
     $secretsContent = $secretsContent -replace 'YOUR_API_VERSION_HERE', $ApiVersion
     $secretsContent = $secretsContent -replace 'YOUR_WEBHOOK_API_KEY_HERE', $webhookApiKey
+    # Insert ACR webhook token
+    $secretsContent = $secretsContent -replace 'YOUR_SECURE_RANDOM_TOKEN_HERE', $acrWebhookToken
+
     # Namespace placeholder (optional, backward compatible if absent)
     if ($secretsContent -match '\{\{NAMESPACE_PLACEHOLDER\}\}') {
         $secretsContent = $secretsContent -replace '\{\{NAMESPACE_PLACEHOLDER\}\}', $Namespace
@@ -203,6 +207,7 @@ Write-Host "  Azure OpenAI API Key: $keyStatus" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI Deployment: $actualDeploymentName ($deploymentStatus)" -ForegroundColor Cyan
 Write-Host "  Azure OpenAI API Version: $ApiVersion" -ForegroundColor Cyan
 Write-Host "  Webhook API Key: $webhookKeyStatus" -ForegroundColor Cyan
+Write-Host "  ACR Webhook Token: Generated (64-char hex)" -ForegroundColor Cyan
 
 # Validate the secrets.yaml file was created with the correct format
 if (Test-Path $secretsPath) {
