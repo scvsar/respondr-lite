@@ -32,6 +32,9 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_KEY = "respondr_messages"
 
+# Fast local parse mode (bypass Azure for local/dev seeding)
+FAST_LOCAL_PARSE = os.getenv("FAST_LOCAL_PARSE", "false").lower() == "true"
+
 # Validate environment variables
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
 azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
@@ -69,7 +72,8 @@ def is_email_domain_allowed(email: str) -> bool:
 # Initialize Redis client
 redis_client = None
 
-if not is_testing and (not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment):
+# Only require Azure configuration if not in fast local parse mode
+if not is_testing and not FAST_LOCAL_PARSE and (not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment):
     logger.error("Missing required Azure OpenAI configuration")
     raise ValueError("AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in the .env file")
 elif is_testing:
@@ -206,16 +210,31 @@ def reload_messages():
     """Reload messages from Redis to get latest data"""
     load_messages()
 
+def _clear_all_messages():
+    """Clear all stored messages from memory and Redis."""
+    global messages
+    messages = []
+    # Persist the empty list to Redis
+    try:
+        if not is_testing:
+            init_redis()
+            if redis_client:
+                redis_client.delete(REDIS_KEY)
+    except Exception as e:
+        logger.warning(f"Failed clearing Redis key {REDIS_KEY}: {e}")
+
 # Load messages on startup
 load_messages()
 
 # Initialize the Azure OpenAI client with credentials from .env
-logger.info("Initializing Azure OpenAI client")
-client = AzureOpenAI(
-    api_key=azure_openai_api_key,
-    azure_endpoint=azure_openai_endpoint,
-    api_version=azure_openai_api_version,
-)
+client = None
+if not FAST_LOCAL_PARSE:
+    logger.info("Initializing Azure OpenAI client")
+    client = AzureOpenAI(
+        api_key=azure_openai_api_key,
+        azure_endpoint=azure_openai_endpoint,
+        api_version=azure_openai_api_version,
+    )
 
 def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
     """Convert ETA string to HH:MM format, handling duration calculations"""
@@ -274,12 +293,50 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
 def extract_details_from_text(text: str) -> Dict[str, str]:
     try:
         logger.info(f"Extracting details from text: {text[:50]}...")
-        
+
+        # Fast-path: lightweight heuristic parser for local/dev seeding
+        if FAST_LOCAL_PARSE:
+            tl = text.lower()
+            # Not responding / off-topic signals
+            if any(k in tl for k in ["can't make it", "cannot make it", "not coming", "won't make", "family emergency", "off topic", "weather up there", "just checking"]):
+                return {"vehicle": "Not Responding", "eta": "Not Responding"}
+
+            # Vehicle detection
+            vehicle = "Unknown"
+            m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
+            if m:
+                vehicle = f"SAR-{m.group(1)}"
+            elif any(k in tl for k in ["pov", "personal vehicle", "own car", "driving myself", "my car"]):
+                vehicle = "POV"
+            elif "sar rig" in tl:
+                vehicle = "SAR Rig"
+
+            # ETA detection (duration or explicit time)
+            eta = "Unknown"
+            # HH:MM (12h with am/pm or 24h)
+            m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
+            # durations
+            m_min = re.search(r"\b(\d{1,2})\s*(min|mins|minutes)\b", tl)
+            m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
+            half_hr = "half" in tl and ("hour" in tl or "hr" in tl)
+
+            current_time = datetime.now()
+            if m_time:
+                eta = convert_eta_to_timestamp(m_time.group(1), current_time)
+            elif m_min:
+                eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
+            elif m_hr:
+                eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
+            elif half_hr:
+                eta = convert_eta_to_timestamp("half hour", current_time)
+
+            return {"vehicle": vehicle, "eta": eta}
+
         # Get current time for ETA calculations
         current_time = datetime.now()
         current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S")
         current_time_short = current_time.strftime("%H:%M")
-        
+
         prompt = (
             "You are an expert at extracting responder information from SAR (Search and Rescue) messages.\n"
             "Extract vehicle assignment and ETA from the following message.\n\n"
@@ -321,7 +378,7 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
         )
 
         logger.info(f"Calling Azure OpenAI with deployment: {azure_openai_deployment}")
-        
+
         # Prepare the messages in the format expected by Azure OpenAI
         messages = [
             {
@@ -329,8 +386,10 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
                 "content": prompt
             }
         ]
-        
+
         # Call the Azure OpenAI API with the correct parameters
+        if client is None:
+            raise RuntimeError("Azure client not initialized")
         response = client.chat.completions.create(
             model=azure_openai_deployment,
             messages=messages,
@@ -343,49 +402,41 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
         )
 
         reply = response.choices[0].message.content
-        
+
         # Try to clean up the response if it has extra text
         reply = reply.strip()
-        
+
         # Look for JSON content in the response
         if reply.startswith('{') and reply.endswith('}'):
             parsed_json = json.loads(reply)
         else:
             # Try to extract JSON from response that might have extra text
-            import re
             json_match = re.search(r'\{[^}]+\}', reply)
             if json_match:
                 parsed_json = json.loads(json_match.group())
             else:
                 logger.warning(f"No valid JSON found in response: '{reply}'")
                 raise ValueError(f"Invalid response format: {reply}")
-        
-        
+
         # Validate the required fields exist
         if 'vehicle' not in parsed_json or 'eta' not in parsed_json:
             logger.warning(f"Missing required fields in response: {parsed_json}")
             raise ValueError(f"Missing required fields: {parsed_json}")
-        
+
         # Post-process ETA to ensure it's in HH:MM format
         eta_value = parsed_json['eta']
         if eta_value not in ["Unknown", "Not Responding"]:
             eta_value = convert_eta_to_timestamp(eta_value, current_time)
             parsed_json['eta'] = eta_value
-            
+
         return parsed_json
 
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error with response '{reply}': {e}")
-        return {
-            "vehicle": "Unknown",
-            "eta": "Unknown"
-        }
+        return {"vehicle": "Unknown", "eta": "Unknown"}
     except Exception as e:
         logger.error(f"Azure OpenAI extraction error: {e}", exc_info=True)
-        return {
-            "vehicle": "Unknown",
-            "eta": "Unknown"
-        }
+        return {"vehicle": "Unknown", "eta": "Unknown"}
 
 def _normalize_display_name(raw_name: str) -> str:
     """Strip trailing parenthetical tags (e.g., '(OSU-4)') and trim whitespace."""
@@ -515,6 +566,26 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
 def get_responder_data():
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
+
+@app.post("/api/clear-all")
+def clear_all_data(request: Request):
+    """Clear all responder data. Protected by env gate or API key.
+
+    Allowed if one of the following is true:
+    - Environment variable ALLOW_CLEAR_ALL == "true" (case-insensitive)
+    - Header X-API-Key matches WEBHOOK_API_KEY
+    """
+    allow_env = os.getenv("ALLOW_CLEAR_ALL", "false").lower() == "true"
+    provided_key = request.headers.get("X-API-Key")
+    key_ok = webhook_api_key and provided_key == webhook_api_key
+    if not (allow_env or key_ok):
+        raise HTTPException(status_code=403, detail="Clear-all is disabled")
+
+    # Reload first to get counts, then clear
+    reload_messages()
+    initial = len(messages)
+    _clear_all_messages()
+    return {"status": "cleared", "removed": initial}
 
 @app.get("/api/user")
 def get_user_info(request: Request):
