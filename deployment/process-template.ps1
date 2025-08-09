@@ -173,6 +173,10 @@ if ($useOAuth2) {
 
 # Write processed content
 try {
+    # Defensive fix: ensure probes use /health (avoid accidental /api/responders in generated files)
+    $processedContent = $processedContent -replace 'livenessProbe:(?s).*?httpGet:\s*\n\s*path:\s*/api/responders', 'livenessProbe:`n          httpGet:`n            path: /health'
+    $processedContent = $processedContent -replace 'readinessProbe:(?s).*?httpGet:\s*\n\s*path:\s*/api/responders', 'readinessProbe:`n          httpGet:`n            path: /health'
+
     $processedContent | Out-File -FilePath $OutputFile -Encoding UTF8 -NoNewline
     Write-Host "✅ Generated $OutputFile from template" -ForegroundColor Green
 } catch {
