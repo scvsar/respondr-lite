@@ -113,6 +113,17 @@ function MainApp() {
   // Derived helpers
   const initials = (user?.email || user?.name || 'U').split('@')[0].split('.').map(s=>s[0]).join('').slice(0,2).toUpperCase();
   const statusOf = (entry) => {
+    // Use arrival_status from backend if available, otherwise fall back to vehicle-based logic
+    if (entry.arrival_status) {
+      if (entry.arrival_status === 'Not Responding') return 'Not Responding';
+      if (entry.arrival_status === 'Unknown') return 'Unknown';
+      if (entry.arrival_status === 'On Route') return 'Responding';
+      if (entry.arrival_status === 'Arrived') return 'Responding';
+      if (entry.arrival_status === 'ETA Format Unknown') return 'Unknown';
+      if (entry.arrival_status === 'ETA Parse Error') return 'Unknown';
+    }
+    
+    // Fallback to vehicle-based logic for backward compatibility
     const v = (entry.vehicle || '').toLowerCase();
     if (v === 'not responding') return 'Not Responding';
     if (!v || v === 'unknown') return 'Unknown';
