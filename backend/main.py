@@ -3,7 +3,7 @@ import sys
 import json
 import logging
 import re
-from typing import Any, Dict, cast
+from typing import Any, Dict, Optional, cast
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -629,12 +629,16 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         logger.warning(f"Error converting ETA '{eta_str}': {e}")
         return "Unknown"
 
-def extract_details_from_text(text: str) -> Dict[str, str]:
-    """Extract vehicle and ETA from freeform text using Azure OpenAI with function calling.
+def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -> Dict[str, str]:
+    """Extract vehicle and ETA from freeform text.
+
+    If base_time is provided, use it as the anchor for duration-based ETA calculations
+    (e.g., "15 minutes", "1 hour"). Otherwise, fall back to the current app time.
 
     Returns a mapping like {"vehicle": "SAR-7|POV|Unknown|Not Responding", "eta": "HH:MM|Unknown|Not Responding"}
     """
     logger.info(f"Extracting details from text: {text[:50]}...")
+    anchor_time: datetime = base_time or now_tz()
 
     # Fast-path heuristics for local/dev
     if FAST_LOCAL_PARSE or client is None:
@@ -659,7 +663,8 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
         m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
         half_hr = "half" in tl and ("hour" in tl or "hr" in tl)
 
-        current_time = now_tz()
+        # Use the message's timestamp (if provided via base_time) to anchor duration math
+        current_time = anchor_time
         if m_time:
             eta = convert_eta_to_timestamp(m_time.group(1), current_time)
         elif m_min:
@@ -673,7 +678,7 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
 
     # Azure OpenAI with function calling
     try:
-        current_time = now_tz()
+        current_time = anchor_time
         current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
         current_time_short = current_time.strftime("%H:%M")
 
@@ -894,20 +899,23 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     display_name = _normalize_display_name(name)
     text = data.get("text", "")
     created_at = data.get("created_at", 0)
+    message_dt: datetime
     
     # Handle invalid or missing timestamps
     try:
         if created_at == 0 or created_at is None:
             # Use current time if timestamp is missing or invalid
+            message_dt = now_tz()
             timestamp = (
-                now_tz().strftime("%Y-%m-%d %H:%M:%S") if is_testing else now_tz().isoformat()
+                message_dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else message_dt.isoformat()
             )
             logger.warning(f"Missing or invalid timestamp for message from {name}, using current time")
         else:
-            dt = datetime.fromtimestamp(created_at, tz=APP_TZ)
-            timestamp = dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else dt.isoformat()
+            message_dt = datetime.fromtimestamp(created_at, tz=APP_TZ)
+            timestamp = message_dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else message_dt.isoformat()
     except (ValueError, OSError) as e:
         # Handle invalid timestamp values
+        message_dt = now_tz()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.warning(f"Invalid timestamp {created_at} for message from {name}: {e}, using current time")
 
@@ -922,7 +930,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         return {"status": "skipped", "reason": "placeholder message"}
 
     # Provide sender context to AI while instructing it (in the prompt) to ignore names for vehicle/ETA
-    parsed = extract_details_from_text(f"Sender: {display_name}. Message: {text}")
+    parsed = extract_details_from_text(f"Sender: {display_name}. Message: {text}", base_time=message_dt)
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}")
 
     # Calculate additional fields for better display
