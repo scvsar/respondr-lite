@@ -64,8 +64,23 @@ def test_webhook_endpoint(mock_openai_response):
     # Use a test messages list
     test_messages = []
     
+    # Mock the response to not use function calling for this test
+    mock_openai_response.choices = [
+        MagicMock(
+            message=MagicMock(
+                content='{"vehicle": "SAR-78", "eta": "15:45"}',
+                function_call=None  # No function calling
+            )
+        )
+    ]
+    
+    # Create a mock client that we can patch
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_openai_response
+    
     with patch('main.messages', test_messages), \
-         patch('main.client.chat.completions.create', return_value=mock_openai_response):
+         patch('main.client', mock_client), \
+         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
         
         webhook_data = {
             "name": "Test User",
@@ -90,22 +105,27 @@ def test_webhook_endpoint(mock_openai_response):
 
         # If we found the test user's message, verify its contents
         if test_user_message:
-            assert test_user_message["vehicle"] == "SAR78"
+            assert test_user_message["vehicle"] == "SAR-78"
             assert re.match(r"\d{2}:\d{2}", test_user_message["eta"])
             assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])
 
 def test_extract_details_with_vehicle_and_eta():
     """Test extracting details with both vehicle and ETA present"""
-    with patch('main.client.chat.completions.create') as mock_create:
-        mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(
-                message=MagicMock(
-                    content='{"vehicle": "SAR78", "eta": "15 minutes"}'
-                )
+    # Create a mock client
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.choices = [
+        MagicMock(
+            message=MagicMock(
+                content='{"vehicle": "SAR78", "eta": "15:30"}',  # Use valid time format
+                function_call=None  # No function call in this test
             )
-        ]
-        mock_create.return_value = mock_response
+        )
+    ]
+    mock_client.chat.completions.create.return_value = mock_response
+    
+    with patch('main.client', mock_client), \
+         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
         
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
         assert result["vehicle"] == "SAR78"
@@ -113,23 +133,34 @@ def test_extract_details_with_vehicle_and_eta():
 
 def test_extract_details_with_pov():
     """Test extracting details with POV vehicle"""
-    with patch('main.client.chat.completions.create') as mock_create:
-        mock_response = MagicMock()
-        mock_response.choices = [
-            MagicMock(
-                message=MagicMock(
-                    content='{"vehicle": "POV", "eta": "23:30"}'
-                )
+    # Create a mock client
+    mock_client = MagicMock()
+    mock_response = MagicMock()
+    mock_response.choices = [
+        MagicMock(
+            message=MagicMock(
+                content='{"vehicle": "POV", "eta": "23:30"}',
+                function_call=None  # No function call in this test
             )
-        ]
-        mock_create.return_value = mock_response
+        )
+    ]
+    mock_client.chat.completions.create.return_value = mock_response
+    
+    with patch('main.client', mock_client), \
+         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
         
         result = extract_details_from_text("Taking my personal vehicle, ETA 23:30")
         assert result == {"vehicle": "POV", "eta": "23:30"}
 
 def test_extract_details_with_api_error():
     """Test error handling when API call fails"""
-    with patch('main.client.chat.completions.create', side_effect=Exception("API Error")):
+    # Create a mock client that raises an exception
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = Exception("API Error")
+    
+    with patch('main.client', mock_client), \
+         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
+        
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
         assert result == {"vehicle": "Unknown", "eta": "Unknown"}
 
@@ -172,9 +203,9 @@ def test_static_files():
 
 def test_user_info():
     """Test the /api/user endpoint with OAuth2 headers"""
-    # Test with OAuth2 Proxy headers
+    # Test with OAuth2 Proxy headers - use allowed domain
     headers = {
-        "X-User": "test@example.com",
+        "X-User": "test@scvsar.org",
         "X-Preferred-Username": "Test User",
         "X-User-Groups": "group1, group2, group3"
     }
@@ -184,7 +215,7 @@ def test_user_info():
     
     data = response.json()
     assert data["authenticated"] == True
-    assert data["email"] == "test@example.com"
+    assert data["email"] == "test@scvsar.org"
     assert data["name"] == "Test User"
     assert data["groups"] == ["group1", "group2", "group3"]
     assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"
@@ -192,7 +223,7 @@ def test_user_info():
 def test_user_info_minimal_headers():
     """Test the /api/user endpoint with minimal OAuth2 headers"""
     headers = {
-        "X-User": "minimal@example.com"
+        "X-User": "minimal@rtreit.com"  # Use allowed domain
     }
     
     response = client.get("/api/user", headers=headers)
@@ -200,8 +231,8 @@ def test_user_info_minimal_headers():
     
     data = response.json()
     assert data["authenticated"] == True
-    assert data["email"] == "minimal@example.com"
-    assert data["name"] == "minimal@example.com"  # Should fallback to email
+    assert data["email"] == "minimal@rtreit.com"
+    assert data["name"] == "minimal@rtreit.com"  # Should fallback to email
     assert data["groups"] == []
     assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"
 
@@ -219,9 +250,9 @@ def test_user_info_no_headers():
 
 def test_user_info_oauth2_proxy_headers():
     """Test the /api/user endpoint with OAuth2 Proxy standard headers"""
-    # Test with OAuth2 Proxy standard headers (X-Auth-Request-*)
+    # Test with OAuth2 Proxy standard headers (X-Auth-Request-*) - use allowed domain
     headers = {
-        "X-Auth-Request-Email": "oauth2@example.com",
+        "X-Auth-Request-Email": "oauth2@scvsar.org",
         "X-Auth-Request-Preferred-Username": "OAuth2 User",
         "X-Auth-Request-Groups": "admin, users, testers"
     }
@@ -231,7 +262,7 @@ def test_user_info_oauth2_proxy_headers():
     
     data = response.json()
     assert data["authenticated"] == True
-    assert data["email"] == "oauth2@example.com"
+    assert data["email"] == "oauth2@scvsar.org"
     assert data["name"] == "OAuth2 User"
     assert data["groups"] == ["admin", "users", "testers"]
     assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"

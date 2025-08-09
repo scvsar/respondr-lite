@@ -23,7 +23,10 @@ import json
 import time
 import argparse
 import os
+import uuid
+from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
+from openai import AzureOpenAI
 
 # Try to load from environment variables or .env file
 try:
@@ -46,6 +49,11 @@ except ImportError:
 
 # Get webhook API key from environment
 WEBHOOK_API_KEY = os.getenv('WEBHOOK_API_KEY')
+# Azure OpenAI settings (optional for dynamic generation)
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
 
 if not WEBHOOK_API_KEY:
     print("⚠️  WARNING: WEBHOOK_API_KEY not found in environment variables!")
@@ -53,147 +61,149 @@ if not WEBHOOK_API_KEY:
     print("1. Run the create-secrets.ps1 script to generate .env file")
     print("2. Or set WEBHOOK_API_KEY environment variable")
     print("3. Or install python-dotenv: pip install python-dotenv")
-    exit(1)
+    # Not exiting to allow local dev without auth; webhook may skip auth in test mode.
 
-def get_webhook_url(production=False):
+def get_webhook_url(production: bool = False) -> str:
     """Get the appropriate webhook URL based on environment"""
     if production:
-        return "https://respondr.paincave.pro/webhook"
+        return "https://respondr.rtreit.com/webhook"
     else:
         return "http://localhost:8000/webhook"
 
-def get_api_url(production=False):
+def get_api_url(production: bool = False) -> str:
     """Get the appropriate API URL based on environment"""
     if production:
-        return "https://respondr.paincave.pro/api/responders"
+        return "https://respondr.rtreit.com/api/responders"
     else:
         return "http://localhost:8000/api/responders"
 
-# Synthetic test data simulating GroupMe messages from SAR responders
-# Including both valid responses and edge cases with realistic timing
-test_messages = [
-    # Valid standard responses - immediate timeframe
-    {
-        "name": "John Smith",
-        "text": "I'm responding with SAR78, ETA 15 minutes",
-        "created_at": int((datetime.now() - timedelta(minutes=2)).timestamp()),
-        "expected": "Valid SAR response - should show 15 min ETA"
-    },
-    {
-        "name": "Sarah Johnson", 
-        "text": "Taking my POV, should be there by 23:30",
-        "created_at": int((datetime.now() - timedelta(minutes=3)).timestamp()),
-        "expected": "Valid POV response - should convert to 23:30"
-    },
-    {
-        "name": "Mike Rodriguez",
-        "text": "I'll take SAR-4, ETA 20 mins",
-        "created_at": int((datetime.now() - timedelta(minutes=1)).timestamp()),
-        "expected": "Valid SAR response - should show 20 min ETA"
-    },
-    
-    # Different ETA formats to test time conversion
-    {
-        "name": "Lisa Chen",
-        "text": "Responding in my personal vehicle, about 25 minutes out",
-        "created_at": int((datetime.now() - timedelta(minutes=5)).timestamp()),
-        "expected": "POV with duration - should calculate arrival time"
-    },
-    {
-        "name": "David Wilson",
-        "text": "Taking SAR rig, will be there in half an hour",
-        "created_at": int((datetime.now() - timedelta(minutes=10)).timestamp()),
-        "expected": "SAR vehicle with 30 min duration"
-    },
-    {
-        "name": "Amanda Taylor",
-        "text": "Got SAR12, arriving at 22:45",
-        "created_at": int((datetime.now() - timedelta(minutes=8)).timestamp()),
-        "expected": "SAR vehicle with specific time"
-    },
-    
-    # Edge cases - unclear or partial information
-    {
-        "name": "Robert Brown",
-        "text": "I'm responding but not sure what vehicle yet, ETA unknown",
-        "created_at": int((datetime.now() - timedelta(minutes=7)).timestamp()),
-        "expected": "Vehicle unknown, ETA unknown"
-    },
-    {
-        "name": "Jennifer Davis",
-        "text": "Taking SAR-7, ETA depends on traffic",
-        "created_at": int((datetime.now() - timedelta(minutes=6)).timestamp()),
-        "expected": "Vehicle clear, ETA unclear"
-    },
-    {
-        "name": "Chris Martinez",
-        "text": "Will be there soon",
-        "created_at": int((datetime.now() - timedelta(minutes=4)).timestamp()),
-        "expected": "Both vehicle and ETA vague"
-    },
-    
-    # Non-conforming data - not actually responding
-    {
-        "name": "Grace Lee",
-        "text": "Hey everyone, just checking in. How's the weather up there?",
-        "created_at": int((datetime.now() - timedelta(minutes=12)).timestamp()),
-        "expected": "Casual chat, not responding"
-    },
-    {
-        "name": "Tom Wilson",
-        "text": "I can't make it tonight, family emergency",
-        "created_at": int((datetime.now() - timedelta(minutes=15)).timestamp()),
-        "expected": "Not responding"
-    },
-    {
-        "name": "Alex Chen",
-        "text": "Does anyone have the coordinates for the LKP?",
-        "created_at": int((datetime.now() - timedelta(minutes=9)).timestamp()),
-        "expected": "Question, not response"
-    },
-    
-    # Malformed or strange input
-    {
-        "name": "Emily Anderson",
-        "text": "",
-        "created_at": int((datetime.now() - timedelta(minutes=11)).timestamp()),
-        "expected": "Empty message"
-    },
-    {
-        "name": "Test User",
-        "text": "🚗🕐💨",
-        "created_at": int(datetime.now().timestamp()),
-        "expected": "Emoji only"
-    },
-    {
-        "name": "Mark Johnson",
-        "text": "SAR SAR SAR ETA ETA vehicle vehicle 30 45 POV SAR12",
-        "created_at": int((datetime.now() - timedelta(minutes=13)).timestamp()),
-        "expected": "Confusing repeated keywords"
-    },
-    
-    # Valid but unusual formats - test time parsing
-    {
-        "name": "Kelly Roberts",
-        "text": "Driving my personal vehicle, approximately 1 hour until arrival",
-        "created_at": int((datetime.now() - timedelta(minutes=14)).timestamp()),
-        "expected": "Verbose POV response with 1 hour duration"
-    },
-    {
-        "name": "Steve Miller",
-        "text": "Got the big rig (SAR-7), will be there at 11:45 PM",
-        "created_at": int((datetime.now() - timedelta(minutes=16)).timestamp()),
-        "expected": "SAR vehicle with 12-hour time format"
-    },
-    {
-        "name": "Nina Patel",
-        "text": "responding ETA 5min POV",
-        "created_at": int((datetime.now() - timedelta(seconds=30)).timestamp()),
-        "expected": "Terse but valid response - arriving very soon"
-    }
-]
+def _default_seed_messages() -> List[Dict[str, Any]]:
+    """Fallback static examples if AI generation is unavailable."""
+    now = datetime.now()
+    seeds = [
+        {"name": "John Smith", "text": "I'm responding with SAR78, ETA 15 minutes"},
+        {"name": "Sarah Johnson", "text": "Taking my POV, should be there by 23:30"},
+        {"name": "Mike Rodriguez", "text": "I'll take SAR-4, ETA 20 mins"},
+        {"name": "Lisa Chen", "text": "Responding in my personal vehicle, about 25 minutes out"},
+        {"name": "David Wilson", "text": "Taking SAR rig, will be there in half an hour"},
+        {"name": "Amanda Taylor", "text": "Got SAR12, arriving at 22:45"},
+        {"name": "Robert Brown", "text": "I'm responding but not sure what vehicle yet, ETA unknown"},
+        {"name": "Jennifer Davis", "text": "Taking SAR-7, ETA depends on traffic"},
+        {"name": "Chris Martinez", "text": "Will be there soon"},
+        {"name": "Grace Lee", "text": "Hey everyone, just checking in. How's the weather up there?"},
+        {"name": "Tom Wilson", "text": "I can't make it tonight, family emergency"},
+        {"name": "Alex Chen", "text": "Does anyone have the coordinates for the LKP?"},
+        {"name": "Emily Anderson", "text": ""},
+        {"name": "Test User", "text": "🚗🕐💨"},
+        {"name": "Nina Patel", "text": "responding ETA 5min POV"},
+    ]
+    # Attach rolling created_at values
+    out: List[Dict[str, Any]] = []
+    for i, s in enumerate(seeds):
+        out.append({
+            **s,
+            "created_at": int((now - timedelta(minutes=1 + i)).timestamp()),
+            "expected": "seed"
+        })
+    return out
 
-def send_webhook_message(message_data, production=False):
+def _init_azure_client() -> Optional[AzureOpenAI]:
+    if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT:
+        try:
+            return AzureOpenAI(
+                api_key=AZURE_OPENAI_API_KEY,
+                azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                api_version=AZURE_OPENAI_API_VERSION,
+            )
+        except Exception as e:
+            print(f"⚠️  Failed to init Azure OpenAI client: {e}")
+    else:
+        print("ℹ️  Azure OpenAI env vars not set; using fallback messages.")
+    return None
+
+def generate_test_messages_via_ai(count: int = 15) -> List[Dict[str, Any]]:
+    """Use Azure OpenAI to generate responder-like messages with names and texts."""
+    client = _init_azure_client()
+    if client is None:
+        return _default_seed_messages()
+
+    try:
+        prompt = (
+            f"Generate {count} realistic GroupMe-style SAR responder chat messages as a JSON array.\n"
+            "Each array item must be an object with EXACTLY these fields: \n"
+            "- name: a realistic human first and last name, e.g., 'Wilson Burkhart' (no digits, no codes like SAR/POV). You may optionally append a team tag in parentheses, e.g., '(OSU-4)'.\n"
+            "- text: the message text only (do NOT include the name). Include vehicle and ETA wording in natural variations, e.g., 'Responding with SAR78 ETA 15 minutes', 'Taking POV arriving at 23:30', 'Can't make it', 'On scene', or non-response chatter.\n"
+            "Include a mix of: clear SAR vehicle responses, POV responses, durations (5, 10, 20, 30 minutes, 1 hour, 'half hour'), absolute times (HH:MM or 12-hour), vague responses, empty/emoji, and off-topic messages.\n"
+            "Return ONLY the JSON array with objects like: [{\"name\": \"First Last(OSU-4)\", \"text\": \"...\"}, ...]"
+        )
+        if not AZURE_OPENAI_DEPLOYMENT:
+            raise RuntimeError("AZURE_OPENAI_DEPLOYMENT not set")
+        resp = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+            max_tokens=1200,
+        )
+        raw_content = resp.choices[0].message.content
+        content = (raw_content or "").strip()
+        # Extract JSON array
+        start = content.find('[')
+        end = content.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            raw = content[start:end+1]
+            items = json.loads(raw)
+        else:
+            items = json.loads(content)
+        # Attach created_at and expected flags
+        now = datetime.now()
+        out: List[Dict[str, Any]] = []
+        for i, it in enumerate(items[:count]):
+            name = it.get("name") or f"User {i+1}"
+            text = it.get("text") or ""
+            out.append({
+                "name": name,
+                "text": text,
+                "created_at": int((now - timedelta(minutes=i+1)).timestamp()),
+                "expected": "ai"
+            })
+        # If too few, pad with seeds
+        if len(out) < count:
+            out.extend(_default_seed_messages()[: count - len(out)])
+        return out
+    except Exception as e:
+        print(f"⚠️  AI generation failed, using fallback: {e}")
+        return _default_seed_messages()
+
+def to_groupme_payloads(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Wrap simple name/text items into GroupMe webhook payload shape."""
+    result: List[Dict[str, Any]] = []
+    for it in items:
+        guid = str(uuid.uuid4()).upper()
+        # Generate realistic numeric strings for IDs
+        group_id = str(100000000 + abs(hash("group")) % 900000000)  # stable 9-digit
+        now_ns = int(datetime.now().timestamp() * 1_000_000_000)
+        id_str = str(now_ns)[-18:]  # 18-digit-like
+        sender_id = str(30000000 + abs(hash(it.get('name', 'user'))) % 60000000)
+        user_id = sender_id
+        payload: Dict[str, Any] = {
+            "attachments": [],
+            "avatar_url": "https://i.groupme.com/1024x1024.jpeg.placeholder",
+            "created_at": it.get("created_at", int(datetime.now().timestamp())),
+            "group_id": group_id,
+            "id": id_str,
+            "name": it.get("name", "Responder One"),
+            "sender_id": sender_id,
+            "sender_type": "user",
+            "source_guid": guid,
+            "system": False,
+            "text": it.get("text", ""),
+            "user_id": user_id,
+            "expected": it.get("expected", "")
+        }
+        result.append(payload)
+    return result
+
+def send_webhook_message(message_data: Dict[str, Any], production: bool = False) -> bool:
     """Send a single webhook message to the API"""
     webhook_url = get_webhook_url(production)
     
@@ -227,14 +237,14 @@ def send_webhook_message(message_data, production=False):
         print(f"[ERROR] Error sending message from {message_data['name']}: {e}")
         return False
 
-def validate_api_responses(production=False):
+def validate_api_responses(production: bool = False) -> bool:
     """Fetch and analyze the API responses after sending test data"""
     api_url = get_api_url(production)
     
     if production:
         print("\n⚠️  Production API validation requires OAuth2 authentication")
         print("   Please manually verify in browser:")
-        print(f"   1. Visit: https://respondr.paincave.pro")
+        print(f"   1. Visit: https://respondr.rtreit.com")
         print("   2. Sign in with Azure AD credentials")
         print(f"   3. Check API: {api_url}")
         return True
@@ -246,16 +256,16 @@ def validate_api_responses(production=False):
             print(f"\nAnalysis of {len(responders)} processed messages:")
             
             # Categorize responses
-            valid_responses = []
-            not_responding = []
-            unknown_vehicle = []
-            unknown_eta = []
-            time_converted = []
+            valid_responses: List[str] = []
+            not_responding: List[str] = []
+            unknown_vehicle: List[str] = []
+            unknown_eta: List[str] = []
+            time_converted: List[str] = []
             
             for resp in responders:
                 vehicle = resp.get('vehicle', '').lower()
                 eta = resp.get('eta', '').lower()
-                minutes_out = resp.get('minutes_until_arrival')
+                # minutes_out not needed in this validation summary
                 
                 if vehicle == 'not responding':
                     not_responding.append(resp['name'])
@@ -297,7 +307,7 @@ def validate_api_responses(production=False):
         print(f"[ERROR] Error validating API responses: {e}")
         return False
 
-def test_webhook_endpoint(production=False):
+def test_webhook_endpoint(production: bool = False) -> None:
     """Send all test messages to the webhook endpoint"""
     webhook_url = get_webhook_url(production)
     mode = "Production" if production else "Local"
@@ -320,29 +330,33 @@ def test_webhook_endpoint(production=False):
         print("• Unusual but valid formats")
     
     print("="*60)
-    print(f"Sending {len(test_messages)} messages to {webhook_url}")
+    # Build messages dynamically via AI (with fallback)
+    base_items = generate_test_messages_via_ai(count=18)
+    groupme_payloads = to_groupme_payloads(base_items)
+    print(f"Sending {len(groupme_payloads)} messages to {webhook_url}")
     print("-" * 60)
     
     successful_sends = 0
     
-    for i, message in enumerate(test_messages, 1):
-        print(f"\n[{i:2d}/{len(test_messages)}] ", end="")
+    total = len(groupme_payloads)
+    for i, message in enumerate(groupme_payloads, 1):
+        print(f"\n[{i:2d}/{total}] ", end="")
         if send_webhook_message(message, production):
             successful_sends += 1
         # Small delay between messages to simulate real-world timing
         time.sleep(0.5 if production else 0.3)
     
     print("\n" + "="*60)
-    print(f"Test Results: {successful_sends}/{len(test_messages)} messages sent successfully")
+    print(f"Test Results: {successful_sends}/{len(groupme_payloads)} messages sent successfully")
     
-    if successful_sends == len(test_messages):
+    if successful_sends == len(groupme_payloads):
         print(f"\nAll messages sent successfully to {mode.lower()} endpoint!")
         
         if production:
             print("\nProduction Webhook Testing Complete!")
             print("   Webhook endpoint bypasses OAuth2 authentication")
             print("   Manual verification required for processed data:")
-            print("   1. Visit: https://respondr.paincave.pro")
+            print("   1. Visit: https://respondr.rtreit.com")
             print("   2. Sign in with Azure AD credentials")
             print("   3. Verify test messages appear in dashboard")
         else:
@@ -359,7 +373,7 @@ def test_webhook_endpoint(production=False):
         # Analyze the results
         validate_api_responses(production)
     else:
-        print(f"\nWarning: {len(test_messages) - successful_sends} messages failed to send.")
+        print(f"\nWarning: {len(groupme_payloads) - successful_sends} messages failed to send.")
         if production:
             print("Check production endpoint connectivity and OAuth2 configuration.")
         else:
@@ -372,7 +386,7 @@ def main():
     parser.add_argument(
         "--production", 
         action="store_true", 
-        help="Test production endpoint (https://respondr.paincave.pro)"
+        help="Test production endpoint (https://respondr.rtreit.com)"
     )
     
     args = parser.parse_args()
