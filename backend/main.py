@@ -242,30 +242,30 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         # If already in HH:MM format, return as-is
         if re.match(r'^\d{1,2}:\d{2}$', eta_str):
             return eta_str
-            
+
         # Convert to lowercase for easier matching
         eta_lower = eta_str.lower()
-        
+
         # Extract numbers from the string
         numbers = re.findall(r'\d+', eta_str)
-        
+
         # Handle duration patterns
         if any(word in eta_lower for word in ['min', 'minute']):
             if numbers:
                 minutes = int(numbers[0])
                 result_time = current_time + timedelta(minutes=minutes)
                 return result_time.strftime('%H:%M')
-        
+
         elif any(word in eta_lower for word in ['hour', 'hr']):
             if numbers:
                 hours = int(numbers[0])
                 result_time = current_time + timedelta(hours=hours)
                 return result_time.strftime('%H:%M')
-                
+
         elif 'half' in eta_lower and any(word in eta_lower for word in ['hour', 'hr']):
             result_time = current_time + timedelta(minutes=30)
             return result_time.strftime('%H:%M')
-            
+
         # Handle AM/PM formats
         elif any(period in eta_lower for period in ['am', 'pm']):
             # Extract time part
@@ -274,18 +274,18 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
                 hour = int(time_match.group(1))
                 minute = int(time_match.group(2))
                 period = time_match.group(3)
-                
+
                 if period == 'pm' and hour != 12:
                     hour += 12
                 elif period == 'am' and hour == 12:
                     hour = 0
-                    
+
                 return f"{hour:02d}:{minute:02d}"
-        
+
         # If we can't parse it, return the original
         logger.warning(f"Could not parse ETA: {eta_str}")
         return eta_str
-        
+
     except Exception as e:
         logger.warning(f"Error converting ETA '{eta_str}': {e}")
         return eta_str
@@ -320,6 +320,7 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
             m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
             half_hr = "half" in tl and ("hour" in tl or "hr" in tl)
 
+            # Use local time for consistency with server-side calculations
             current_time = datetime.now()
             if m_time:
                 eta = convert_eta_to_timestamp(m_time.group(1), current_time)
@@ -387,8 +388,8 @@ def extract_details_from_text(text: str) -> Dict[str, str]:
             }
         ]
 
-        # Call the Azure OpenAI API with the correct parameters
-        if client is None:
+    # Call the Azure OpenAI API with the correct parameters
+    if client is None:
             raise RuntimeError("Azure client not initialized")
         response = client.chat.completions.create(
             model=azure_openai_deployment,
@@ -524,25 +525,22 @@ def calculate_eta_info(eta_str: str) -> Dict[str, Any]:
         if ":" in eta_str and len(eta_str) == 5:  # HH:MM format
             current_time = datetime.now()
             eta_time = datetime.strptime(eta_str, "%H:%M")
-            
-            # Create full datetime for today
+            # Apply to today's date
             eta_datetime = current_time.replace(
-                hour=eta_time.hour, 
-                minute=eta_time.minute, 
-                second=0, 
+                hour=eta_time.hour,
+                minute=eta_time.minute,
+                second=0,
                 microsecond=0
             )
-            
-            # If ETA is earlier than current time, assume it's tomorrow
+            # If ETA is earlier/equal than current time, assume it's later today (or next day if needed)
             if eta_datetime <= current_time:
                 eta_datetime += timedelta(days=1)
-            
-            # Calculate minutes until arrival
             time_diff = eta_datetime - current_time
             minutes_until = int(time_diff.total_seconds() / 60)
             
             return {
-                "eta_timestamp": eta_datetime.strftime("%Y-%m-%d %H:%M:%S"),
+                # Return ISO-like string (local) for reliable JS parsing
+                "eta_timestamp": eta_datetime.strftime("%Y-%m-%dT%H:%M:%S"),
                 "minutes_until_arrival": minutes_until,
                 "status": "On Route" if minutes_until > 0 else "Arrived"
             }

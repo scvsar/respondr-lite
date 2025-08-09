@@ -154,15 +154,32 @@ function MainApp() {
   }, [lastUpdated, nowTick]);
   const etaDisplay = (e) => {
     if (!e) return 'Unknown';
+    // Prefer server-computed minutes to avoid client TZ drift
+    const hasServerMins = typeof e.minutes_until_arrival === 'number' && isFinite(e.minutes_until_arrival);
+    let hhmm = '';
     if (e.eta_timestamp) {
       const d = new Date(e.eta_timestamp);
-      const now = new Date();
-      const diff = Math.max(0, Math.round((d - now)/60000));
-      const hh = d.getHours().toString().padStart(2,'0');
-      const mm = d.getMinutes().toString().padStart(2,'0');
-      return `in ${diff}m / ${hh}:${mm}`;
+      if (!isNaN(d.getTime())) {
+        hhmm = `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+      }
     }
-    if (e.eta && /\d{1,2}:\d{2}/.test(e.eta)) return e.eta;
+    if (!hhmm && e.eta && /\d{1,2}:\d{2}/.test(e.eta)) {
+      hhmm = e.eta;
+    }
+    if (hasServerMins) {
+      return `in ${Math.max(0, Math.round(e.minutes_until_arrival))}m${hhmm ? ` / ${hhmm}` : ''}`;
+    }
+    // Fallback: compute on client when server mins missing
+    if (e.eta_timestamp) {
+      const d = new Date(e.eta_timestamp);
+      if (!isNaN(d.getTime())) {
+        const now = new Date();
+        const diff = Math.max(0, Math.round((d - now)/60000));
+        const hh = d.getHours().toString().padStart(2,'0');
+        const mm = d.getMinutes().toString().padStart(2,'0');
+        return `in ${diff}m / ${hh}:${mm}`;
+      }
+    }
     return e.eta || 'Unknown';
   };
 
