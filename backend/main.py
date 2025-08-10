@@ -384,14 +384,14 @@ def load_messages():
                 messages = json.loads(cast(str, data))
                 logger.info(f"Loaded {len(messages)} messages from Redis")
             else:
-                messages = []
-                logger.info("No existing messages in Redis, starting with empty list")
+                # No data stored yet in Redis; keep current in-memory list
+                logger.info("No existing messages in Redis; keeping current in-memory messages")
         else:
-            messages = []
-            logger.warning("Redis not available, using empty message list")
+            # Redis not available; keep current in-memory list for local dev
+            logger.warning("Redis not available, keeping in-memory messages")
     except Exception as e:
+        # On load errors, do not clear in-memory state; just log
         logger.error(f"Error loading messages from Redis: {e}")
-        messages = []
 
 def save_messages():
     """Save messages to Redis"""
@@ -409,8 +409,10 @@ def save_messages():
             redis_client.set(REDIS_KEY, data)
             logger.debug(f"Saved {len(messages)} messages to Redis")
         else:
-            logger.warning("Redis not available, cannot save messages")
+            # Keep working with in-memory state when Redis is unavailable
+            logger.warning("Redis not available; keeping messages only in memory")
     except Exception as e:
+        # Do not drop in-memory state on save error
         logger.error(f"Error saving messages to Redis: {e}")
 
 def reload_messages():
