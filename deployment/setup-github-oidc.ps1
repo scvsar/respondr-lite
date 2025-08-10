@@ -12,7 +12,10 @@ param(
     [string]$SubscriptionId,
 
     [Parameter(Mandatory = $false)]
-    [string]$AppDisplayName
+    [string]$AppDisplayName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$AcrName
 )
 
 Write-Host "🔧 Configuring GitHub OIDC + repo secrets for CI/CD..." -ForegroundColor Yellow
@@ -26,6 +29,27 @@ function Require-Tool {
 
 Require-Tool az
 Require-Tool gh
+
+# Ensure GitHub CLI is authenticated
+function Ensure-GhAuth {
+    gh auth status -h github.com 1>$null 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "GitHub CLI is not authenticated. Run 'gh auth login' or set GH_TOKEN, then re-run this script."
+    }
+}
+
+# Helper to set a repo secret with error handling
+function Set-RepoSecret {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value,
+        [Parameter(Mandatory = $true)][string]$Repo
+    )
+    gh secret set $Name -R $Repo -b $Value 1>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to set GitHub secret '$Name'. Ensure you have admin access to $Repo and that 'gh auth login' succeeded."
+    }
+}
 
 # Ensure we're in the deployment folder to find values.yaml if present
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -41,7 +65,7 @@ try {
 if (-not $SubscriptionId) { $SubscriptionId = $account.id }
 $TenantId = $account.tenantId
 
-# Resolve ACR details via values.yaml or Azure queries
+# Resolve ACR details via values.yaml, explicit parameter, or Azure queries
 $acrName = $null
 $acrLoginServer = $null
 if (Test-Path "values.yaml") {
@@ -49,14 +73,33 @@ if (Test-Path "values.yaml") {
     $acrName = ($values | Select-String 'acrName: "([^"]+)"').Matches.Groups[1].Value
     $acrLoginServer = ($values | Select-String 'acrLoginServer: "([^"]+)"').Matches.Groups[1].Value
 }
+# Explicit parameter takes precedence
+if ($AcrName) { $acrName = $AcrName }
+
 if (-not $acrName) {
-    $acrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv
+    # Try finding ACR in the specified resource group first
+    $rgAcrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv 2>$null
+    if ($rgAcrName) {
+        $acrName = $rgAcrName
+    } else {
+        # Fall back to subscription-wide discovery
+        $acrListJson = az acr list -o json 2>$null
+        $acrList = @()
+        if ($acrListJson) {
+            try { $acrList = $acrListJson | ConvertFrom-Json } catch { $acrList = @() }
+        }
+        if ($acrList.Count -eq 1) {
+            $acrName = $acrList[0].name
+        } elseif ($acrList.Count -gt 1) {
+            throw "Multiple ACRs found in the subscription. Please specify one with -AcrName."
+        }
+    }
 }
 if (-not $acrLoginServer -and $acrName) {
     $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
 }
 if (-not $acrName -or -not $acrLoginServer) {
-    throw "Could not resolve ACR details. Ensure ACR exists or values.yaml is generated."
+    throw "Could not resolve ACR details. Ensure an ACR exists in your subscription, or pass -AcrName <name>."
 }
 $acrId = az acr show --name $acrName --query id -o tsv
 
@@ -97,9 +140,10 @@ function Ensure-FedCred {
         Write-Host "Federated credential '$Name' exists" -ForegroundColor Green
         return
     }
-    $payload = @{ name = $Name; issuer = $issuer; subject = $Subject; audiences = $audiences } | ConvertTo-Json
+    $payload = @{ name = $Name; issuer = $issuer; subject = $Subject; audiences = $audiences } | ConvertTo-Json -Depth 3
     $tmp = New-TemporaryFile
     Set-Content -Path $tmp -Value $payload -Encoding utf8
+    Write-Host "Creating federated credential '$Name' with subject '$Subject'"
     az ad app federated-credential create --id $appObjId --parameters @$tmp | Out-Null
     Remove-Item $tmp -Force
     Write-Host "Created federated credential '$Name'" -ForegroundColor Green
@@ -108,15 +152,17 @@ function Ensure-FedCred {
 $owner,$repoName = $Repo.Split('/')
 if (-not $owner -or -not $repoName) { throw "Repo must be in 'owner/repo' format" }
 
-Ensure-FedCred -Name "push-$Branch" -Subject "repo:$Repo:ref:refs/heads/$Branch"
-Ensure-FedCred -Name "pull-request" -Subject "repo:$Repo:pull_request"
+$repoFullName = "$owner/$repoName"
+Ensure-FedCred -Name "push-$Branch" -Subject "repo:$repoFullName`:ref:refs/heads/$Branch"
+Ensure-FedCred -Name "pull-request" -Subject "repo:$repoFullName`:pull_request"
 
 # Set GitHub repo secrets
 Write-Host "Setting GitHub repo secrets via gh CLI..." -ForegroundColor Yellow
-gh secret set AZURE_CLIENT_ID -R $Repo -b $appId | Out-Null
-gh secret set AZURE_TENANT_ID -R $Repo -b $TenantId | Out-Null
-gh secret set AZURE_SUBSCRIPTION_ID -R $Repo -b $SubscriptionId | Out-Null
-gh secret set ACR_NAME -R $Repo -b $acrName | Out-Null
-gh secret set ACR_LOGIN_SERVER -R $Repo -b $acrLoginServer | Out-Null
+Ensure-GhAuth
+Set-RepoSecret -Name AZURE_CLIENT_ID -Value $appId -Repo $Repo
+Set-RepoSecret -Name AZURE_TENANT_ID -Value $TenantId -Repo $Repo
+Set-RepoSecret -Name AZURE_SUBSCRIPTION_ID -Value $SubscriptionId -Repo $Repo
+Set-RepoSecret -Name ACR_NAME -Value $acrName -Repo $Repo
+Set-RepoSecret -Name ACR_LOGIN_SERVER -Value $acrLoginServer -Repo $Repo
 
 Write-Host "✅ GitHub OIDC and repo secrets configured." -ForegroundColor Green
