@@ -66,6 +66,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify Azure auth configuration
+        shell: bash
+        run: |
+          OIDC_OK=0
+          if [ -n "${AZURE_CLIENT_ID}" ] && [ -n "${AZURE_TENANT_ID}" ] && [ -n "${AZURE_SUBSCRIPTION_ID}" ]; then
+            OIDC_OK=1
+          fi
+          if [ -z "${AZURE_CREDENTIALS}" ] && [ $OIDC_OK -eq 0 ]; then
+            echo "Azure credentials are not configured." >&2
+            echo "Set OIDC secrets (AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID) using deployment/setup-github-oidc.ps1 or provide AZURE_CREDENTIALS JSON." >&2
+            echo "Tip: From repo root -> PowerShell: & ./deployment/setup-github-oidc.ps1 -ResourceGroupName respondr -Repo ${GITHUB_REPOSITORY}" >&2
+            exit 1
+          fi
+
       - name: Azure Login (OIDC)
         if: ${{ env.AZURE_CREDENTIALS == '' && env.AZURE_CLIENT_ID != '' && env.AZURE_TENANT_ID != '' && env.AZURE_SUBSCRIPTION_ID != '' }}
         uses: azure/login@v2
@@ -84,10 +98,37 @@ jobs:
         id: acr
         shell: bash
         run: |
-          if [ -z "${ACR_NAME}" ] && [ -z "${ACR_LOGIN_SERVER}" ]; then
-            echo "ACR_NAME secret is missing" >&2
-            exit 1
-          fi
+            # If neither is set, attempt discovery from Azure (requires successful azure/login)
+            if [ -z "${ACR_NAME}" ] && [ -z "${ACR_LOGIN_SERVER}" ]; then
+              echo "ACR secrets not provided. Attempting discovery via az acr list ..."
+              DISCOVERED_NAME=$(az acr list --query "[0].name" -o tsv)
+              if [ -z "$DISCOVERED_NAME" ]; then
+                echo "No ACR found in subscription. Set ACR_NAME or ACR_LOGIN_SERVER as repo secret." >&2
+                exit 1
+              fi
+              # If more than one exists, az query above still returns first; detect multi and bail with guidance
+              COUNT=$(az acr list --query "length(@)" -o tsv)
+              if [ "$COUNT" != "1" ]; then
+                echo "Multiple ACRs found ($COUNT). Set ACR_NAME or ACR_LOGIN_SERVER to choose one." >&2
+                exit 1
+              fi
+              ACR_NAME="$DISCOVERED_NAME"
+            fi
+            if [ -n "${ACR_LOGIN_SERVER}" ]; then
+              LOGIN_SERVER="${ACR_LOGIN_SERVER}"
+            else
+              LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+            fi
+            # If ACR_NAME wasn't provided, try to resolve it from the login server
+            if [ -z "${ACR_NAME}" ]; then
+              ACR_NAME=$(az acr list --query "[?loginServer=='$LOGIN_SERVER'].name | [0]" -o tsv)
+            fi
+            if [ -z "${ACR_NAME}" ] || [ -z "${LOGIN_SERVER}" ]; then
+              echo "Failed to resolve ACR_NAME or LOGIN_SERVER" >&2
+              exit 1
+            fi
+            echo "loginServer=$LOGIN_SERVER" >> $GITHUB_OUTPUT
+            echo "acrName=$ACR_NAME" >> $GITHUB_OUTPUT
           if [ -n "${ACR_LOGIN_SERVER}" ]; then
             LOGIN_SERVER="${ACR_LOGIN_SERVER}"
           else
