@@ -70,7 +70,9 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$SetupGithubOidc,
     [Parameter(Mandatory=$false)]
-    [string]$GithubRepo
+    [string]$GithubRepo,
+    [Parameter(Mandatory=$false)]
+    [string]$GithubBranch = "main"
 )
 
 $hostname = "respondr.$Domain"
@@ -555,9 +557,9 @@ if ($SetupGithubOidc -and -not $DryRun) {
             } catch {}
         }
         if ($acrNameForOidc) {
-            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -AcrName $acrNameForOidc
+            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -AcrName $acrNameForOidc -Branch $GithubBranch
         } else {
-            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo
+            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -Branch $GithubBranch
         }
     }
 }
