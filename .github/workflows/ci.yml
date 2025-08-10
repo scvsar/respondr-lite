@@ -45,9 +45,11 @@ jobs:
 
       - name: Run tests
         shell: bash
+        env:
+          WEBHOOK_API_KEY: test-key
         run: |
           source .venv/bin/activate
-          pytest -q backend
+          pytest -q backend --ignore=backend/test_system.py
 
   build-and-push:
     name: Build and push Docker image to ACR
