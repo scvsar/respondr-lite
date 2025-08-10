@@ -3,7 +3,7 @@ import sys
 import json
 import logging
 import re
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional, cast, List
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -33,6 +33,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from openai import AzureOpenAI
+import uuid
 
 # Configure logging
 logging.basicConfig(
@@ -66,6 +67,9 @@ webhook_api_key = os.getenv("WEBHOOK_API_KEY")
 allowed_email_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "scvsar.org,rtreit.com").split(",")
 allowed_email_domains = [domain.strip() for domain in allowed_email_domains if domain.strip()]
 
+# Local dev bypass: allow running without OAuth2 proxy
+ALLOW_LOCAL_AUTH_BYPASS = os.getenv("ALLOW_LOCAL_AUTH_BYPASS", "false").lower() == "true"
+
 # Check if we're running in test mode
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
 
@@ -81,6 +85,23 @@ def now_tz() -> datetime:
 
 # Feature flag: enable an extra AI finalization pass on ETA
 ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
+
+# GroupMe group_id to Team mapping
+# Source: provided GroupMe group list
+GROUP_ID_TO_TEAM: Dict[str, str] = {
+    "102193274": "OSUTest",
+    "97608845": "4X4",
+    "6846970": "ASAR",
+    "61402638": "ASAR",
+    "19723040": "SSAR",
+    "96018206": "IMT",
+    "1596896": "K9",
+    "92390332": "ASAR",
+    "99606944": "OSU",
+    "14533239": "MSAR",
+    "106549466": "ESAR",
+    "16649586": "OSU",
+}
 
 # ============================================================================
 # AI Function Calling - Calculation Functions for Azure OpenAI
@@ -364,14 +385,18 @@ def load_messages():
                 messages = json.loads(cast(str, data))
                 logger.info(f"Loaded {len(messages)} messages from Redis")
             else:
-                messages = []
-                logger.info("No existing messages in Redis, starting with empty list")
+                # No data stored yet in Redis; keep current in-memory list
+                logger.info("No existing messages in Redis; keeping current in-memory messages")
         else:
-            messages = []
-            logger.warning("Redis not available, using empty message list")
+            # Redis not available; keep current in-memory list for local dev
+            logger.warning("Redis not available, keeping in-memory messages")
     except Exception as e:
+        # On load errors, do not clear in-memory state; just log
         logger.error(f"Error loading messages from Redis: {e}")
-        messages = []
+    # Ensure all messages have unique IDs for editing/deleting
+    _assigned = ensure_message_ids()
+    if _assigned:
+        save_messages()
 
 def save_messages():
     """Save messages to Redis"""
@@ -389,8 +414,10 @@ def save_messages():
             redis_client.set(REDIS_KEY, data)
             logger.debug(f"Saved {len(messages)} messages to Redis")
         else:
-            logger.warning("Redis not available, cannot save messages")
+            # Keep working with in-memory state when Redis is unavailable
+            logger.warning("Redis not available; keeping messages only in memory")
     except Exception as e:
+        # Do not drop in-memory state on save error
         logger.error(f"Error saving messages to Redis: {e}")
 
 def reload_messages():
@@ -409,6 +436,91 @@ def _clear_all_messages():
                 redis_client.delete(REDIS_KEY)
     except Exception as e:
         logger.warning(f"Failed clearing Redis key {REDIS_KEY}: {e}")
+
+def ensure_message_ids() -> int:
+    """Ensure each message has an 'id' field; return count assigned."""
+    count = 0
+    for m in messages:
+        if not m.get("id"):
+            m["id"] = str(uuid.uuid4())
+            count += 1
+    return count
+
+def _authn_and_domain_ok(request: Request) -> bool:
+    """Minimal auth check used by mutating endpoints; mirrors /api/responders behavior."""
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    if not user_email:
+        return bool(is_testing or ALLOW_LOCAL_AUTH_BYPASS)
+    return is_email_domain_allowed(user_email)
+
+def _parse_datetime_like(value: Any) -> Optional[datetime]:
+    """Parse various datetime forms into app timezone-aware datetime.
+
+    Accepts ISO strings (with or without TZ), 'YYYY-MM-DD HH:MM:SS', or epoch seconds (int/float).
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), tz=APP_TZ)
+        s = str(value)
+        # 'YYYY-MM-DD HH:MM:SS' -> make it ISO-like first
+        if "T" not in s and " " in s and ":" in s:
+            s = s.replace(" ", "T")
+        # If no timezone info, assume APP_TZ local clock
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            # Last resort: try plain strptime
+            try:
+                dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+        if dt.tzinfo is None:
+            # Attach app tz naive -> aware
+            dt = dt.replace(tzinfo=APP_TZ)
+        return dt.astimezone(APP_TZ)
+    except Exception:
+        return None
+
+def _compute_eta_fields(eta_str: Optional[str], eta_ts: Optional[datetime], base_time: datetime) -> Dict[str, Any]:
+    """Given eta string or datetime, compute standard eta fields."""
+    if eta_ts:
+        eta_display = eta_ts.strftime("%H:%M")
+        eta_info = calculate_eta_info(eta_display, base_time)
+        # Overwrite with explicit eta_ts if provided
+        eta_info_ts = eta_ts
+        return {
+            "eta": eta_display,
+            "eta_timestamp": (
+                eta_info_ts.strftime("%Y-%m-%d %H:%M:%S") if is_testing else eta_info_ts.isoformat()
+            ),
+            "eta_timestamp_utc": eta_info_ts.astimezone(timezone.utc).isoformat(),
+            "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
+            "arrival_status": eta_info.get("status"),
+        }
+    # Use eta string
+    eta_display = eta_str or "Unknown"
+    norm_eta = eta_display
+    if eta_display not in ("Unknown", "Not Responding"):
+        norm = validate_and_format_time(eta_display)
+        if norm.get("valid"):
+            norm_eta = str(norm.get("normalized", eta_display))
+        else:
+            norm_eta = "Unknown"
+    eta_info = calculate_eta_info(norm_eta, base_time)
+    return {
+        "eta": norm_eta,
+        "eta_timestamp": eta_info.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_info.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
+        "arrival_status": eta_info.get("status"),
+    }
 
 # Load messages on startup
 load_messages()
@@ -667,6 +779,9 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
             else:
                 logger.warning(f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}")
                 eta_value = "Unknown"
+
+        # Ensure normalized/validated ETA is applied to payload
+        parsed_json["eta"] = eta_value
         
         return parsed_json
         
@@ -702,6 +817,8 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     display_name = _normalize_display_name(name)
     text = data.get("text", "")
     created_at = data.get("created_at", 0)
+    group_id = str(data.get("group_id") or "")
+    team = GROUP_ID_TO_TEAM.get(group_id, "Unknown") if group_id else "Unknown"
     message_dt: datetime
     
     # Handle invalid or missing timestamps
@@ -740,10 +857,13 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     eta_info = calculate_eta_info(parsed.get("eta", "Unknown"), message_dt)
 
     message_record: Dict[str, Any] = {
-    "name": display_name,
+        "name": display_name,
         "text": text,
         "timestamp": timestamp,
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat() if message_dt else None,
+        "group_id": group_id or None,
+        "team": team,
+    "id": str(uuid.uuid4()),
         "vehicle": parsed.get("vehicle", "Unknown"),
         "eta": parsed.get("eta", "Unknown"),
         "eta_timestamp": eta_info.get("eta_timestamp"),
@@ -818,9 +938,168 @@ def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) ->
         }
 
 @app.get("/api/responders")
-def get_responder_data() -> JSONResponse:
+def get_responder_data(request: Request) -> JSONResponse:
+    """Responder data; gated by auth domain policy."""
+    # Enforce that user is authenticated and allowed domain if headers present
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    if not user_email:
+        # If no auth headers: allow in tests or when local bypass is on
+        if not (is_testing or ALLOW_LOCAL_AUTH_BYPASS):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+    else:
+        if not is_email_domain_allowed(user_email):
+            raise HTTPException(status_code=403, detail="Access denied")
+
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
+
+@app.post("/api/responders")
+async def create_responder_entry(request: Request) -> JSONResponse:
+    """Create a manual responder entry (edit mode).
+
+    Body accepts: name, text, timestamp, vehicle, eta, eta_timestamp, team, group_id
+    """
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        raw = await request.json()
+        body: Dict[str, Any] = cast(Dict[str, Any], raw if isinstance(raw, dict) else {})
+    except Exception:
+        body = {}
+
+    name = _normalize_display_name(str(cast(Any, body.get("name")) or "Unknown"))
+    text = str(cast(Any, body.get("text")) or "")
+    team = str(cast(Any, body.get("team")) or "Unknown")
+    group_id = str(cast(Any, body.get("group_id")) or "")
+    vehicle = str(cast(Any, body.get("vehicle")) or "Unknown")
+    eta_str = cast(Optional[str], body.get("eta") if "eta" in body else None)
+    ts_input: Any = body.get("timestamp") if "timestamp" in body else None
+    eta_ts_input: Any = body.get("eta_timestamp") if "eta_timestamp" in body else None
+
+    message_dt = _parse_datetime_like(ts_input) or now_tz()
+    eta_dt = _parse_datetime_like(eta_ts_input)
+
+    eta_fields = _compute_eta_fields(eta_str, eta_dt, message_dt)
+
+    rec: Dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "text": text,
+        "timestamp": (
+            message_dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else message_dt.isoformat()
+        ),
+        "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat(),
+        "group_id": group_id or None,
+        "team": team,
+        "vehicle": vehicle,
+        "eta": eta_fields.get("eta", "Unknown"),
+        "eta_timestamp": eta_fields.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
+        "arrival_status": eta_fields.get("arrival_status"),
+    }
+
+    reload_messages()
+    messages.append(rec)
+    save_messages()
+    return JSONResponse(status_code=201, content=rec)
+
+@app.put("/api/responders/{msg_id}")
+async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
+    """Update an existing responder message by ID."""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    reload_messages()
+    idx = next((i for i, m in enumerate(messages) if str(m.get("id")) == msg_id), -1)
+    if idx < 0:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        raw = await request.json()
+        patch: Dict[str, Any] = cast(Dict[str, Any], raw if isinstance(raw, dict) else {})
+    except Exception:
+        patch = {}
+
+    current = dict(messages[idx])
+
+    # Updatable fields
+    for key in ["name", "text", "team", "group_id", "vehicle"]:
+        if key in patch:
+            val = patch.get(key)
+            if key == "name":
+                val = _normalize_display_name(str(cast(Any, val) or ""))
+            current[key] = val
+
+    # Handle timestamp and ETA updates
+    ts_in: Any = patch.get("timestamp") if "timestamp" in patch else current.get("timestamp")
+    msg_dt = _parse_datetime_like(ts_in) or now_tz()
+    current["timestamp"] = (
+        msg_dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else msg_dt.isoformat()
+    )
+    current["timestamp_utc"] = msg_dt.astimezone(timezone.utc).isoformat()
+
+    eta_str = cast(Optional[str], patch.get("eta") if "eta" in patch else current.get("eta"))
+    eta_ts_in: Any = patch.get("eta_timestamp") if "eta_timestamp" in patch else current.get("eta_timestamp")
+    eta_dt = _parse_datetime_like(eta_ts_in)
+    eta_fields = _compute_eta_fields(eta_str, eta_dt, msg_dt)
+    current.update({
+        "eta": eta_fields.get("eta", "Unknown"),
+        "eta_timestamp": eta_fields.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
+        "arrival_status": eta_fields.get("arrival_status"),
+    })
+
+    messages[idx] = current
+    save_messages()
+    return JSONResponse(content=current)
+
+@app.delete("/api/responders/{msg_id}")
+def delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
+    """Delete a responder message by ID."""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    reload_messages()
+    initial = len(messages)
+    remaining = [m for m in messages if str(m.get("id")) != msg_id]
+    if len(remaining) == initial:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Update and persist
+    messages.clear()
+    messages.extend(remaining)
+    save_messages()
+    return {"status": "deleted", "id": msg_id}
+
+@app.post("/api/responders/bulk-delete")
+async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
+    """Bulk delete messages by IDs. Body: {"ids": [..]}"""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        body = await request.json()
+        ids: List[str] = list(map(str, body.get("ids", [])))
+    except Exception:
+        ids = []
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    reload_messages()
+    before = len(messages)
+    to_keep = [m for m in messages if str(m.get("id")) not in set(ids)]
+    removed = before - len(to_keep)
+    messages.clear()
+    messages.extend(to_keep)
+    save_messages()
+    return {"status": "deleted", "removed": int(removed)}
 
 @app.post("/api/clear-all")
 def clear_all_data(request: Request) -> Dict[str, Any]:
@@ -894,9 +1173,15 @@ def get_user_info(request: Request) -> JSONResponse:
         logger.info(f"User authenticated: {email} from allowed domain")
     else:
         # No OAuth2 headers - user might not be properly authenticated
-        authenticated = False
-        display_name = None
-        email = None
+        if ALLOW_LOCAL_AUTH_BYPASS:
+            # Local dev: pretend there's a logged-in user
+            authenticated = True
+            display_name = os.getenv("LOCAL_DEV_USER_NAME", "Local Dev")
+            email = os.getenv("LOCAL_DEV_USER_EMAIL", "dev@local.test")
+        else:
+            authenticated = False
+            display_name = None
+            email = None
     
     return JSONResponse(content={
         "authenticated": authenticated,
@@ -930,6 +1215,23 @@ def get_pod_info():
         "redis_status": redis_status
     })
 
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    """Simple unauthenticated health endpoint for liveness/readiness probes."""
+    try:
+        # Optional: light Redis ping without failing the health
+        status = "ok"
+        try:
+            init_redis()
+            if redis_client:
+                cast(Any, redis_client).ping()
+        except Exception:
+            # Still report ok; detailed status available at /debug/pod-info
+            status = "degraded"
+        return {"status": status}
+    except Exception:
+        return {"status": "error"}
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def display_dashboard() -> str:
     current_time = datetime.now()
@@ -941,6 +1243,7 @@ def display_dashboard() -> str:
         <tr style='background-color: #f0f0f0;'>
             <th>Message Time</th>
             <th>Name</th>
+            <th>Unit</th>
             <th>Vehicle</th>
             <th>ETA</th>
             <th>Minutes Out</th>
@@ -958,6 +1261,7 @@ def display_dashboard() -> str:
     for msg in sorted_messages:
         # Color coding based on status
         vehicle = msg.get('vehicle', 'Unknown')
+        team = msg.get('team', 'Unknown')
         eta_display = msg.get('eta_timestamp') or msg.get('eta', 'Unknown')
         minutes_out = msg.get('minutes_until_arrival')
         status = msg.get('arrival_status', 'Unknown')
@@ -980,6 +1284,7 @@ def display_dashboard() -> str:
         <tr style='background-color: {row_color};'>
             <td>{msg['timestamp']}</td>
             <td><strong>{msg['name']}</strong></td>
+            <td>{team}</td>
             <td>{vehicle}</td>
             <td>{eta_display}</td>
             <td>{minutes_display}</td>
@@ -1069,15 +1374,47 @@ def serve_logo():
         return FileResponse(logo_path)
     raise HTTPException(status_code=404, detail="Logo not found")
 
-@app.get("/{root_file}")
-def serve_root_asset(root_file: str):
-    """Serve root-level built assets like favicon.ico, manifest.json."""
+@app.get("/favicon.ico")
+def serve_favicon():
     if is_testing:
         raise HTTPException(status_code=404, detail="Not available in tests")
-    allowed = {"favicon.ico", "manifest.json", "robots.txt", "logo192.png", "logo512.png"}
-    if root_file not in allowed:
-        raise HTTPException(status_code=404, detail="Not found")
-    p = os.path.join(frontend_build, root_file)
+    p = os.path.join(frontend_build, "favicon.ico")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/manifest.json")
+def serve_manifest():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "manifest.json")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/robots.txt")
+def serve_robots():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "robots.txt")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/logo192.png")
+def serve_logo192():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "logo192.png")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/logo512.png")
+def serve_logo512():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "logo512.png")
     if os.path.exists(p):
         return FileResponse(p)
     raise HTTPException(status_code=404, detail="Not found")
@@ -1151,3 +1488,18 @@ async def acr_webhook(request: Request):
     except Exception as e:
         logger.error(f"Failed to restart deployment: {e}")
         raise HTTPException(status_code=500, detail="Failed to restart deployment")
+
+# ----------------------------------------------------------------------------
+# SPA catch-all: serve index.html for client-side routes (e.g., /profile)
+# Declare this AFTER all API and asset routes so it doesn't shadow them.
+# ----------------------------------------------------------------------------
+@app.get("/{full_path:path}")
+def spa_catch_all(full_path: str):
+    """Serve the frontend SPA for any non-API path to support client routing."""
+    if is_testing:
+        # Avoid interfering with unit tests that expect 404s on unknown paths
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    index_path = os.path.join(frontend_build, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail="Frontend not built")

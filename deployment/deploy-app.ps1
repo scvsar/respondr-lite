@@ -29,6 +29,17 @@ if ($LASTEXITCODE -ne 0) { Write-Error "Failed to setup OAuth2"; exit 1 }
 & (Join-Path $PSScriptRoot 'create-secrets.ps1') -ResourceGroupName $ResourceGroupName -Namespace $Namespace
 if ($LASTEXITCODE -ne 0) { Write-Error "Failed to create secrets"; exit 1 }
 
+# Apply secrets to the cluster and ensure pods pick up changes
+$secretsPath = Join-Path $PSScriptRoot 'secrets.yaml'
+if (Test-Path $secretsPath) {
+    Write-Host "Applying Kubernetes secrets to namespace '$Namespace'..." -ForegroundColor Yellow
+    kubectl apply -f $secretsPath -n $Namespace | Out-Null
+    if ($LASTEXITCODE -ne 0) { Write-Error "Failed to apply secrets.yaml"; exit 1 }
+    # Force a rollout so updated env vars take effect on pods
+    Write-Host "Triggering rollout restart to pick up new secrets..." -ForegroundColor Yellow
+    kubectl rollout restart deployment/respondr-deployment -n $Namespace | Out-Null
+}
+
 # Optionally build and push image via deploy-complete (kept simple here, prefer redeploy.ps1 for builds)
 if ($SkipImageBuild) {
     Write-Host "Skipping image build (use redeploy.ps1 -Action build for new images)" -ForegroundColor Yellow

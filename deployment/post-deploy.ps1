@@ -726,15 +726,15 @@ $openAiState = az cognitiveservices account show `
     --query "properties.provisioningState" -o tsv
 Write-Host "OpenAI provisioningState: $openAiState" -ForegroundColor Cyan
 
-# 8.5) Deploy gpt-4.1-nano model if OpenAI account is ready
+# 8.5) Deploy gpt-5-nano model if OpenAI account is ready
 if ($openAiState -eq "Succeeded") {
-    Write-Host "`nDeploying gpt-4.1-nano model..." -ForegroundColor Yellow
+    Write-Host "`nDeploying gpt-5-nano model..." -ForegroundColor Yellow
     
     # Check if deployment already exists
     $existingDeployment = az cognitiveservices account deployment list `
         --name $openAiAccountName `
         --resource-group $ResourceGroupName `
-        --query "[?name=='gpt-4-1-nano']" -o json | ConvertFrom-Json
+        --query "[?name=='gpt-5-nano']" -o json | ConvertFrom-Json
     
     if ($existingDeployment.Count -eq 0) {
         # Create the model deployment using new SKU-based approach
@@ -743,20 +743,20 @@ if ($openAiState -eq "Succeeded") {
         $deploymentResult = az cognitiveservices account deployment create `
             --name $openAiAccountName `
             --resource-group $ResourceGroupName `
-            --deployment-name "gpt-4-1-nano" `
-            --model-name "gpt-4.1-nano" `
+            --deployment-name "gpt-5-nano" `
+            --model-name "gpt-5-nano" `
             --model-version "2025-04-14" `
             --model-format "OpenAI" `
             --sku-name "GlobalStandard" `
             --sku-capacity 200 2>&1
         
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Successfully deployed gpt-4.1-nano model" -ForegroundColor Green
+            Write-Host "Successfully deployed gpt-5-nano model" -ForegroundColor Green
         } else {
-            Write-Host "Failed to deploy gpt-4.1-nano model: $deploymentResult" -ForegroundColor Red
+            Write-Host "Failed to deploy gpt-5-nano model: $deploymentResult" -ForegroundColor Red
         }
     } else {
-        Write-Host "gpt-4.1-nano model deployment already exists" -ForegroundColor Green
+        Write-Host "gpt-5-nano model deployment already exists" -ForegroundColor Green
     }
     
     # List all deployments for verification

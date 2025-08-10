@@ -454,23 +454,23 @@ if (-not $DryRun) {
             Write-Host "  Value: $ingressIp" -ForegroundColor Cyan
         }
         
-        # Test HTTP connectivity
-        Write-Host "Testing HTTP connectivity..." -ForegroundColor Yellow
+        # Test HTTP connectivity (unauthenticated health endpoint)
+        Write-Host "Testing HTTP connectivity (health endpoint)..." -ForegroundColor Yellow
         try {
-            $response = Invoke-WebRequest -Uri "http://$hostname/api/responders" -UseBasicParsing -TimeoutSec 10
-            Write-Host "HTTP connectivity successful (Status: $($response.StatusCode))" -ForegroundColor Green
+            $response = Invoke-WebRequest -Uri "http://$hostname/health" -UseBasicParsing -TimeoutSec 10
+            Write-Host "HTTP /health successful (Status: $($response.StatusCode))" -ForegroundColor Green
         } catch {
-            Write-Host "❌ HTTP connectivity failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "❌ HTTP /health failed: $($_.Exception.Message)" -ForegroundColor Red
         }
         
-        # Test HTTPS connectivity
-        Write-Host "Testing HTTPS connectivity..." -ForegroundColor Yellow
+        # Test HTTPS connectivity (unauthenticated health endpoint)
+        Write-Host "Testing HTTPS connectivity (health endpoint)..." -ForegroundColor Yellow
         try {
-            $response = Invoke-WebRequest -Uri "https://$hostname/api/responders" -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck
-            Write-Host "HTTPS connectivity successful (Status: $($response.StatusCode))" -ForegroundColor Green
+            $response = Invoke-WebRequest -Uri "https://$hostname/health" -UseBasicParsing -TimeoutSec 10 -SkipCertificateCheck
+            Write-Host "HTTPS /health successful (Status: $($response.StatusCode))" -ForegroundColor Green
         } catch {
-            Write-Host "❌ HTTPS connectivity failed: $($_.Exception.Message)" -ForegroundColor Red
-            Write-Host "Note: HTTPS may take a few minutes to become available after certificate upload" -ForegroundColor Yellow
+            Write-Host "❌ HTTPS /health failed: $($_.Exception.Message)" -ForegroundColor Red
+            Write-Host "Note: HTTPS may take a few minutes to become available after certificate setup" -ForegroundColor Yellow
         }
     } else {
         Write-Host "❌ Could not get ingress IP address" -ForegroundColor Red
@@ -493,6 +493,7 @@ if (-not $DryRun) {
     Write-Host "🌐 Access Information:" -ForegroundColor Cyan
     Write-Host "  HTTP:  http://$hostname (redirects to HTTPS)" -ForegroundColor White
     Write-Host "  HTTPS: https://$hostname" -ForegroundColor White
+    Write-Host "  Health: https://$hostname/health" -ForegroundColor White
     Write-Host "  API:   https://$hostname/api/responders" -ForegroundColor White
     Write-Host ""
     Write-Host "🪝 ACR Webhook: Configure ACR to POST to https://$hostname/internal/acr-webhook on push" -ForegroundColor Cyan
