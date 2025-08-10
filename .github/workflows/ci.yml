@@ -129,21 +129,6 @@ jobs:
             fi
             echo "loginServer=$LOGIN_SERVER" >> $GITHUB_OUTPUT
             echo "acrName=$ACR_NAME" >> $GITHUB_OUTPUT
-          if [ -n "${ACR_LOGIN_SERVER}" ]; then
-            LOGIN_SERVER="${ACR_LOGIN_SERVER}"
-          else
-            LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
-          fi
-          # If ACR_NAME wasn't provided, try to resolve it from the login server
-          if [ -z "${ACR_NAME}" ]; then
-            ACR_NAME=$(az acr list --query "[?loginServer=='$LOGIN_SERVER'].name | [0]" -o tsv)
-          fi
-          if [ -z "${ACR_NAME}" ] || [ -z "${LOGIN_SERVER}" ]; then
-            echo "Failed to resolve ACR_NAME or LOGIN_SERVER" >&2
-            exit 1
-          fi
-          echo "loginServer=$LOGIN_SERVER" >> $GITHUB_OUTPUT
-          echo "acrName=$ACR_NAME" >> $GITHUB_OUTPUT
 
       - name: ACR Login
         run: |
