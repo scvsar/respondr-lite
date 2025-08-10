@@ -1,41 +1,65 @@
 import React from 'react';
-// Mock react-router-dom to avoid module resolution issues during tests
-jest.mock('react-router-dom', () => ({
-  BrowserRouter: ({ children }) => <>{children}</>,
-  Routes: ({ children }) => <>{children}</>,
-  Route: ({ element }) => element,
-}), { virtual: true });
+// Mock react-router-dom primitives used by the app so tests don't depend on real routing
+jest.mock('react-router-dom', () => {
+  const actual = jest.requireActual('react-router-dom');
+  const Mocked = {
+    ...actual,
+    BrowserRouter: ({ children }) => <>{children}</>,
+    Routes: ({ children }) => <>{children}</>,
+    Route: (props) => {
+      const { element, path } = props || {};
+      // Simulate route matching at '/'
+      if (!path || path === '/') return element || null;
+      return null;
+    },
+    Navigate: ({ children }) => <>{children || null}</>,
+    useLocation: () => ({ pathname: '/' }),
+  };
+  return Mocked;
+});
 import { render, screen, waitFor, act } from '@testing-library/react';
 import App from './App';
 
 // Mock fetch API for all tests
 beforeEach(() => {
-  global.fetch = jest.fn(() =>
-    Promise.resolve({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve([
-        {
-          name: "John Smith",
-          text: "Taking SAR78, ETA 15 minutes",
-          timestamp: "2025-08-01 12:00:00",
-          vehicle: "SAR78",
-          eta: "15 minutes",
-          eta_timestamp: "2025-08-01 12:15:00",
-          minutes_until_arrival: 15
-        },
-        {
-          name: "Jane Doe",
-          text: "Responding with POV, ETA 23:30",
-          timestamp: "2025-08-01 12:05:00",
-          vehicle: "POV",
-          eta: "23:30",
-          eta_timestamp: "2025-08-01 23:30:00",
-          minutes_until_arrival: 690
-        }
-      ])
-    })
-  );
+  global.fetch = jest.fn(async (url, opts) => {
+    const u = typeof url === 'string' ? url : '';
+    if (u.includes('/api/user')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ authenticated: true, email: 'test@example.com', name: 'Test User' }),
+      };
+    }
+    if (u.includes('/api/responders')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ([
+          {
+            name: 'John Smith',
+            text: 'Taking SAR78, ETA 15 minutes',
+            timestamp: '2025-08-01 12:00:00',
+            vehicle: 'SAR78',
+            eta: '15 minutes',
+            eta_timestamp: '2025-08-01 12:15:00',
+            minutes_until_arrival: 15,
+          },
+          {
+            name: 'Jane Doe',
+            text: 'Responding with POV, ETA 23:30',
+            timestamp: '2025-08-01 12:05:00',
+            vehicle: 'POV',
+            eta: '23:30',
+            eta_timestamp: '2025-08-01 23:30:00',
+            minutes_until_arrival: 690,
+          },
+        ]),
+      };
+    }
+    // Default OK empty response for any other endpoints the app might touch in tests
+    return { ok: true, status: 200, json: async () => ({}) };
+  });
 });
 
 afterEach(() => {
