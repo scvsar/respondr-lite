@@ -66,6 +66,9 @@ webhook_api_key = os.getenv("WEBHOOK_API_KEY")
 allowed_email_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "scvsar.org,rtreit.com").split(",")
 allowed_email_domains = [domain.strip() for domain in allowed_email_domains if domain.strip()]
 
+# Local dev bypass: allow running without OAuth2 proxy
+ALLOW_LOCAL_AUTH_BYPASS = os.getenv("ALLOW_LOCAL_AUTH_BYPASS", "false").lower() == "true"
+
 # Check if we're running in test mode
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
 
@@ -818,7 +821,23 @@ def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) ->
         }
 
 @app.get("/api/responders")
-def get_responder_data() -> JSONResponse:
+def get_responder_data(request: Request) -> JSONResponse:
+    """Responder data; gated by auth domain policy."""
+    # Enforce that user is authenticated and allowed domain if headers present
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    if not user_email:
+        # If no auth headers: allow in tests or when local bypass is on
+        if not (is_testing or ALLOW_LOCAL_AUTH_BYPASS):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+    else:
+        if not is_email_domain_allowed(user_email):
+            raise HTTPException(status_code=403, detail="Access denied")
+
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
 
@@ -894,9 +913,15 @@ def get_user_info(request: Request) -> JSONResponse:
         logger.info(f"User authenticated: {email} from allowed domain")
     else:
         # No OAuth2 headers - user might not be properly authenticated
-        authenticated = False
-        display_name = None
-        email = None
+        if ALLOW_LOCAL_AUTH_BYPASS:
+            # Local dev: pretend there's a logged-in user
+            authenticated = True
+            display_name = os.getenv("LOCAL_DEV_USER_NAME", "Local Dev")
+            email = os.getenv("LOCAL_DEV_USER_EMAIL", "dev@local.test")
+        else:
+            authenticated = False
+            display_name = None
+            email = None
     
     return JSONResponse(content={
         "authenticated": authenticated,
@@ -929,6 +954,23 @@ def get_pod_info():
         "message_count": len(messages),
         "redis_status": redis_status
     })
+
+@app.get("/health")
+def health() -> Dict[str, Any]:
+    """Simple unauthenticated health endpoint for liveness/readiness probes."""
+    try:
+        # Optional: light Redis ping without failing the health
+        status = "ok"
+        try:
+            init_redis()
+            if redis_client:
+                cast(Any, redis_client).ping()
+        except Exception:
+            # Still report ok; detailed status available at /debug/pod-info
+            status = "degraded"
+        return {"status": status}
+    except Exception:
+        return {"status": "error"}
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def display_dashboard() -> str:
@@ -1069,15 +1111,47 @@ def serve_logo():
         return FileResponse(logo_path)
     raise HTTPException(status_code=404, detail="Logo not found")
 
-@app.get("/{root_file}")
-def serve_root_asset(root_file: str):
-    """Serve root-level built assets like favicon.ico, manifest.json."""
+@app.get("/favicon.ico")
+def serve_favicon():
     if is_testing:
         raise HTTPException(status_code=404, detail="Not available in tests")
-    allowed = {"favicon.ico", "manifest.json", "robots.txt", "logo192.png", "logo512.png"}
-    if root_file not in allowed:
-        raise HTTPException(status_code=404, detail="Not found")
-    p = os.path.join(frontend_build, root_file)
+    p = os.path.join(frontend_build, "favicon.ico")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/manifest.json")
+def serve_manifest():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "manifest.json")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/robots.txt")
+def serve_robots():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "robots.txt")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/logo192.png")
+def serve_logo192():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "logo192.png")
+    if os.path.exists(p):
+        return FileResponse(p)
+    raise HTTPException(status_code=404, detail="Not found")
+
+@app.get("/logo512.png")
+def serve_logo512():
+    if is_testing:
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    p = os.path.join(frontend_build, "logo512.png")
     if os.path.exists(p):
         return FileResponse(p)
     raise HTTPException(status_code=404, detail="Not found")
@@ -1151,3 +1225,18 @@ async def acr_webhook(request: Request):
     except Exception as e:
         logger.error(f"Failed to restart deployment: {e}")
         raise HTTPException(status_code=500, detail="Failed to restart deployment")
+
+# ----------------------------------------------------------------------------
+# SPA catch-all: serve index.html for client-side routes (e.g., /profile)
+# Declare this AFTER all API and asset routes so it doesn't shadow them.
+# ----------------------------------------------------------------------------
+@app.get("/{full_path:path}")
+def spa_catch_all(full_path: str):
+    """Serve the frontend SPA for any non-API path to support client routing."""
+    if is_testing:
+        # Avoid interfering with unit tests that expect 404s on unknown paths
+        raise HTTPException(status_code=404, detail="Not available in tests")
+    index_path = os.path.join(frontend_build, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    raise HTTPException(status_code=404, detail="Frontend not built")

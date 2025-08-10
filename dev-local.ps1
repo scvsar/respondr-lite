@@ -77,7 +77,7 @@ if ($Docker) {
     # Start backend in new terminal using venv python if available
     $venvPy = Join-Path $PWD "backend\.venv\Scripts\python.exe"
     $pyCmd = if (Test-Path $venvPy) { $venvPy } else { 'python' }
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
@@ -110,5 +110,6 @@ if ($Docker) {
     $venvPy = Join-Path $PWD "..\backend\.venv\Scripts\python.exe"
     if (-not (Test-Path $venvPy)) { $venvPy = 'python' }
     $env:TIMEZONE='America/Los_Angeles'
+    $env:ALLOW_LOCAL_AUTH_BYPASS='true'
     & $venvPy -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 }
