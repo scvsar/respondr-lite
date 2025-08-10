@@ -3,7 +3,7 @@ import sys
 import json
 import logging
 import re
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, Optional, cast, List
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -33,6 +33,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from openai import AzureOpenAI
+import uuid
 
 # Configure logging
 logging.basicConfig(
@@ -392,6 +393,10 @@ def load_messages():
     except Exception as e:
         # On load errors, do not clear in-memory state; just log
         logger.error(f"Error loading messages from Redis: {e}")
+    # Ensure all messages have unique IDs for editing/deleting
+    _assigned = ensure_message_ids()
+    if _assigned:
+        save_messages()
 
 def save_messages():
     """Save messages to Redis"""
@@ -431,6 +436,91 @@ def _clear_all_messages():
                 redis_client.delete(REDIS_KEY)
     except Exception as e:
         logger.warning(f"Failed clearing Redis key {REDIS_KEY}: {e}")
+
+def ensure_message_ids() -> int:
+    """Ensure each message has an 'id' field; return count assigned."""
+    count = 0
+    for m in messages:
+        if not m.get("id"):
+            m["id"] = str(uuid.uuid4())
+            count += 1
+    return count
+
+def _authn_and_domain_ok(request: Request) -> bool:
+    """Minimal auth check used by mutating endpoints; mirrors /api/responders behavior."""
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    if not user_email:
+        return bool(is_testing or ALLOW_LOCAL_AUTH_BYPASS)
+    return is_email_domain_allowed(user_email)
+
+def _parse_datetime_like(value: Any) -> Optional[datetime]:
+    """Parse various datetime forms into app timezone-aware datetime.
+
+    Accepts ISO strings (with or without TZ), 'YYYY-MM-DD HH:MM:SS', or epoch seconds (int/float).
+    """
+    if value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), tz=APP_TZ)
+        s = str(value)
+        # 'YYYY-MM-DD HH:MM:SS' -> make it ISO-like first
+        if "T" not in s and " " in s and ":" in s:
+            s = s.replace(" ", "T")
+        # If no timezone info, assume APP_TZ local clock
+        try:
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            # Last resort: try plain strptime
+            try:
+                dt = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                return None
+        if dt.tzinfo is None:
+            # Attach app tz naive -> aware
+            dt = dt.replace(tzinfo=APP_TZ)
+        return dt.astimezone(APP_TZ)
+    except Exception:
+        return None
+
+def _compute_eta_fields(eta_str: Optional[str], eta_ts: Optional[datetime], base_time: datetime) -> Dict[str, Any]:
+    """Given eta string or datetime, compute standard eta fields."""
+    if eta_ts:
+        eta_display = eta_ts.strftime("%H:%M")
+        eta_info = calculate_eta_info(eta_display, base_time)
+        # Overwrite with explicit eta_ts if provided
+        eta_info_ts = eta_ts
+        return {
+            "eta": eta_display,
+            "eta_timestamp": (
+                eta_info_ts.strftime("%Y-%m-%d %H:%M:%S") if is_testing else eta_info_ts.isoformat()
+            ),
+            "eta_timestamp_utc": eta_info_ts.astimezone(timezone.utc).isoformat(),
+            "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
+            "arrival_status": eta_info.get("status"),
+        }
+    # Use eta string
+    eta_display = eta_str or "Unknown"
+    norm_eta = eta_display
+    if eta_display not in ("Unknown", "Not Responding"):
+        norm = validate_and_format_time(eta_display)
+        if norm.get("valid"):
+            norm_eta = str(norm.get("normalized", eta_display))
+        else:
+            norm_eta = "Unknown"
+    eta_info = calculate_eta_info(norm_eta, base_time)
+    return {
+        "eta": norm_eta,
+        "eta_timestamp": eta_info.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_info.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
+        "arrival_status": eta_info.get("status"),
+    }
 
 # Load messages on startup
 load_messages()
@@ -773,6 +863,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat() if message_dt else None,
         "group_id": group_id or None,
         "team": team,
+    "id": str(uuid.uuid4()),
         "vehicle": parsed.get("vehicle", "Unknown"),
         "eta": parsed.get("eta", "Unknown"),
         "eta_timestamp": eta_info.get("eta_timestamp"),
@@ -866,6 +957,149 @@ def get_responder_data(request: Request) -> JSONResponse:
 
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
+
+@app.post("/api/responders")
+async def create_responder_entry(request: Request) -> JSONResponse:
+    """Create a manual responder entry (edit mode).
+
+    Body accepts: name, text, timestamp, vehicle, eta, eta_timestamp, team, group_id
+    """
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        raw = await request.json()
+        body: Dict[str, Any] = cast(Dict[str, Any], raw if isinstance(raw, dict) else {})
+    except Exception:
+        body = {}
+
+    name = _normalize_display_name(str(cast(Any, body.get("name")) or "Unknown"))
+    text = str(cast(Any, body.get("text")) or "")
+    team = str(cast(Any, body.get("team")) or "Unknown")
+    group_id = str(cast(Any, body.get("group_id")) or "")
+    vehicle = str(cast(Any, body.get("vehicle")) or "Unknown")
+    eta_str = cast(Optional[str], body.get("eta") if "eta" in body else None)
+    ts_input: Any = body.get("timestamp") if "timestamp" in body else None
+    eta_ts_input: Any = body.get("eta_timestamp") if "eta_timestamp" in body else None
+
+    message_dt = _parse_datetime_like(ts_input) or now_tz()
+    eta_dt = _parse_datetime_like(eta_ts_input)
+
+    eta_fields = _compute_eta_fields(eta_str, eta_dt, message_dt)
+
+    rec: Dict[str, Any] = {
+        "id": str(uuid.uuid4()),
+        "name": name,
+        "text": text,
+        "timestamp": (
+            message_dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else message_dt.isoformat()
+        ),
+        "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat(),
+        "group_id": group_id or None,
+        "team": team,
+        "vehicle": vehicle,
+        "eta": eta_fields.get("eta", "Unknown"),
+        "eta_timestamp": eta_fields.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
+        "arrival_status": eta_fields.get("arrival_status"),
+    }
+
+    reload_messages()
+    messages.append(rec)
+    save_messages()
+    return JSONResponse(status_code=201, content=rec)
+
+@app.put("/api/responders/{msg_id}")
+async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
+    """Update an existing responder message by ID."""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    reload_messages()
+    idx = next((i for i, m in enumerate(messages) if str(m.get("id")) == msg_id), -1)
+    if idx < 0:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    try:
+        raw = await request.json()
+        patch: Dict[str, Any] = cast(Dict[str, Any], raw if isinstance(raw, dict) else {})
+    except Exception:
+        patch = {}
+
+    current = dict(messages[idx])
+
+    # Updatable fields
+    for key in ["name", "text", "team", "group_id", "vehicle"]:
+        if key in patch:
+            val = patch.get(key)
+            if key == "name":
+                val = _normalize_display_name(str(cast(Any, val) or ""))
+            current[key] = val
+
+    # Handle timestamp and ETA updates
+    ts_in: Any = patch.get("timestamp") if "timestamp" in patch else current.get("timestamp")
+    msg_dt = _parse_datetime_like(ts_in) or now_tz()
+    current["timestamp"] = (
+        msg_dt.strftime("%Y-%m-%d %H:%M:%S") if is_testing else msg_dt.isoformat()
+    )
+    current["timestamp_utc"] = msg_dt.astimezone(timezone.utc).isoformat()
+
+    eta_str = cast(Optional[str], patch.get("eta") if "eta" in patch else current.get("eta"))
+    eta_ts_in: Any = patch.get("eta_timestamp") if "eta_timestamp" in patch else current.get("eta_timestamp")
+    eta_dt = _parse_datetime_like(eta_ts_in)
+    eta_fields = _compute_eta_fields(eta_str, eta_dt, msg_dt)
+    current.update({
+        "eta": eta_fields.get("eta", "Unknown"),
+        "eta_timestamp": eta_fields.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
+        "arrival_status": eta_fields.get("arrival_status"),
+    })
+
+    messages[idx] = current
+    save_messages()
+    return JSONResponse(content=current)
+
+@app.delete("/api/responders/{msg_id}")
+def delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
+    """Delete a responder message by ID."""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    reload_messages()
+    initial = len(messages)
+    remaining = [m for m in messages if str(m.get("id")) != msg_id]
+    if len(remaining) == initial:
+        raise HTTPException(status_code=404, detail="Not found")
+    # Update and persist
+    messages.clear()
+    messages.extend(remaining)
+    save_messages()
+    return {"status": "deleted", "id": msg_id}
+
+@app.post("/api/responders/bulk-delete")
+async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
+    """Bulk delete messages by IDs. Body: {"ids": [..]}"""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        body = await request.json()
+        ids: List[str] = list(map(str, body.get("ids", [])))
+    except Exception:
+        ids = []
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    reload_messages()
+    before = len(messages)
+    to_keep = [m for m in messages if str(m.get("id")) not in set(ids)]
+    removed = before - len(to_keep)
+    messages.clear()
+    messages.extend(to_keep)
+    save_messages()
+    return {"status": "deleted", "removed": int(removed)}
 
 @app.post("/api/clear-all")
 def clear_all_data(request: Request) -> Dict[str, Any]:
