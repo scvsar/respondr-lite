@@ -1,8 +1,68 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import "./App.css";
 import Logout from './Logout';
 import MobileView from './MobileView';
+import Profile from './Profile';
+
+// Simple auth gate: ensures user is authenticated and from an allowed domain
+function AuthGate({ children }) {
+  const [user, setUser] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [denied, setDenied] = React.useState(null);
+  const loc = useLocation();
+
+  const signInUrl = React.useCallback((path) => {
+    const rd = encodeURIComponent(path || '/');
+    // If we're on port 3100 (CRA dev) and backend is on 8000, send user to backend's oauth start
+    const host = typeof window !== 'undefined' ? window.location.host : '';
+    const isDevPort = host.endsWith(':3100');
+    if (isDevPort) {
+      return `http://localhost:8000/oauth2/start?rd=${rd}`;
+    }
+    return `/oauth2/start?rd=${rd}`;
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch('/api/user');
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (cancelled) return;
+        setUser(j);
+        if (!j.authenticated) {
+          // Not authenticated: redirect to sign-in preserving target
+          window.location.href = signInUrl(loc.pathname || '/');
+          return;
+        }
+        if (j.error === 'Access denied') {
+          setDenied(j);
+        }
+      } catch (e) {
+        if (!cancelled) setDenied({ error: 'Unable to verify sign-in' });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [loc.pathname, signInUrl]);
+
+  if (loading) return <div className="empty">Checking sign-in…</div>;
+  if (denied) {
+    return (
+      <div className="empty" role="alert">
+        {denied.message || 'Access denied'}
+        <div style={{marginTop:12}}>
+          <a className="btn" href="/oauth2/sign_out?rd=/">Sign out</a>
+        </div>
+      </div>
+    );
+  }
+  return children;
+}
 
 function MainApp() {
   const [data, setData] = useState([]);
@@ -24,6 +84,17 @@ function MainApp() {
       if (sessionStorage.getItem('loggedOut')) {
         return;
       }
+      // Also don't fetch data if unauthenticated
+      try {
+        const ur = await fetch('/api/user');
+        if (!ur.ok) throw new Error('auth');
+        const uj = await ur.json();
+        if (!uj.authenticated || uj.error === 'Access denied') {
+          setIsLoading(false);
+          setData([]);
+          return;
+        }
+      } catch {}
       
       setError(null);
       const res = await fetch("/api/responders", { headers: { 'Accept': 'application/json' }});
@@ -347,9 +418,19 @@ function MainApp() {
           {menuOpen && (
             <div className="menu" role="menu">
               {user?.email && <div className="menu-item" aria-disabled>Signed in as {user.email}</div>}
-              <div className="menu-item" onClick={()=>window.location.href='/'}>Profile</div>
-              <div className="menu-item" onClick={()=>window.location.href='/'}>Switch Account</div>
-              <div className="menu-item" onClick={()=>{ sessionStorage.setItem('respondr_logging_out','true'); window.location.href = user?.logout_url || '/oauth2/sign_out?rd=/'; }}>Logout</div>
+              <div className="menu-item" onClick={()=>window.location.href='/profile'}>Profile</div>
+              <div className="menu-item" onClick={()=>{ 
+                sessionStorage.setItem('respondr_logging_out','true'); 
+                const host = window.location.host;
+                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
+                window.location.href = url; 
+              }}>Switch Account</div>
+              <div className="menu-item" onClick={()=>{ 
+                sessionStorage.setItem('respondr_logging_out','true'); 
+                const host = window.location.host;
+                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/' : (user?.logout_url || '/oauth2/sign_out?rd=/');
+                window.location.href = url; 
+              }}>Logout</div>
             </div>
           )}
         </div>
@@ -449,8 +530,6 @@ function MainApp() {
 }
 
 function App() {
-  // Check if user is logging out - this will show the logout page after auth redirect
-  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
   const shouldUseMobile = React.useCallback(() => {
     try {
       if (typeof window === 'undefined') return false;
@@ -467,21 +546,26 @@ function App() {
     } catch { return false; }
   }, []);
   
-  React.useEffect(() => {
-    // Check for logout marker in sessionStorage
-    const loggingOut = sessionStorage.getItem('respondr_logging_out') === 'true';
-    if (loggingOut) {
-      // Clear the marker
-      sessionStorage.removeItem('respondr_logging_out');
-      setIsLoggingOut(true);
-    }
-  }, []);
-  
   return (
     <Router>
       <Routes>
-  <Route path="/" element={isLoggingOut ? <Logout /> : (shouldUseMobile() ? <Navigate to="/m" replace /> : <MainApp />)} />
-  <Route path="/m" element={<MobileView />} />
+  <Route path="/" element={
+          shouldUseMobile() ? <Navigate to="/m" replace /> : (
+            <AuthGate>
+              <MainApp />
+            </AuthGate>
+          )
+  } />
+        <Route path="/m" element={
+          <AuthGate>
+            <MobileView />
+          </AuthGate>
+        } />
+        <Route path="/profile" element={
+          <AuthGate>
+            <Profile />
+          </AuthGate>
+        } />
         <Route path="/logout" element={<Logout />} />
       </Routes>
     </Router>

@@ -8,10 +8,25 @@ export default function MobileView() {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [live, setLive] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
       setError(null);
+      // check auth first
+      try {
+        const ur = await fetch('/api/user');
+        if (!ur.ok) throw new Error('auth');
+        const uj = await ur.json();
+        setAuthChecked(true);
+        if (!uj.authenticated || uj.error === 'Access denied') {
+          setIsLoading(false);
+          setAccessDenied(uj);
+          setData([]);
+          return;
+        }
+      } catch {}
       const res = await fetch('/api/responders', { headers: { 'Accept': 'application/json' }});
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
@@ -171,6 +186,14 @@ export default function MobileView() {
 
       {error && (
         <div className="empty" role="alert">{error}</div>
+      )}
+      {authChecked && accessDenied && (
+        <div className="empty" role="alert">
+          {accessDenied.message || 'Access denied'}
+          <div style={{marginTop:12}}>
+            <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/sign_out?rd=/' : '/oauth2/sign_out?rd=/'}>Sign out</a>
+          </div>
+        </div>
       )}
 
       {isLoading ? (
