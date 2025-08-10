@@ -85,6 +85,23 @@ def now_tz() -> datetime:
 # Feature flag: enable an extra AI finalization pass on ETA
 ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
 
+# GroupMe group_id to Team mapping
+# Source: provided GroupMe group list
+GROUP_ID_TO_TEAM: Dict[str, str] = {
+    "102193274": "OSUTest",
+    "97608845": "4X4",
+    "6846970": "ASAR",
+    "61402638": "ASAR",
+    "19723040": "SSAR",
+    "96018206": "IMT",
+    "1596896": "K9",
+    "92390332": "ASAR",
+    "99606944": "OSU",
+    "14533239": "MSAR",
+    "106549466": "ESAR",
+    "16649586": "OSU",
+}
+
 # ============================================================================
 # AI Function Calling - Calculation Functions for Azure OpenAI
 # ============================================================================
@@ -705,6 +722,8 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     display_name = _normalize_display_name(name)
     text = data.get("text", "")
     created_at = data.get("created_at", 0)
+    group_id = str(data.get("group_id") or "")
+    team = GROUP_ID_TO_TEAM.get(group_id, "Unknown") if group_id else "Unknown"
     message_dt: datetime
     
     # Handle invalid or missing timestamps
@@ -743,10 +762,12 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     eta_info = calculate_eta_info(parsed.get("eta", "Unknown"), message_dt)
 
     message_record: Dict[str, Any] = {
-    "name": display_name,
+        "name": display_name,
         "text": text,
         "timestamp": timestamp,
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat() if message_dt else None,
+        "group_id": group_id or None,
+        "team": team,
         "vehicle": parsed.get("vehicle", "Unknown"),
         "eta": parsed.get("eta", "Unknown"),
         "eta_timestamp": eta_info.get("eta_timestamp"),
@@ -983,6 +1004,7 @@ def display_dashboard() -> str:
         <tr style='background-color: #f0f0f0;'>
             <th>Message Time</th>
             <th>Name</th>
+            <th>Team</th>
             <th>Vehicle</th>
             <th>ETA</th>
             <th>Minutes Out</th>
@@ -1000,6 +1022,7 @@ def display_dashboard() -> str:
     for msg in sorted_messages:
         # Color coding based on status
         vehicle = msg.get('vehicle', 'Unknown')
+        team = msg.get('team', 'Unknown')
         eta_display = msg.get('eta_timestamp') or msg.get('eta', 'Unknown')
         minutes_out = msg.get('minutes_until_arrival')
         status = msg.get('arrival_status', 'Unknown')
@@ -1022,6 +1045,7 @@ def display_dashboard() -> str:
         <tr style='background-color: {row_color};'>
             <td>{msg['timestamp']}</td>
             <td><strong>{msg['name']}</strong></td>
+            <td>{team}</td>
             <td>{vehicle}</td>
             <td>{eta_display}</td>
             <td>{minutes_display}</td>
