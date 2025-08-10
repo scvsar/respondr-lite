@@ -31,6 +31,47 @@ if ($Help) {
 Write-Host "🛠️  Respondr Local Development Setup" -ForegroundColor Green
 Write-Host "====================================" -ForegroundColor Green
 
+# Helpers: ensure Redis is available locally when not using Docker Compose
+function Test-RedisPort {
+    param([string]$RedisHost = 'localhost', [int]$RedisPort = 6379, [int]$TimeoutMs = 1000)
+    try {
+        $tcp = New-Object Net.Sockets.TcpClient
+        $iar = $tcp.BeginConnect($RedisHost, $RedisPort, $null, $null)
+        $success = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
+        if ($success -and $tcp.Connected) { $tcp.Close(); return $true }
+        $tcp.Close(); return $false
+    } catch { return $false }
+}
+
+function Start-LocalRedis {
+    Write-Host "Checking for Docker to start Redis..." -ForegroundColor Yellow
+    $docker = Get-Command docker -ErrorAction SilentlyContinue
+    if (-not $docker) {
+        Write-Host "Docker not found; cannot auto-start Redis. Install Docker Desktop or run Redis manually." -ForegroundColor Red
+        return $false
+    }
+    $running = (& docker ps --filter "name=respondr-redis" --filter "status=running" --format "{{.Names}}")
+    if ($running) { Write-Host "Redis container already running (respondr-redis)" -ForegroundColor Green; return $true }
+    $exists = (& docker ps -a --filter "name=respondr-redis" --format "{{.Names}}")
+    if ($exists) { & docker rm -f respondr-redis | Out-Null }
+    Write-Host "Starting Redis container on port 6379..." -ForegroundColor Yellow
+    & docker run -d --name respondr-redis -p 6379:6379 redis:7-alpine | Out-Null
+    Start-Sleep -Seconds 2
+    return (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379)
+}
+
+function Ensure-Redis {
+    if (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379) {
+        Write-Host "✅ Redis detected at localhost:6379" -ForegroundColor Green
+        return $true
+    }
+    Write-Host "ℹ️  Redis not detected locally. Attempting to start a Docker Redis..." -ForegroundColor Yellow
+    $started = Start-LocalRedis
+    if ($started) { Write-Host "✅ Redis started at localhost:6379" -ForegroundColor Green; return $true }
+    Write-Host "⚠️  Could not start Redis automatically. The backend will run with in-memory storage only (data will reset on reload)." -ForegroundColor Yellow
+    return $false
+}
+
 # Check if .env file exists
 if (-not (Test-Path "backend\.env")) {
     Write-Host "❌ backend\.env file not found!" -ForegroundColor Red
@@ -73,11 +114,14 @@ if ($Docker) {
     Write-Host "  1. Backend (FastAPI) on http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  2. Frontend (React) on http://localhost:3100" -ForegroundColor Cyan
     Write-Host ""
+
+    # Ensure Redis for local persistence
+    Ensure-Redis | Out-Null
     
     # Start backend in new terminal using venv python if available
     $venvPy = Join-Path $PWD "backend\.venv\Scripts\python.exe"
     $pyCmd = if (Test-Path $venvPy) { $venvPy } else { 'python' }
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:REDIS_HOST='localhost'; `$env:REDIS_PORT='6379'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
@@ -105,11 +149,16 @@ if ($Docker) {
     Write-Host "For testing, run in another terminal:" -ForegroundColor Yellow
     Write-Host "  .\dev-local.ps1 -Test" -ForegroundColor White
     Write-Host ""
+
+    # Ensure Redis for local persistence
+    Ensure-Redis | Out-Null
     
     Set-Location backend
     $venvPy = Join-Path $PWD "..\backend\.venv\Scripts\python.exe"
     if (-not (Test-Path $venvPy)) { $venvPy = 'python' }
     $env:TIMEZONE='America/Los_Angeles'
     $env:ALLOW_LOCAL_AUTH_BYPASS='true'
+    $env:REDIS_HOST='localhost'
+    $env:REDIS_PORT='6379'
     & $venvPy -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 }
