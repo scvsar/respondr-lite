@@ -33,13 +33,21 @@ jobs:
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
-      - name: Install backend deps with uv
+      - name: Create virtual environment (.venv) with uv
         run: |
+          uv venv .venv
+
+      - name: Install backend deps with uv
+        shell: bash
+        run: |
+          source .venv/bin/activate
           uv pip install -r backend/requirements.txt
 
       - name: Run tests
+        shell: bash
         run: |
-          uv run -m pytest -q backend
+          source .venv/bin/activate
+          pytest -q backend
 
   build-and-push:
     name: Build and push Docker image to ACR
