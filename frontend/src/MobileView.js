@@ -75,6 +75,22 @@ export default function MobileView() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : String(v)));
   };
+  // Fallback mapping for unit display on mobile
+  const GROUP_ID_TO_UNIT = {
+    "102193274": "OSU Test group",
+    "97608845": "SCVSAR 4X4 Team",
+    "6846970": "ASAR MEMBERS",
+    "61402638": "ASAR Social",
+    "19723040": "Snohomish Unit Mission Response",
+    "96018206": "SCVSAR-IMT",
+    "1596896": "SCVSAR K9 Team",
+    "92390332": "ASAR Drivers",
+    "99606944": "OSU - Social",
+    "14533239": "MSAR Mission Response",
+    "106549466": "ESAR Coordination",
+    "16649586": "OSU-MISSION RESPONSE",
+  };
+  const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
 
   const pad2 = (n) => String(n).padStart(2, '0');
   const formatTimestampDirect = (isoString) => {
@@ -222,6 +238,7 @@ export default function MobileView() {
                 <div className="mobile-name">{e.name || 'Unknown'}</div>
                 <div className="mobile-eta" title={`ETA ${etaDisplay(e)}`}>{etaDisplay(e)}</div>
               </div>
+              <div className="mobile-unit">{unitOf(e)}</div>
               <div className="mobile-vehicle">{vehicleMap(e.vehicle)}</div>
             </div>
           ))}

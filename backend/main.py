@@ -687,6 +687,9 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
             else:
                 logger.warning(f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}")
                 eta_value = "Unknown"
+
+        # Ensure normalized/validated ETA is applied to payload
+        parsed_json["eta"] = eta_value
         
         return parsed_json
         
@@ -1004,7 +1007,7 @@ def display_dashboard() -> str:
         <tr style='background-color: #f0f0f0;'>
             <th>Message Time</th>
             <th>Name</th>
-            <th>Team</th>
+            <th>Unit</th>
             <th>Vehicle</th>
             <th>ETA</th>
             <th>Minutes Out</th>
