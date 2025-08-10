@@ -8,10 +8,25 @@ export default function MobileView() {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [live, setLive] = useState(true);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [accessDenied, setAccessDenied] = useState(null);
 
   const fetchData = useCallback(async () => {
     try {
       setError(null);
+      // check auth first
+      try {
+        const ur = await fetch('/api/user');
+        if (!ur.ok) throw new Error('auth');
+        const uj = await ur.json();
+        setAuthChecked(true);
+        if (!uj.authenticated || uj.error === 'Access denied') {
+          setIsLoading(false);
+          setAccessDenied(uj);
+          setData([]);
+          return;
+        }
+      } catch {}
       const res = await fetch('/api/responders', { headers: { 'Accept': 'application/json' }});
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
@@ -60,6 +75,22 @@ export default function MobileView() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : String(v)));
   };
+  // Fallback mapping for unit display on mobile
+  const GROUP_ID_TO_UNIT = {
+    "102193274": "OSU Test group",
+    "97608845": "SCVSAR 4X4 Team",
+    "6846970": "ASAR MEMBERS",
+    "61402638": "ASAR Social",
+    "19723040": "Snohomish Unit Mission Response",
+    "96018206": "SCVSAR-IMT",
+    "1596896": "SCVSAR K9 Team",
+    "92390332": "ASAR Drivers",
+    "99606944": "OSU - Social",
+    "14533239": "MSAR Mission Response",
+    "106549466": "ESAR Coordination",
+    "16649586": "OSU-MISSION RESPONSE",
+  };
+  const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
 
   const pad2 = (n) => String(n).padStart(2, '0');
   const formatTimestampDirect = (isoString) => {
@@ -172,6 +203,14 @@ export default function MobileView() {
       {error && (
         <div className="empty" role="alert">{error}</div>
       )}
+      {authChecked && accessDenied && (
+        <div className="empty" role="alert">
+          {accessDenied.message || 'Access denied'}
+          <div style={{marginTop:12}}>
+            <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/sign_out?rd=/' : '/oauth2/sign_out?rd=/'}>Sign out</a>
+          </div>
+        </div>
+      )}
 
       {isLoading ? (
         <div className="mobile-list">
@@ -199,6 +238,7 @@ export default function MobileView() {
                 <div className="mobile-name">{e.name || 'Unknown'}</div>
                 <div className="mobile-eta" title={`ETA ${etaDisplay(e)}`}>{etaDisplay(e)}</div>
               </div>
+              <div className="mobile-unit">{unitOf(e)}</div>
               <div className="mobile-vehicle">{vehicleMap(e.vehicle)}</div>
             </div>
           ))}

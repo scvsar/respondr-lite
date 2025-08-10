@@ -1,8 +1,68 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
-import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import "./App.css";
 import Logout from './Logout';
 import MobileView from './MobileView';
+import Profile from './Profile';
+
+// Simple auth gate: ensures user is authenticated and from an allowed domain
+function AuthGate({ children }) {
+  const [user, setUser] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [denied, setDenied] = React.useState(null);
+  const loc = useLocation();
+
+  const signInUrl = React.useCallback((path) => {
+    const rd = encodeURIComponent(path || '/');
+    // If we're on port 3100 (CRA dev) and backend is on 8000, send user to backend's oauth start
+    const host = typeof window !== 'undefined' ? window.location.host : '';
+    const isDevPort = host.endsWith(':3100');
+    if (isDevPort) {
+      return `http://localhost:8000/oauth2/start?rd=${rd}`;
+    }
+    return `/oauth2/start?rd=${rd}`;
+  }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch('/api/user');
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (cancelled) return;
+        setUser(j);
+        if (!j.authenticated) {
+          // Not authenticated: redirect to sign-in preserving target
+          window.location.href = signInUrl(loc.pathname || '/');
+          return;
+        }
+        if (j.error === 'Access denied') {
+          setDenied(j);
+        }
+      } catch (e) {
+        if (!cancelled) setDenied({ error: 'Unable to verify sign-in' });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [loc.pathname, signInUrl]);
+
+  if (loading) return <div className="empty">Checking sign-in…</div>;
+  if (denied) {
+    return (
+      <div className="empty" role="alert">
+        {denied.message || 'Access denied'}
+        <div style={{marginTop:12}}>
+          <a className="btn" href="/oauth2/sign_out?rd=/">Sign out</a>
+        </div>
+      </div>
+    );
+  }
+  return children;
+}
 
 function MainApp() {
   const [data, setData] = useState([]);
@@ -17,6 +77,20 @@ function MainApp() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
   // popover removed
+  const [editMode, setEditMode] = useState(false);
+  const [selected, setSelected] = useState(()=>new Set());
+  const [showEditor, setShowEditor] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState({
+    name: '',
+    team: '',
+    group_id: '',
+    text: '',
+    vehicle: '',
+    timestamp: '', // datetime-local string
+    eta: '',       // free text HH:MM or words
+    eta_timestamp: '', // datetime-local string
+  });
 
   const fetchData = useCallback(async () => {
     try {
@@ -24,6 +98,17 @@ function MainApp() {
       if (sessionStorage.getItem('loggedOut')) {
         return;
       }
+      // Also don't fetch data if unauthenticated
+      try {
+        const ur = await fetch('/api/user');
+        if (!ur.ok) throw new Error('auth');
+        const uj = await ur.json();
+        if (!uj.authenticated || uj.error === 'Access denied') {
+          setIsLoading(false);
+          setData([]);
+          return;
+        }
+      } catch {}
       
       setError(null);
       const res = await fetch("/api/responders", { headers: { 'Accept': 'application/json' }});
@@ -137,6 +222,22 @@ function MainApp() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : v));
   };
+  // Fallback mapping for older messages without `team`
+  const GROUP_ID_TO_UNIT = {
+    "102193274": "OSU Test group",
+    "97608845": "SCVSAR 4X4 Team",
+    "6846970": "ASAR MEMBERS",
+    "61402638": "ASAR Social",
+    "19723040": "Snohomish Unit Mission Response",
+    "96018206": "SCVSAR-IMT",
+    "1596896": "SCVSAR K9 Team",
+    "92390332": "ASAR Drivers",
+    "99606944": "OSU - Social",
+    "14533239": "MSAR Mission Response",
+    "106549466": "ESAR Coordination",
+    "16649586": "OSU-MISSION RESPONSE",
+  };
+  const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
   // Timestamp helpers
   const parseTs = (ts) => {
     if (!ts) return null;
@@ -297,11 +398,11 @@ function MainApp() {
   };
 
   const exportCsv = () => {
-    const rows = ['Time,Name,Message,Vehicle,ETA,Status'];
+    const rows = ['Time,Name,Unit,Message,Vehicle,ETA,Status'];
     sorted.forEach(r => {
       const ts = formatTimestampDirect(useUTC ? r.timestamp_utc : r.timestamp);
       const etaStr = etaDisplay(r);
-      const row = [ts, r.name, (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
+      const row = [ts, r.name, unitOf(r), (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
       rows.push(row.map(v => /[",\n]/.test(String(v)) ? '"'+String(v)+'"' : String(v)).join(','));
     });
     const blob = new Blob([rows.join('\n')], {type: 'text/csv'});
@@ -310,15 +411,111 @@ function MainApp() {
     a.href = url; a.download = 'responders.csv'; a.click(); URL.revokeObjectURL(url);
   };
 
-  const clearAll = async () => {
+  // Removed clearAll endpoint usage; Edit Mode now supports selective deletion.
+
+  // Helpers for datetime-local
+  const toLocalInput = (ts) => {
+    if (!ts) return '';
     try {
-      const r = await fetch('/api/clear-all', { method: 'POST' });
-      if (r.ok) {
-        await fetchData();
-      } else {
-        alert('Clear all disabled. Set ALLOW_CLEAR_ALL=true or provide X-API-Key.');
-      }
-    } catch (e) { alert('Failed to clear'); }
+      // Accept ISO or 'YYYY-MM-DD HH:MM:SS'
+      const s = ts.includes('T') ? ts : ts.replace(' ', 'T');
+      const d = new Date(s);
+      if (isNaN(d.getTime())) return '';
+      const y = d.getFullYear();
+      const M = pad2(d.getMonth()+1);
+      const D = pad2(d.getDate());
+      const h = pad2(d.getHours());
+      const m = pad2(d.getMinutes());
+      return `${y}-${M}-${D}T${h}:${m}`;
+    } catch { return ''; }
+  };
+  const fromLocalInput = (val) => {
+    if (!val) return '';
+    // Keep seconds as :00 for consistency
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(val)) return `${val}:00`;
+    return val;
+  };
+
+  const resetForm = (seed = {}) => {
+    setForm({
+      name: seed.name || '',
+      team: seed.team || '',
+      group_id: seed.group_id || '',
+      text: seed.text || '',
+      vehicle: seed.vehicle || '',
+      timestamp: toLocalInput(seed.timestamp) || '',
+      eta: seed.eta || '',
+      eta_timestamp: toLocalInput(seed.eta_timestamp) || '',
+    });
+  };
+  const openAdd = () => {
+    setEditingId(null);
+    resetForm({ timestamp: new Date().toISOString() });
+    setShowEditor(true);
+  };
+  const openEdit = () => {
+    if (selected.size !== 1) return;
+    const id = Array.from(selected)[0];
+    const item = data.find(x => String(x.id) === String(id));
+    if (!item) return;
+    setEditingId(id);
+    resetForm(item);
+    setShowEditor(true);
+  };
+  const saveForm = async () => {
+    const payload = {
+      name: form.name?.trim() || undefined,
+      team: form.team?.trim() || undefined,
+      group_id: form.group_id?.trim() || undefined,
+      text: form.text ?? '',
+      vehicle: form.vehicle?.trim() || undefined,
+    };
+    if (form.timestamp) payload.timestamp = fromLocalInput(form.timestamp);
+    if (form.eta_timestamp) payload.eta_timestamp = fromLocalInput(form.eta_timestamp);
+    if (form.eta && !form.eta_timestamp) payload.eta = form.eta;
+
+    const opts = {
+      method: editingId ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(payload),
+    };
+    const url = editingId ? `/api/responders/${editingId}` : '/api/responders';
+    const r = await fetch(url, opts);
+    if (!r.ok) { alert('Save failed'); return; }
+    setShowEditor(false);
+    setEditingId(null);
+    setSelected(new Set());
+    await fetchData();
+  };
+  const deleteSelected = async () => {
+    if (!selected.size) return;
+    if (!window.confirm(`Delete ${selected.size} entr${selected.size===1?'y':'ies'}?`)) return;
+    let ok = true;
+    if (selected.size === 1) {
+      const id = Array.from(selected)[0];
+      const r = await fetch(`/api/responders/${id}`, { method: 'DELETE' });
+      ok = r.ok;
+    } else {
+      const r = await fetch('/api/responders/bulk-delete', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: Array.from(selected) }),
+      });
+      ok = r.ok;
+    }
+    if (!ok) { alert('Delete failed'); return; }
+    setSelected(new Set());
+    await fetchData();
+  };
+  const toggleRow = (id) => {
+    setSelected(prev => {
+      const n = new Set(prev);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+  const toggleAll = () => {
+    if (selected.size === sorted.length) setSelected(new Set());
+    else setSelected(new Set(sorted.map(x => x.id)));
   };
 
   const sortButton = (label, key) => (
@@ -347,9 +544,25 @@ function MainApp() {
           {menuOpen && (
             <div className="menu" role="menu">
               {user?.email && <div className="menu-item" aria-disabled>Signed in as {user.email}</div>}
-              <div className="menu-item" onClick={()=>window.location.href='/'}>Profile</div>
-              <div className="menu-item" onClick={()=>window.location.href='/'}>Switch Account</div>
-              <div className="menu-item" onClick={()=>{ sessionStorage.setItem('respondr_logging_out','true'); window.location.href = user?.logout_url || '/oauth2/sign_out?rd=/'; }}>Logout</div>
+              <div className="menu-item" onClick={()=>window.location.href='/profile'}>Profile</div>
+              <div className="menu-item" onClick={()=>{ 
+                try { window.localStorage.removeItem('respondr_force_desktop'); } catch {}
+                const u = new URL(window.location.origin + '/m');
+                u.searchParams.set('mobile','1');
+                window.location.href = u.toString();
+              }}>Mobile Site</div>
+              <div className="menu-item" onClick={()=>{ 
+                sessionStorage.setItem('respondr_logging_out','true'); 
+                const host = window.location.host;
+                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
+                window.location.href = url; 
+              }}>Switch Account</div>
+              <div className="menu-item" onClick={()=>{ 
+                sessionStorage.setItem('respondr_logging_out','true'); 
+                const host = window.location.host;
+                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/' : (user?.logout_url || '/oauth2/sign_out?rd=/');
+                window.location.href = url; 
+              }}>Logout</div>
             </div>
           )}
         </div>
@@ -378,7 +591,16 @@ function MainApp() {
           <label className="toggle"><input type="checkbox" checked={useUTC} onChange={e=>setUseUTC(e.target.checked)} /> UTC</label>
           <button className="btn" onClick={()=>fetchData()} title="Refresh now">Refresh</button>
           <button className="btn" onClick={exportCsv} title="Export CSV">Export</button>
-          <button className="btn" onClick={clearAll} title="Clear all data">Clear</button>
+          {/* Clear-all removed; use Edit Mode delete instead */}
+          <span style={{width:12}} />
+          <label className="toggle"><input type="checkbox" checked={editMode} onChange={e=>{ setEditMode(e.target.checked); setSelected(new Set()); }} /> Edit</label>
+          {editMode && (
+            <>
+              <button className="btn primary" onClick={openAdd}>Add</button>
+              <button className="btn" onClick={openEdit} disabled={selected.size!==1}>Edit</button>
+              <button className="btn" onClick={deleteSelected} disabled={selected.size===0}>Delete</button>
+            </>
+          )}
         </div>
       </div>
 
@@ -406,8 +628,14 @@ function MainApp() {
         <table className="dashboard-table" role="table">
           <thead>
             <tr>
+              {editMode && (
+                <th style={{width:36}}>
+                  <input type="checkbox" aria-label="Select all" checked={selected.size===sorted.length && sorted.length>0} onChange={toggleAll} />
+                </th>
+              )}
               <th className="col-time">{sortButton('Time','timestamp')}</th>
               <th>Name</th>
+              <th>Unit</th>
               <th>Message</th>
               <th>Vehicle</th>
               <th>{sortButton('ETA','eta')}</th>
@@ -417,19 +645,25 @@ function MainApp() {
           <tbody>
             {isLoading && (
               [...Array(5)].map((_,i)=> (
-                <tr key={i}><td className="col-time"><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'60px'}}/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton" style={{width:'100px'}}/></td></tr>
+                <tr key={i}><td className="col-time"><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'60px'}}/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton" style={{width:'100px'}}/></td></tr>
               ))
             )}
             {!isLoading && sorted.length === 0 && (
-              <tr><td colSpan="6" className="empty">No data. <button className="btn" onClick={()=>{ setQuery(''); setVehicleFilter([]); setStatusFilter([]); }}>Clear filters</button></td></tr>
+              <tr><td colSpan="7" className="empty">No data. <button className="btn" onClick={()=>{ setQuery(''); setVehicleFilter([]); setStatusFilter([]); }}>Clear filters</button></td></tr>
             )}
             {!isLoading && sorted.map((entry, index) => {
               const s = statusOf(entry);
               const pillClass = s==='Responding' ? 'status-responding' : (s==='Not Responding' ? 'status-not' : 'status-unknown');
               return (
-                <tr key={index}>
+                <tr key={entry.id || index} className={selected.has(entry.id)?'row-selected':''}>
+                  {editMode && (
+                    <td>
+                      <input type="checkbox" aria-label={`Select ${entry.name}`} checked={selected.has(entry.id)} onChange={()=>toggleRow(entry.id)} />
+                    </td>
+                  )}
                   <td className="col-time" title={formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}>{formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}</td>
                   <td>{entry.name}</td>
+                  <td>{unitOf(entry)}</td>
                   <td>
                     <div className="msg">{entry.text}</div>
                   </td>
@@ -444,21 +678,70 @@ function MainApp() {
           </tbody>
         </table>
       </div>
+
+      {showEditor && (
+        <div className="modal-backdrop" onClick={()=>setShowEditor(false)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} role="dialog" aria-modal>
+            <div className="modal-title">{editingId ? 'Edit Entry' : 'Add Entry'}</div>
+            <div className="form-grid">
+              <label>
+                <span>Name</span>
+                <input className="input" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} />
+              </label>
+              <label>
+                <span>Unit/Team</span>
+                <input className="input" value={form.team} onChange={e=>setForm(f=>({...f,team:e.target.value}))} />
+              </label>
+              <label>
+                <span>Group ID</span>
+                <input className="input" value={form.group_id} onChange={e=>setForm(f=>({...f,group_id:e.target.value}))} />
+              </label>
+              <label className="span-2">
+                <span>Message</span>
+                <textarea className="input" rows={3} value={form.text} onChange={e=>setForm(f=>({...f,text:e.target.value}))} />
+              </label>
+              <label>
+                <span>Vehicle</span>
+                <input className="input" placeholder="SAR-12 | POV | Not Responding" value={form.vehicle} onChange={e=>setForm(f=>({...f,vehicle:e.target.value}))} />
+              </label>
+              <label>
+                <span>Time</span>
+                <input className="input" type="datetime-local" value={form.timestamp} onChange={e=>setForm(f=>({...f,timestamp:e.target.value}))} />
+              </label>
+              <label>
+                <span>ETA (text)</span>
+                <input className="input" placeholder="HH:MM or '15 minutes'" value={form.eta} onChange={e=>setForm(f=>({...f,eta:e.target.value}))} />
+              </label>
+              <label>
+                <span>ETA time</span>
+                <input className="input" type="datetime-local" value={form.eta_timestamp} onChange={e=>setForm(f=>({...f,eta_timestamp:e.target.value}))} />
+              </label>
+            </div>
+            <div className="modal-actions">
+              <button className="btn" onClick={()=>setShowEditor(false)}>Cancel</button>
+              <button className="btn primary" onClick={saveForm}>Save</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function App() {
-  // Check if user is logging out - this will show the logout page after auth redirect
-  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
   const shouldUseMobile = React.useCallback(() => {
     try {
       if (typeof window === 'undefined') return false;
       const params = new URLSearchParams(window.location.search);
       const desktopParam = params.get('desktop');
+      const mobileParam = params.get('mobile');
       if (desktopParam === '1' || desktopParam === 'true') {
         try { window.localStorage.setItem('respondr_force_desktop','true'); } catch {}
         return false;
+      }
+      if (desktopParam === '0' || desktopParam === 'false' || mobileParam === '1' || mobileParam === 'true') {
+        try { window.localStorage.removeItem('respondr_force_desktop'); } catch {}
+        if (mobileParam === '1' || mobileParam === 'true') return true;
       }
       const forced = (() => { try { return window.localStorage.getItem('respondr_force_desktop') === 'true'; } catch { return false; } })();
       if (forced) return false;
@@ -467,21 +750,26 @@ function App() {
     } catch { return false; }
   }, []);
   
-  React.useEffect(() => {
-    // Check for logout marker in sessionStorage
-    const loggingOut = sessionStorage.getItem('respondr_logging_out') === 'true';
-    if (loggingOut) {
-      // Clear the marker
-      sessionStorage.removeItem('respondr_logging_out');
-      setIsLoggingOut(true);
-    }
-  }, []);
-  
   return (
     <Router>
       <Routes>
-  <Route path="/" element={isLoggingOut ? <Logout /> : (shouldUseMobile() ? <Navigate to="/m" replace /> : <MainApp />)} />
-  <Route path="/m" element={<MobileView />} />
+  <Route path="/" element={
+          shouldUseMobile() ? <Navigate to="/m" replace /> : (
+            <AuthGate>
+              <MainApp />
+            </AuthGate>
+          )
+  } />
+        <Route path="/m" element={
+          <AuthGate>
+            <MobileView />
+          </AuthGate>
+        } />
+        <Route path="/profile" element={
+          <AuthGate>
+            <Profile />
+          </AuthGate>
+        } />
         <Route path="/logout" element={<Logout />} />
       </Routes>
     </Router>

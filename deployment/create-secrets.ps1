@@ -92,52 +92,54 @@ try {
     $deploymentValidated = $false
     
     try {
-        # Get list of deployed models
-        $deploymentsCommand = "az cognitiveservices account deployment list -n `"$openAIName`" -g `"$ResourceGroupName`" --query `"[].name`" -o json"
+        # Get list of deployed models with names and model identifiers
+        $deploymentsCommand = "az cognitiveservices account deployment list -n `"$openAIName`" -g `"$ResourceGroupName`" --query `"[].{name:name, model:properties.model.name}`" -o json"
         $deploymentsJson = Invoke-Expression $deploymentsCommand
-        $deployments = $deploymentsJson | ConvertFrom-Json
-        
-        # Ensure $deployments is always treated as an array
-        if ($deployments -is [string]) {
-            $deployments = @($deployments)
-        } elseif ($deployments -and -not ($deployments -is [array])) {
-            $deployments = @($deployments)
+        $deploymentObjs = $deploymentsJson | ConvertFrom-Json
+
+        # Ensure $deploymentObjs is always treated as an array
+        if ($deploymentObjs -and -not ($deploymentObjs -is [array])) {
+            $deploymentObjs = @($deploymentObjs)
         }
-        
-        if ($deployments -and @($deployments).Count -gt 0) {
-            Write-Host "  Found deployments: $($deployments -join ', ')" -ForegroundColor Cyan
-            Write-Host "  Deployment count: $(@($deployments).Count)" -ForegroundColor Gray
-            
+
+        if ($deploymentObjs -and @($deploymentObjs).Count -gt 0) {
+            $deploymentSummaries = $deploymentObjs | ForEach-Object { if ($_.model) { "$(($_.name))[$($_.model)]" } else { $_.name } }
+            Write-Host "  Found deployments: $($deploymentSummaries -join ', ')" -ForegroundColor Cyan
+            Write-Host "  Deployment count: $(@($deploymentObjs).Count)" -ForegroundColor Gray
+
             if ($OpenAIDeploymentName) {
-                # Check if the specified deployment exists
-                if ($deployments -contains $OpenAIDeploymentName) {
-                    Write-Host "  Specified deployment '$OpenAIDeploymentName' found" -ForegroundColor Green
+                # Check if the specified deployment exists (case-insensitive by name)
+                $specified = $deploymentObjs | Where-Object { $_.name -ieq $OpenAIDeploymentName } | Select-Object -First 1
+                if ($specified) {
+                    Write-Host "  Specified deployment '$OpenAIDeploymentName' found (model: $($specified.model))" -ForegroundColor Green
+                    $actualDeploymentName = $specified.name
                     $deploymentValidated = $true
                 } else {
                     Write-Host "  ⚠️  Specified deployment '$OpenAIDeploymentName' not found in deployed models" -ForegroundColor Yellow
                     $actualDeploymentName = "YOUR_DEPLOYMENT_NAME_HERE"
                 }
             } else {
-                # No deployment specified, try to find a reasonable default
-                $preferredModels = @("gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-35-turbo")
-                $foundModel = $null
-                
+                # No deployment specified, try to find a reasonable default by model or name prefix
+                $preferredModels = @("gpt-5-nano", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-35-turbo")
+                $found = $null
+
                 foreach ($preferred in $preferredModels) {
-                    if ($deployments -contains $preferred) {
-                        $foundModel = $preferred
-                        break
-                    }
+                    $found = $deploymentObjs | Where-Object {
+                        ($_.model -and ($_.model -ieq $preferred -or $_.model -ilike "$preferred*")) -or 
+                        ($_.name -and ($_.name -ieq $preferred -or $_.name -ilike "$preferred*"))
+                    } | Select-Object -First 1
+                    if ($found) { break }
                 }
-                
-                if ($foundModel) {
-                    $actualDeploymentName = $foundModel
+
+                if ($found) {
+                    $actualDeploymentName = $found.name
                     $deploymentValidated = $true
-                    Write-Host "  Using found deployment: '$foundModel'" -ForegroundColor Green
+                    Write-Host "  Using deployment by preference match: '$($found.name)' (model: $($found.model))" -ForegroundColor Green
                 } else {
                     # Use the first available deployment
-                    $actualDeploymentName = $deployments[0]
+                    $actualDeploymentName = $deploymentObjs[0].name
                     $deploymentValidated = $true
-                    Write-Host "  Using first available deployment: '$actualDeploymentName'" -ForegroundColor Green
+                    Write-Host "  Using first available deployment: '$actualDeploymentName' (model: $($deploymentObjs[0].model))" -ForegroundColor Green
                 }
             }
         } else {
