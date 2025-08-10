@@ -208,6 +208,22 @@ function MainApp() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : v));
   };
+  // Fallback mapping for older messages without `team`
+  const GROUP_ID_TO_UNIT = {
+    "102193274": "OSU Test group",
+    "97608845": "SCVSAR 4X4 Team",
+    "6846970": "ASAR MEMBERS",
+    "61402638": "ASAR Social",
+    "19723040": "Snohomish Unit Mission Response",
+    "96018206": "SCVSAR-IMT",
+    "1596896": "SCVSAR K9 Team",
+    "92390332": "ASAR Drivers",
+    "99606944": "OSU - Social",
+    "14533239": "MSAR Mission Response",
+    "106549466": "ESAR Coordination",
+    "16649586": "OSU-MISSION RESPONSE",
+  };
+  const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
   // Timestamp helpers
   const parseTs = (ts) => {
     if (!ts) return null;
@@ -368,11 +384,11 @@ function MainApp() {
   };
 
   const exportCsv = () => {
-    const rows = ['Time,Name,Message,Vehicle,ETA,Status'];
+    const rows = ['Time,Name,Unit,Message,Vehicle,ETA,Status'];
     sorted.forEach(r => {
       const ts = formatTimestampDirect(useUTC ? r.timestamp_utc : r.timestamp);
       const etaStr = etaDisplay(r);
-      const row = [ts, r.name, (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
+      const row = [ts, r.name, unitOf(r), (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
       rows.push(row.map(v => /[",\n]/.test(String(v)) ? '"'+String(v)+'"' : String(v)).join(','));
     });
     const blob = new Blob([rows.join('\n')], {type: 'text/csv'});
@@ -419,6 +435,12 @@ function MainApp() {
             <div className="menu" role="menu">
               {user?.email && <div className="menu-item" aria-disabled>Signed in as {user.email}</div>}
               <div className="menu-item" onClick={()=>window.location.href='/profile'}>Profile</div>
+              <div className="menu-item" onClick={()=>{ 
+                try { window.localStorage.removeItem('respondr_force_desktop'); } catch {}
+                const u = new URL(window.location.origin + '/m');
+                u.searchParams.set('mobile','1');
+                window.location.href = u.toString();
+              }}>Mobile Site</div>
               <div className="menu-item" onClick={()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
@@ -489,6 +511,7 @@ function MainApp() {
             <tr>
               <th className="col-time">{sortButton('Time','timestamp')}</th>
               <th>Name</th>
+              <th>Unit</th>
               <th>Message</th>
               <th>Vehicle</th>
               <th>{sortButton('ETA','eta')}</th>
@@ -498,11 +521,11 @@ function MainApp() {
           <tbody>
             {isLoading && (
               [...Array(5)].map((_,i)=> (
-                <tr key={i}><td className="col-time"><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'60px'}}/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton" style={{width:'100px'}}/></td></tr>
+                <tr key={i}><td className="col-time"><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'60px'}}/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton" style={{width:'100px'}}/></td></tr>
               ))
             )}
             {!isLoading && sorted.length === 0 && (
-              <tr><td colSpan="6" className="empty">No data. <button className="btn" onClick={()=>{ setQuery(''); setVehicleFilter([]); setStatusFilter([]); }}>Clear filters</button></td></tr>
+              <tr><td colSpan="7" className="empty">No data. <button className="btn" onClick={()=>{ setQuery(''); setVehicleFilter([]); setStatusFilter([]); }}>Clear filters</button></td></tr>
             )}
             {!isLoading && sorted.map((entry, index) => {
               const s = statusOf(entry);
@@ -511,6 +534,7 @@ function MainApp() {
                 <tr key={index}>
                   <td className="col-time" title={formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}>{formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}</td>
                   <td>{entry.name}</td>
+                  <td>{unitOf(entry)}</td>
                   <td>
                     <div className="msg">{entry.text}</div>
                   </td>
@@ -535,9 +559,14 @@ function App() {
       if (typeof window === 'undefined') return false;
       const params = new URLSearchParams(window.location.search);
       const desktopParam = params.get('desktop');
+      const mobileParam = params.get('mobile');
       if (desktopParam === '1' || desktopParam === 'true') {
         try { window.localStorage.setItem('respondr_force_desktop','true'); } catch {}
         return false;
+      }
+      if (desktopParam === '0' || desktopParam === 'false' || mobileParam === '1' || mobileParam === 'true') {
+        try { window.localStorage.removeItem('respondr_force_desktop'); } catch {}
+        if (mobileParam === '1' || mobileParam === 'true') return true;
       }
       const forced = (() => { try { return window.localStorage.getItem('respondr_force_desktop') === 'true'; } catch { return false; } })();
       if (forced) return false;
