@@ -12,7 +12,10 @@ param(
     [string]$SubscriptionId,
 
     [Parameter(Mandatory = $false)]
-    [string]$AppDisplayName
+    [string]$AppDisplayName,
+
+    [Parameter(Mandatory = $false)]
+    [string]$AcrName
 )
 
 Write-Host "🔧 Configuring GitHub OIDC + repo secrets for CI/CD..." -ForegroundColor Yellow
@@ -41,7 +44,7 @@ try {
 if (-not $SubscriptionId) { $SubscriptionId = $account.id }
 $TenantId = $account.tenantId
 
-# Resolve ACR details via values.yaml or Azure queries
+# Resolve ACR details via values.yaml, explicit parameter, or Azure queries
 $acrName = $null
 $acrLoginServer = $null
 if (Test-Path "values.yaml") {
@@ -49,14 +52,33 @@ if (Test-Path "values.yaml") {
     $acrName = ($values | Select-String 'acrName: "([^"]+)"').Matches.Groups[1].Value
     $acrLoginServer = ($values | Select-String 'acrLoginServer: "([^"]+)"').Matches.Groups[1].Value
 }
+# Explicit parameter takes precedence
+if ($AcrName) { $acrName = $AcrName }
+
 if (-not $acrName) {
-    $acrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv
+    # Try finding ACR in the specified resource group first
+    $rgAcrName = az acr list -g $ResourceGroupName --query "[0].name" -o tsv 2>$null
+    if ($rgAcrName) {
+        $acrName = $rgAcrName
+    } else {
+        # Fall back to subscription-wide discovery
+        $acrListJson = az acr list -o json 2>$null
+        $acrList = @()
+        if ($acrListJson) {
+            try { $acrList = $acrListJson | ConvertFrom-Json } catch { $acrList = @() }
+        }
+        if ($acrList.Count -eq 1) {
+            $acrName = $acrList[0].name
+        } elseif ($acrList.Count -gt 1) {
+            throw "Multiple ACRs found in the subscription. Please specify one with -AcrName."
+        }
+    }
 }
 if (-not $acrLoginServer -and $acrName) {
     $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
 }
 if (-not $acrName -or -not $acrLoginServer) {
-    throw "Could not resolve ACR details. Ensure ACR exists or values.yaml is generated."
+    throw "Could not resolve ACR details. Ensure an ACR exists in your subscription, or pass -AcrName <name>."
 }
 $acrId = az acr show --name $acrName --query id -o tsv
 
