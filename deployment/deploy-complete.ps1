@@ -66,6 +66,11 @@ param(
 
     [Parameter(Mandatory=$false)]
     [switch]$SetupAcrWebhook
+    ,
+    [Parameter(Mandatory=$false)]
+    [switch]$SetupGithubOidc,
+    [Parameter(Mandatory=$false)]
+    [string]$GithubRepo
 )
 
 $hostname = "respondr.$Domain"
@@ -532,4 +537,14 @@ Write-Host "Deployment completed!" -ForegroundColor Green
 if ($SetupAcrWebhook -and -not $DryRun) {
     Write-Host "\n🪝 Configuring ACR webhook..." -ForegroundColor Yellow
     & (Join-Path $PSScriptRoot 'configure-acr-webhook.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
+}
+
+# Optional: Configure GitHub OIDC and repo secrets
+if ($SetupGithubOidc -and -not $DryRun) {
+    if (-not $GithubRepo) {
+        Write-Warning "SetupGithubOidc requested but GithubRepo not provided (expected format owner/repo). Skipping."
+    } else {
+        Write-Host "\n🔐 Configuring GitHub OIDC + secrets for $GithubRepo ..." -ForegroundColor Yellow
+        & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo
+    }
 }

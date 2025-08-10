@@ -166,6 +166,57 @@ Manual ACR wiring:
 2) Ensure `imagePullPolicy: Always`
 3) Verify by pushing a new tag; watch: `kubectl rollout status deploy/respondr-deployment -n respondr`
 
+## CI/CD with GitHub Actions
+
+Automated tests run on PRs, and on merge to `main` an image is built and pushed to ACR.
+
+What runs
+- PRs to main: Backend tests with a uv virtualenv (no deploy)
+- Push to main: Build Docker image, login to ACR, push `latest` and commit SHA tags
+
+Setup (recommended: OIDC, no client secret)
+Prereqs: Azure CLI (`az login`), GitHub CLI (`gh auth login`), Owner/Admin on the repo, and Contributor on the Azure subscription.
+
+Option A — One‑time automated setup
+1) From `deployment/`, run the OIDC + secrets setup:
+   - `./setup-github-oidc.ps1 -ResourceGroupName <rg> -Repo <owner/repo>`
+   - This will:
+     - Create/find an Azure App Registration + Service Principal
+     - Add federated credentials for the repo (branch and pull_request)
+     - Assign AcrPush on your ACR
+     - Set these repo secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ACR_NAME, ACR_LOGIN_SERVER
+
+Option B — Service Principal (JSON secret)
+- Create an App Registration + Client Secret manually, assign AcrPush to your ACR, then set one secret:
+  - AZURE_CREDENTIALS: JSON with clientId, clientSecret, subscriptionId, tenantId
+- You can omit the OIDC secrets if you use AZURE_CREDENTIALS.
+
+Minimal required secrets
+- Prefer OIDC: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+- Or Service Principal: AZURE_CREDENTIALS (JSON)
+- ACR resolution: ACR_NAME (e.g., respondracr) or ACR_LOGIN_SERVER (e.g., respondracr.azurecr.io)
+
+How the workflow works
+- Tests job (PRs and pushes):
+  - Installs uv, creates `.venv`, installs `backend/requirements.txt`
+  - Sets `WEBHOOK_API_KEY=test-key` and runs `pytest` for `backend` while ignoring `backend/test_system.py`
+- Build job (push to main only):
+  - Logs into Azure via OIDC or AZURE_CREDENTIALS
+  - Resolves ACR login server using ACR_NAME or ACR_LOGIN_SERVER
+  - `az acr login`, then Docker build and push with two tags: `latest` and the commit SHA
+
+Troubleshooting
+- Azure login fails:
+  - OIDC: Ensure federated credentials exist for your repo/branch, and the repo secrets AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_SUBSCRIPTION_ID are set
+  - SP JSON: Ensure AZURE_CREDENTIALS is valid JSON with the four fields and the SP has AcrPush on the ACR
+- ACR not found or login server empty:
+  - Set ACR_NAME or ACR_LOGIN_SERVER as a repo secret; confirm the ACR exists in the target subscription
+- Push denied:
+  - Verify AcrPush role assignment to the SP/App; re‑run `setup-github-oidc.ps1` if needed
+- Webhook doesn’t redeploy:
+  - Confirm ACR webhook is configured to POST to `/internal/acr-webhook` with header `X-ACR-Token`
+  - Check the token in the ACR webhook matches the one stored in Kubernetes secret `respondr-secrets` (key `ACR_WEBHOOK_TOKEN`)
+
 ## Local development
 
 Pick a mode:
