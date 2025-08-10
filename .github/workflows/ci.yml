@@ -1,0 +1,86 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE_NAME: respondr
+  # Set this in repo secrets to your ACR name (e.g., respondracr)
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+
+jobs:
+  test-backend:
+    name: Backend tests (uv)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install backend deps with uv
+        run: |
+          uv pip install -r backend/requirements.txt
+
+      - name: Run tests
+        run: |
+          uv run -m pytest -q backend
+
+  build-and-push:
+    name: Build and push Docker image to ACR
+    needs: test-backend
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Resolve ACR login server
+        id: acr
+        shell: bash
+        run: |
+          if [ -z "${ACR_NAME}" ]; then
+            echo "ACR_NAME secret is missing" >&2
+            exit 1
+          fi
+          LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+          echo "loginServer=$LOGIN_SERVER" >> $GITHUB_OUTPUT
+
+      - name: ACR Login
+        run: |
+          az acr login --name "$ACR_NAME"
+
+      - name: Build image
+        run: |
+          docker build -t ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:latest \
+                       -t ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+      - name: Push image
+        run: |
+          docker push ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:latest
+          docker push ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Summary
+        run: |
+          echo "Pushed: ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_STEP_SUMMARY
+          echo "Pushed: ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
