@@ -70,7 +70,9 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$SetupGithubOidc,
     [Parameter(Mandatory=$false)]
-    [string]$GithubRepo
+    [string]$GithubRepo,
+    [Parameter(Mandatory=$false)]
+    [string]$GithubBranch = "main"
 )
 
 $hostname = "respondr.$Domain"
@@ -545,6 +547,19 @@ if ($SetupGithubOidc -and -not $DryRun) {
         Write-Warning "SetupGithubOidc requested but GithubRepo not provided (expected format owner/repo). Skipping."
     } else {
         Write-Host "\n🔐 Configuring GitHub OIDC + secrets for $GithubRepo ..." -ForegroundColor Yellow
-        & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo
+        # Try to pass ACR name if we can resolve it from values.yaml
+        $acrNameForOidc = $null
+        $valuesPath = Join-Path $PSScriptRoot 'values.yaml'
+        if (Test-Path $valuesPath) {
+            try {
+                $valuesRaw = Get-Content $valuesPath -Raw
+                $acrNameForOidc = ($valuesRaw | Select-String 'acrName: "([^"]+)"').Matches[0].Groups[1].Value
+            } catch {}
+        }
+        if ($acrNameForOidc) {
+            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -AcrName $acrNameForOidc -Branch $GithubBranch
+        } else {
+            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -Branch $GithubBranch
+        }
     }
 }
