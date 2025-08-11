@@ -63,7 +63,7 @@ const StatusTabs = ({
   const filteredCurrentStatus = useMemo(() => {
     if (!currentStatusData?.length) return [];
     const q = query.trim().toLowerCase();
-    return currentStatusData.filter(entry => {
+    const filtered = currentStatusData.filter(entry => {
       const status = statusOf(entry);
       if (statusFilter.length && !statusFilter.includes(status)) return false;
       const vehResolved = resolveVehicle(entry);
@@ -72,8 +72,11 @@ const StatusTabs = ({
         const hay = [entry.name, entry.text, vehResolved, status].map(x => String(x||'').toLowerCase());
         if (!hay.some(h => h.includes(q))) return false;
       }
+      
       return true;
     });
+    
+    return filtered;
   }, [currentStatusData, statusFilter, vehicleFilter, query, statusOf, resolveVehicle]);
 
   // Sort current status data after filtering
@@ -154,7 +157,9 @@ const StatusTabs = ({
 
   const renderTable = (tableData, loading, error, showAllColumns = false) => {
     return (
-      <div className="table-wrap">
+      <div>
+        <div className="table-spacer" aria-hidden="true"></div>
+        <div className="table-wrap">
         <table className="dashboard-table" role="table">
           <thead>
             <tr>
@@ -246,6 +251,7 @@ const StatusTabs = ({
             })}
           </tbody>
         </table>
+  </div>
       </div>
     );
   };
