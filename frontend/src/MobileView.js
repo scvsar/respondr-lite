@@ -59,6 +59,7 @@ export default function MobileView() {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
       if (entry.arrival_status === 'Cancelled') return 'Cancelled';
       if (entry.arrival_status === 'Available') return 'Available';
+  if (entry.arrival_status === 'Responding') return 'Responding';
       if (entry.arrival_status === 'Informational') return 'Informational';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
