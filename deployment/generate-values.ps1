@@ -5,7 +5,13 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Domain,
     
-    [string]$Namespace = "respondr"
+    [string]$Namespace = "respondr",
+
+    [Parameter(Mandatory = $false)]
+    [string]$HostPrefix = "respondr",
+
+    [Parameter(Mandatory = $false)]
+    [string]$ImageTag = "latest"
 )
 
 Write-Host "🔧 Generating deployment configuration from current Azure environment..." -ForegroundColor Cyan
@@ -69,7 +75,8 @@ try {
 }
 
 # Construct full hostname
-$hostname = "respondr.$Domain"
+if (-not $HostPrefix -or $HostPrefix -eq "") { $HostPrefix = "respondr" }
+$hostname = "$HostPrefix.$Domain"
 $oauth2RedirectUrl = "https://$hostname/oauth2/callback"
 
 # Generate values.yaml
@@ -88,7 +95,7 @@ resourceGroupName: "$ResourceGroupName"
 acrName: "$acrName"
 acrLoginServer: "$acrLoginServer"
 imageName: "respondr"
-imageTag: "latest"
+imageTag: "$ImageTag"
 
 # Azure OpenAI
 azureOpenAIEndpoint: "$azureOpenAIEndpoint"
