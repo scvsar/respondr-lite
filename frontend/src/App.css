@@ -154,9 +154,11 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   position: sticky;
-  top: 112px; /* appbar (56) + toolbar (56) */
+  top: 156px; /* app bar 56 + toolbar 56 + tabs ~44 */
   z-index: 800;
 }
+/* Current Status (no extra header shift needed beyond tabs) */
+.status-tabs-active .current-status-tab .dashboard-table th { top: 156px; }
 .dashboard-table tbody tr:nth-child(even) { background-color: #171717; }
 .dashboard-table tbody tr:hover { background: var(--hover); }
 /* Sticky first column: header keeps its own bg; cells inherit row bg to preserve striping */
@@ -256,3 +258,12 @@
 .input { background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; width: 100%; }
 .form-grid label { display:flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
 .modal-actions { margin-top: 12px; display:flex; justify-content: flex-end; gap: 8px; }
+
+/* Tab Layout Enhancements (revised) */
+/* Keep natural document flow; avoid forcing full-viewport flex which broke scrolling */
+
+/* Restore normal table padding inside tab content */
+.tab-content .table-wrap { padding: 16px; }
+
+/* Ensure dashboard table still spans width with padding context */
+.tab-content .dashboard-table { margin: 0; }
