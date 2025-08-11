@@ -48,6 +48,7 @@ $placeholderMap = @{
     '{{REDIRECT_URL_PLACEHOLDER}}' = $values['oauth2RedirectUrl']
     '{{NAMESPACE_PLACEHOLDER}}' = $values['namespace']
     '{{DOMAIN_PLACEHOLDER}}' = $values['domain']
+    '{{REPLICAS_PLACEHOLDER}}' = $values['replicas']
     '{{OIDC_TENANT_SEGMENT}}' = ''  # computed below
     '{{EMAIL_DOMAIN_ARGS}}' = ''    # computed below
     '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}' = ''  # computed below
@@ -56,11 +57,14 @@ $placeholderMap = @{
 # Apply all basic placeholder replacements
 foreach ($placeholder in $placeholderMap.Keys) {
     $value = $placeholderMap[$placeholder]
-    if ($value) {
+    if ($value -ne $null -and $value -ne '') {
         $processedContent = $processedContent -replace [regex]::Escape($placeholder), $value
         Write-Verbose "Replaced: $placeholder -> $value"
     } else {
-        Write-Warning "No value found for placeholder: $placeholder"
+        # Only warn for placeholders we truly expect to have a value at this stage
+        if ($placeholder -ne '{{OIDC_TENANT_SEGMENT}}' -and $placeholder -ne '{{EMAIL_DOMAIN_ARGS}}' -and $placeholder -ne '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}') {
+            Write-Warning "No value found for placeholder: $placeholder"
+        }
     }
 }
 

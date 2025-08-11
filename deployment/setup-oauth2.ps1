@@ -9,7 +9,13 @@ param(
     [string]$Domain = "paincave.pro",
     
     [Parameter(Mandatory=$false)]
-    [string]$AppName = "respondr-oauth2"
+    [string]$AppName = "respondr-oauth2",
+
+    [Parameter(Mandatory=$false)]
+    [string]$Namespace = "respondr",
+
+    [Parameter(Mandatory=$false)]
+    [string]$HostPrefix = "respondr"
 )
 
 Write-Host "Setting up OAuth2 Proxy with Azure AD integration..." -ForegroundColor Green
@@ -23,8 +29,9 @@ if (-not $tenantId) {
     exit 1
 }
 
-$redirectUri = "https://respondr.$Domain/oauth2/callback"
-$hostname = "respondr.$Domain"
+if (-not $HostPrefix -or $HostPrefix -eq "") { $HostPrefix = "respondr" }
+$redirectUri = "https://$HostPrefix.$Domain/oauth2/callback"
+$hostname = "$HostPrefix.$Domain"
 
 Write-Host "Tenant ID: $tenantId" -ForegroundColor Cyan
 Write-Host "Redirect URI: $redirectUri" -ForegroundColor Cyan
@@ -37,9 +44,21 @@ if ($existingApp) {
     Write-Host "Found existing app registration: $($existingApp.displayName)" -ForegroundColor Green
     $appId = $existingApp.appId
     
-    # Update to multi-tenant and redirect URI
-    Write-Host "Updating app to multi-tenant and refreshing redirect URI..." -ForegroundColor Yellow
-    az ad app update --id $appId --sign-in-audience "AzureADMultipleOrgs" --web-redirect-uris $redirectUri 2>$null
+    # Update to multi-tenant and ensure redirect URI is included (append if missing)
+    Write-Host "Updating app to multi-tenant and ensuring redirect URI exists..." -ForegroundColor Yellow
+    $current = az ad app show --id $appId -o json | ConvertFrom-Json
+    $existingUris = @()
+    try { $existingUris = @($current.web.redirectUris) } catch { $existingUris = @() }
+    if (-not ($existingUris -contains $redirectUri)) {
+        $newUris = @($existingUris + @($redirectUri) | Where-Object { $_ })
+    } else {
+        $newUris = $existingUris
+    }
+    if ($newUris.Count -gt 0) {
+        az ad app update --id $appId --sign-in-audience "AzureADMultipleOrgs" --web-redirect-uris $newUris 2>$null
+    } else {
+        az ad app update --id $appId --sign-in-audience "AzureADMultipleOrgs" --web-redirect-uris $redirectUri 2>$null
+    }
 } else {
     # Create new app registration
     Write-Host "Creating new Azure AD app registration..." -ForegroundColor Yellow
@@ -72,25 +91,16 @@ Write-Host "Generating secure cookie secret..." -ForegroundColor Yellow
 $cookieSecret = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
 
 # Create Kubernetes namespace if it doesn't exist
-Write-Host "Ensuring namespace exists..." -ForegroundColor Yellow
-kubectl create namespace respondr --dry-run=client -o yaml | kubectl apply -f -
+Write-Host "Ensuring namespace '$Namespace' exists..." -ForegroundColor Yellow
+kubectl create namespace $Namespace --dry-run=client -o yaml | kubectl apply -f -
 
-# Create OAuth2 secrets
+# Create OAuth2 secrets (idempotent)
 Write-Host "Creating Kubernetes secrets for OAuth2 proxy..." -ForegroundColor Yellow
-$secretYaml = @"
-apiVersion: v1
-kind: Secret
-metadata:
-  name: oauth2-secrets
-  namespace: respondr
-type: Opaque
-data:
-  client-id: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($appId)))
-  client-secret: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($clientSecret)))
-  cookie-secret: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($cookieSecret)))
-"@
-
-$secretYaml | kubectl apply -f -
+kubectl -n $Namespace create secret generic oauth2-secrets `
+    --from-literal=client-id=$appId `
+    --from-literal=client-secret=$clientSecret `
+    --from-literal=cookie-secret=$cookieSecret `
+    --dry-run=client -o yaml | kubectl apply -f -
 
 if ($LASTEXITCODE -eq 0) {
     Write-Host "✅ OAuth2 secrets created successfully!" -ForegroundColor Green

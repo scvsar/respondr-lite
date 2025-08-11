@@ -40,6 +40,16 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$DryRun = $false
 )
+# Load hostname from values.yaml if available for output info
+$hostname = $null
+try {
+    if (Test-Path (Join-Path $PSScriptRoot 'values.yaml')) {
+        $valsRaw = Get-Content (Join-Path $PSScriptRoot 'values.yaml') -Raw
+        $hnMatch = $valsRaw | Select-String 'hostname: "([^"]+)"'
+        if ($hnMatch) { $hostname = $hnMatch.Matches[0].Groups[1].Value }
+    }
+} catch {}
+$hostname = $hostname -or "respondr.$ResourceGroupName"
 
 Write-Host "⚠️ DEPRECATION WARNING ⚠️" -ForegroundColor Red
 Write-Host "This deploy-to-k8s.ps1 script is deprecated and will be removed in a future version." -ForegroundColor Yellow

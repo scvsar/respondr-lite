@@ -2,11 +2,11 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: respondr-deployment
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
   labels:
     app: respondr
 spec:
-  replicas: 2
+  replicas: {{REPLICAS_PLACEHOLDER}}
   selector:
     matchLabels:
       app: respondr
@@ -31,7 +31,7 @@ spec:
               name: respondr-secrets
               key: ACR_WEBHOOK_TOKEN
         - name: K8S_NAMESPACE
-          value: respondr
+          value: {{NAMESPACE_PLACEHOLDER}}
         - name: K8S_DEPLOYMENT
           value: respondr-deployment
         - name: ACR_REPOSITORY
@@ -160,7 +160,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: respondr-sa
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
   annotations:
     azure.workload.identity/client-id: {{CLIENT_ID_PLACEHOLDER}}
     azure.workload.identity/tenant-id: {{TENANT_ID_PLACEHOLDER}}
@@ -170,7 +170,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: respondr-service
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
   labels:
     app: respondr
 spec:
@@ -190,7 +190,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: respondr-deployment-manager
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
 rules:
 - apiGroups: ["apps"]
   resources: ["deployments"]
@@ -201,11 +201,11 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: respondr-deployment-manager-binding
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
 subjects:
 - kind: ServiceAccount
   name: respondr-sa
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
 roleRef:
   kind: Role
   name: respondr-deployment-manager
@@ -216,7 +216,7 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: respondr-ingress
-  namespace: respondr
+  namespace: {{NAMESPACE_PLACEHOLDER}}
   annotations:
     kubernetes.io/ingress.class: azure/application-gateway
     appgw.ingress.kubernetes.io/ssl-redirect: "true"

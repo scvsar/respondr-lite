@@ -51,6 +51,12 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$Namespace = "respondr",
+
+    [Parameter(Mandatory=$false)]
+    [string]$HostPrefix = "respondr",
+
+    [Parameter(Mandatory=$false)]
+    [string]$ImageTag = "latest",
     
     [Parameter(Mandatory=$false)]
     [switch]$SkipInfrastructure,
@@ -65,8 +71,8 @@ param(
     [switch]$DryRun,
 
     [Parameter(Mandatory=$false)]
-    [switch]$SetupAcrWebhook
-    ,
+    [switch]$SetupAcrWebhook,
+
     [Parameter(Mandatory=$false)]
     [switch]$SetupGithubOidc,
     [Parameter(Mandatory=$false)]
@@ -75,7 +81,7 @@ param(
     [string]$GithubBranch = "main"
 )
 
-$hostname = "respondr.$Domain"
+$hostname = "$HostPrefix.$Domain"
 
 # Derive internal flag (default true unless -DisableOAuth2 provided)
 $UseOAuth2 = -not $DisableOAuth2.IsPresent
@@ -216,7 +222,7 @@ if ($UseOAuth2) {
     Write-Host "===============================================" -ForegroundColor Yellow
 
     if (-not $DryRun) {
-        & (Join-Path $PSScriptRoot 'setup-oauth2.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
+    & (Join-Path $PSScriptRoot 'setup-oauth2.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain -Namespace $Namespace -HostPrefix $HostPrefix
         Test-LastCommand "OAuth2 authentication setup failed"
         Write-Host "OAuth2 authentication configured successfully" -ForegroundColor Green
     } else {
@@ -240,14 +246,14 @@ if (-not $DryRun) {
         Write-Host ""
         Write-Host "REQUIRED DNS CONFIGURATION:" -ForegroundColor Red
         Write-Host "Before continuing, you MUST configure DNS:" -ForegroundColor Yellow
-        Write-Host "  1. Add an A record in your $Domain DNS zone:" -ForegroundColor Cyan
-        Write-Host "     Name: respondr" -ForegroundColor White
+    Write-Host "  1. Add an A record in your $Domain DNS zone:" -ForegroundColor Cyan
+    Write-Host "     Name: $HostPrefix" -ForegroundColor White
         Write-Host "     Type: A" -ForegroundColor White
         Write-Host "     Value: $appGwIp" -ForegroundColor White
         Write-Host "     TTL: 300" -ForegroundColor White
         Write-Host ""
         Write-Host "  2. Wait for DNS propagation (usually 1-5 minutes)" -ForegroundColor Cyan
-        Write-Host "  3. Test with: nslookup respondr.$Domain" -ForegroundColor Cyan
+    Write-Host "  3. Test with: nslookup $hostname" -ForegroundColor Cyan
         Write-Host ""
         
         # Test current DNS resolution
@@ -318,8 +324,26 @@ if (-not $DryRun) {
         }
         Write-Host "✅ Kubernetes secret 'respondr-secrets' present in namespace '$Namespace'" -ForegroundColor Green
     } else {
-        Write-Error "Expected secrets.yaml at $secretsPath but file not found"
-        exit 1
+        Write-Warning "secrets.yaml not found at $secretsPath"
+        
+        # For non-main namespaces (e.g., preprod), try copying secrets from main namespace
+        if ($Namespace -ne "respondr") {
+            Write-Host "Attempting to copy secrets from main namespace 'respondr' to '$Namespace'..." -ForegroundColor Yellow
+            $mainSecret = kubectl get secret respondr-secrets -n respondr -o yaml 2>$null
+            if ($mainSecret) {
+                # Replace namespace and apply to target namespace
+                $preprodSecret = $mainSecret -replace 'namespace: respondr', "namespace: $Namespace"
+                $preprodSecret | kubectl apply -f - | Out-Null
+                Test-LastCommand "Failed to copy secret from main namespace"
+                Write-Host "✅ Secret copied from main namespace to '$Namespace'" -ForegroundColor Green
+            } else {
+                Write-Error "No secrets found in main namespace 'respondr' to copy from"
+                exit 1
+            }
+        } else {
+            Write-Error "Expected secrets.yaml at $secretsPath but file not found"
+            exit 1
+        }
     }
 } else {
     Write-Host "DRY RUN: Would create application secrets" -ForegroundColor Cyan
@@ -332,7 +356,7 @@ Write-Host "=================================================================" -
 if (-not $DryRun) {
     # Generate values.yaml from current Azure environment
     Write-Host "Generating values.yaml from current Azure environment..." -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot 'generate-values.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
+    & (Join-Path $PSScriptRoot 'generate-values.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain -Namespace $Namespace -HostPrefix $HostPrefix -ImageTag $ImageTag
     Test-LastCommand "Failed to generate values from environment"
     Write-Host "Values generated successfully" -ForegroundColor Green
     
@@ -361,7 +385,8 @@ if (-not $DryRun) {
         $valuesContent = Get-Content "values.yaml" -Raw
         $acrName = ($valuesContent | Select-String "acrName: `"([^`"]+)`"").Matches[0].Groups[1].Value
         $acrLoginServer = ($valuesContent | Select-String "acrLoginServer: `"([^`"]+)`"").Matches[0].Groups[1].Value
-        $fullImageName = "$acrLoginServer/respondr:latest"
+        $imageTag = ($valuesContent | Select-String "imageTag: `"([^`"]+)`"").Matches[0].Groups[1].Value
+        $fullImageName = "$acrLoginServer/respondr:$imageTag"
         
         # Navigate to project root
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -375,8 +400,20 @@ if (-not $DryRun) {
             az acr login --name $acrName | Out-Null
             Test-LastCommand "Failed to login to ACR"
             
-            # Build and push Docker image
-            docker build -t respondr:latest -t $fullImageName .
+            # Ensure AKS can pull from ACR (safe to run multiple times)
+            Write-Host "Ensuring AKS cluster can pull from ACR..." -ForegroundColor Yellow
+            $aksCluster = az aks list -g $ResourceGroupName --query "[0].name" -o tsv
+            if ($aksCluster) {
+                az aks update -g $ResourceGroupName -n $aksCluster --attach-acr $acrName | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "✅ ACR attached to AKS cluster" -ForegroundColor Green
+                } else {
+                    Write-Warning "Failed to attach ACR to AKS (may already be attached)"
+                }
+            }
+            
+            # Build and push Docker image with correct tag
+            docker build -t "respondr:$imageTag" -t $fullImageName .
             Test-LastCommand "Docker build failed"
             
             docker push $fullImageName
@@ -450,14 +487,14 @@ if (-not $DryRun) {
                 Write-Host "⚠️  DNS mismatch: Expected $ingressIp, got $resolvedIp" -ForegroundColor Yellow
                 Write-Host "Please update your DNS A record:" -ForegroundColor Yellow
                 Write-Host "  Type: A" -ForegroundColor Cyan
-                Write-Host "  Name: respondr" -ForegroundColor Cyan
+                Write-Host "  Name: $HostPrefix" -ForegroundColor Cyan
                 Write-Host "  Value: $ingressIp" -ForegroundColor Cyan
             }
         } catch {
             Write-Host "❌ DNS resolution failed" -ForegroundColor Red
             Write-Host "Please add DNS A record:" -ForegroundColor Yellow
             Write-Host "  Type: A" -ForegroundColor Cyan
-            Write-Host "  Name: respondr" -ForegroundColor Cyan
+            Write-Host "  Name: $HostPrefix" -ForegroundColor Cyan
             Write-Host "  Value: $ingressIp" -ForegroundColor Cyan
         }
         
@@ -519,7 +556,7 @@ if (-not $DryRun) {
     Write-Host "  - Check certificate status: kubectl get certificate -n $Namespace" -ForegroundColor White
     Write-Host ""
     Write-Host "📝 Next Steps:" -ForegroundColor Cyan
-    Write-Host "  1. Ensure DNS A record: respondr.$Domain → $ingressIp" -ForegroundColor White
+    Write-Host "  1. Ensure DNS A record: $hostname → $ingressIp" -ForegroundColor White
     Write-Host "  2. Wait for Let's Encrypt certificate to be issued (2-10 minutes)" -ForegroundColor White
     Write-Host "  3. Test in browser: https://$hostname" -ForegroundColor White
     Write-Host "  4. Verify OAuth2 authentication redirects to Microsoft sign-in" -ForegroundColor White

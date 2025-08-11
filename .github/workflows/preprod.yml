@@ -1,0 +1,60 @@
+name: Preprod CI/CD
+
+on:
+  push:
+    branches: [ preprod ]
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  IMAGE_NAME: respondr
+  ACR_NAME: ${{ secrets.ACR_NAME }}
+
+jobs:
+  build-and-push:
+    name: Build and push Docker image to ACR (preprod)
+    runs-on: ubuntu-latest
+    env:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve ACR login server
+        id: acr
+        shell: bash
+        run: |
+          if [ -n "${ACR_LOGIN_SERVER}" ]; then
+            LOGIN_SERVER="${ACR_LOGIN_SERVER}"
+            ACR_NAME=$(az acr list --query "[?loginServer=='$LOGIN_SERVER'].name | [0]" -o tsv)
+          else
+            ACR_NAME=${ACR_NAME}
+            LOGIN_SERVER=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+          fi
+          echo "loginServer=$LOGIN_SERVER" >> $GITHUB_OUTPUT
+          echo "acrName=$ACR_NAME" >> $GITHUB_OUTPUT
+
+      - name: ACR Login
+        run: az acr login --name "${{ steps.acr.outputs.acrName }}"
+
+      - name: Build image
+        run: |
+          docker build -t ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:preprod-${{ github.sha }} \
+                       -t ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:preprod .
+
+      - name: Push image
+        run: |
+          docker push ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:preprod-${{ github.sha }}
+          docker push ${{ steps.acr.outputs.loginServer }}/${{ env.IMAGE_NAME }}:preprod
