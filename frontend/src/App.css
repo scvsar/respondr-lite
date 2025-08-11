@@ -131,6 +131,7 @@
 .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#2ecc71; margin-right:6px; }
 
 /* Table */
+:root { --header-offset: 156px; }
 .table-wrap { padding: 16px; }
 .dashboard-table {
   width: 100%;
@@ -158,8 +159,16 @@
   z-index: 800;
 }
 /* Current Status (no extra header shift needed beyond tabs) */
-.status-tabs-active .current-status-tab .dashboard-table th { top: 156px; }
-.status-tabs-active .all-messages-tab .dashboard-table th { top: 156px; }
+.status-tabs-active .current-status-tab .dashboard-table th { top: var(--header-offset); }
+.status-tabs-active .all-messages-tab .dashboard-table th { top: var(--header-offset); }
+/* Offset the entire table once (margin) instead of large padding that created excessive visual gap */
+.status-tabs-active .current-status-tab .table-wrap,
+.status-tabs-active .all-messages-tab .table-wrap { 
+  margin-top: 0; /* spacer handles vertical offset */
+  padding-top: 0;
+}
+/* Spacer element inserted before each table to prevent first row from being obscured by sticky headers */
+.status-tabs-active .table-spacer { height: var(--header-offset); }
 .dashboard-table tbody tr:nth-child(even) { background-color: #171717; }
 .dashboard-table tbody tr:hover { background: var(--hover); }
 /* Sticky first column: header keeps its own bg; cells inherit row bg to preserve striping */
