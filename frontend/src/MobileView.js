@@ -56,6 +56,7 @@ export default function MobileView() {
   const statusOf = (entry) => {
     if (entry.arrival_status) {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
+  if (entry.arrival_status === 'Cancelled') return 'Cancelled';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
       if (entry.arrival_status === 'Arrived') return 'Responding';

@@ -904,9 +904,23 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     # Fast-path heuristics for local/dev
     if FAST_LOCAL_PARSE or client is None:
         tl = text.lower()
-        # Not responding / off-topic signals
-        if any(k in tl for k in ["can't make it", "cannot make it", "not coming", "won't make", "family emergency", "off topic", "weather up there", "just checking"]):
-            return {"vehicle": "Not Responding", "eta": "Not Responding"}
+        # Detect ETA given as HHMM after 'eta' (e.g., 'ETA 1022') before cancellation codes
+        m_eta_compact = re.search(r"\beta\s*:?\s*(\d{3,4})\b", tl)
+
+        # Cancellation / stand-down signals (treat as 'Cancelled')
+        # Special codes: '10-22', '1022', or '10 22' imply stand down unless clearly 'ETA 10:22' or 'ETA 1022'
+        has_10_22_code = bool(re.search(r"\b10\s*-\s*22\b", tl) or re.search(r"\b10\s+22\b", tl) or re.search(r"\b1022\b", tl))
+        # If compact ETA detected (e.g., 'ETA 1022'), do not treat as cancellation solely due to '1022'
+        if not m_eta_compact and has_10_22_code:
+            return {"vehicle": "Not Responding", "eta": "Cancelled"}
+
+        # Not responding / off-topic signals -> Cancelled
+        if any(k in tl for k in [
+            "can't make it", "cannot make it", "not coming", "won't make", "won’t make", "backing out", "back out",
+            "stand down", "standing down", "cancel", "cancelling", "canceled", "cancelled",
+            "family emergency", "unavailable", "can't respond", "cannot respond", "won't respond", "cant make it"
+        ]):
+            return {"vehicle": "Not Responding", "eta": "Cancelled"}
 
         vehicle = "Unknown"
         m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
@@ -928,6 +942,19 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         current_time = anchor_time
         if m_time:
             eta = convert_eta_to_timestamp(m_time.group(1), current_time)
+        elif m_eta_compact:
+            # Interpret HHMM following 'eta' as time (e.g., ETA 1022 -> 10:22)
+            digits = m_eta_compact.group(1)
+            if len(digits) == 3:
+                hour = int(digits[0])
+                minute = int(digits[1:3])
+            else:
+                hour = int(digits[:2])
+                minute = int(digits[2:4])
+            if 0 <= hour <= 24 and 0 <= minute <= 59:
+                if hour == 24:
+                    hour = 0
+                eta = f"{hour:02d}:{minute:02d}"
         elif m_min:
             eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
         elif m_hr:
@@ -951,8 +978,9 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
     "- Examples of declining/negative responses:\n"
     "  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'family emergency', 'sorry', 'unavailable', 'out of town', 'can't respond'\n"
-    "- For ANY negative response, return exactly:\n"
-    "  {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
+    "- Special codes: '10-22' (or '1022') means stand down / cancel unless it is clearly part of an ETA like 'ETA 10:22' or 'ETA 1022'.\n"
+    "- For ANY negative response or stand-down code, return exactly:\n"
+    "  {\"vehicle\": \"Not Responding\", \"eta\": \"Cancelled\"}\n\n"
     
     "For responding messages:\n"
     "- Vehicle:\n"
@@ -968,6 +996,7 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "  - If time is given, convert to 24-hour format HH:MM.\n"
     "  - If a duration is given (e.g., '30 minutes'), add to current time.\n"
     "  - If unclear, set to 'Unknown'.\n"
+    "  - Never interpret a bare '1022' as a time; only treat it as '10:22' if explicitly written as '10:22' or in a clear context like 'ETA 1022'.\n"
     "  - Be smart with AM/PM inference: if current time is after the stated hour but before midnight, assume the time is later the same day.\n"
     "    Example: current time 20:30 and message says 'ETA 9:15' or 'ETA 9:00' → 21:15 or 21:00 (same evening).\n"
     "  Examples:\n"
@@ -977,7 +1006,9 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "    'ETA 9:15 PM' → 21:15\n\n"
     
     "ADDITIONAL EXAMPLES:\n"
-    "  'Can't make it today, sorry' → {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n"
+    "  'Can't make it today, sorry' → {\"vehicle\": \"Not Responding\", \"eta\": \"Cancelled\"}\n"
+    "  '10-22' or '1022' → {\"vehicle\": \"Not Responding\", \"eta\": \"Cancelled\"}\n"
+    "  'ETA 1022' → {\"vehicle\": \"Unknown\", \"eta\": \"10:22\"}\n"
     "  'SAR-5 ETA 15:45' → {\"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
     "  'Driving POV, ETA 30 mins' (current time 13:10) → {\"vehicle\": \"POV\", \"eta\": \"13:40\"}\n"
     "  'Leaving now' (no vehicle mentioned) → {\"vehicle\": \"Unknown\", \"eta\": \"Unknown\"}\n"
@@ -1021,6 +1052,9 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
 
         # Apply additional validation to the AI's result
         eta_value = parsed_json.get("eta", "Unknown")
+        # Normalize stand down to Cancelled
+        if isinstance(eta_value, str) and eta_value.strip().lower() in {"cancelled", "canceled", "stand down", "stand-down"}:
+            eta_value = "Cancelled"
         if eta_value not in ("Unknown", "Not Responding"):
             eta_after_duration = convert_eta_to_timestamp(eta_value, anchor_time)
             if eta_after_duration != "Unknown":
@@ -1140,14 +1174,14 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
 def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) -> Dict[str, Any]:
     """Calculate additional ETA information for better display"""
     try:
-        if eta_str in ["Unknown", "Not Responding"]:
+        if eta_str in ["Unknown", "Not Responding", "Cancelled"]:
             return {
                 "eta_timestamp": None,
                 "eta_timestamp_utc": None,
                 "minutes_until_arrival": None,
-                "status": eta_str
+                "status": ("Cancelled" if eta_str == "Cancelled" else eta_str)
             }
-        
+
         # Try to parse as HH:MM format
         if ":" in eta_str and len(eta_str) == 5:  # HH:MM format
             # Use message time as context if provided, otherwise use current time
@@ -1163,12 +1197,12 @@ def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) ->
             # If ETA is earlier/equal than reference time, assume it's next day
             if eta_datetime <= reference_time:
                 eta_datetime += timedelta(days=1)
-            
+
             # Calculate minutes until arrival from current time (not reference time)
             current_time = now_tz()
             time_diff = eta_datetime - current_time
             minutes_until = int(time_diff.total_seconds() / 60)
-            
+
             return {
                 # Test mode keeps legacy format; otherwise use ISO 8601 with offset
                 "eta_timestamp": (
@@ -1186,7 +1220,7 @@ def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) ->
                 "minutes_until_arrival": None,
                 "status": "ETA Format Unknown"
             }
-            
+
     except Exception as e:
         logger.warning(f"Error calculating ETA info for '{eta_str}': {e}")
         return {
