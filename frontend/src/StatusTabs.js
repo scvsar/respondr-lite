@@ -327,7 +327,17 @@ const StatusTabs = ({
         
         {activeTab === 'all' && (
           <div className="all-messages-tab">
-            {renderTable(sortedAllMessages, isLoading, error, true)}
+            {/* Messages Summary Card */}
+            {!isLoading && !error && data?.length > 0 && (
+              <div className="status-summary">
+                <div className="summary-card summary-other">
+                  <div className="summary-count">{data.length}</div>
+                  <div className="summary-label">Total Messages</div>
+                </div>
+              </div>
+            )}
+            
+            {renderTable(sortedAllMessages, isLoading, error, false)}
             
             {!isLoading && !error && data?.length > 0 && (
               <div className="tab-footer">
