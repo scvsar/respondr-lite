@@ -145,25 +145,45 @@ export default function MobileView() {
   // Filter to Responding only
   const responding = useMemo(() => data.filter((e) => statusOf(e) === 'Responding'), [data]);
 
+  // Dedupe by user_id keeping latest message per user
+  const deduped = useMemo(() => {
+    const latest = new Map();
+    responding.forEach(msg => {
+      const uid = msg.user_id || msg.name || msg.id;
+      if (!uid) return;
+      const ts = parseTs(msg.timestamp)?.getTime() || 0;
+      const prev = latest.get(uid);
+      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) {
+        latest.set(uid, msg);
+      }
+    });
+    return Array.from(latest.values());
+  }, [responding]);
+
   // Sort by most recent message (timestamp) descending
   const sorted = useMemo(() => {
-    const arr = [...responding];
+    const arr = [...deduped];
     arr.sort((a,b) => {
       const at = parseTs(a.timestamp)?.getTime() || 0;
       const bt = parseTs(b.timestamp)?.getTime() || 0;
       return bt - at; // newest first
     });
     return arr;
-  }, [responding]);
+  }, [deduped]);
 
-  // Summary stats (over responding only)
-  const totalResponding = responding.length;
+  // Summary stats
+  const totalMessages = data.length;
+  const uniqueTotalResponders = useMemo(() => {
+    const ids = new Set(data.filter(e => statusOf(e) === 'Responding').map(e => e.user_id || e.name).filter(Boolean));
+    return ids.size;
+  }, [data]);
+  const uniqueFilteredResponders = deduped.length;
   const avgMinutes = useMemo(() => {
-    const times = responding.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
+    const times = deduped.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
     if (!times.length) return null;
     const avg = Math.round(times.reduce((a,b)=>a+b,0) / times.length);
     return avg; // minutes
-  }, [responding]);
+  }, [deduped]);
 
   const avgText = avgMinutes == null ? 'N/A' : `${avgMinutes}m`;
 
@@ -191,8 +211,12 @@ export default function MobileView() {
 
       <div className="mobile-stats">
         <div className="mobile-stat">
-          <div className="mobile-stat-label">Responding</div>
-          <div className="mobile-stat-value">{totalResponding}</div>
+          <div className="mobile-stat-label">Messages</div>
+          <div className="mobile-stat-value">{totalMessages}</div>
+        </div>
+        <div className="mobile-stat">
+          <div className="mobile-stat-label">Responders</div>
+          <div className="mobile-stat-value">{uniqueFilteredResponders}/{uniqueTotalResponders}</div>
         </div>
         <div className="mobile-stat">
           <div className="mobile-stat-label">Avg ETA</div>
