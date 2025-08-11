@@ -159,6 +159,7 @@
 }
 /* Current Status (no extra header shift needed beyond tabs) */
 .status-tabs-active .current-status-tab .dashboard-table th { top: 156px; }
+.status-tabs-active .all-messages-tab .dashboard-table th { top: 156px; }
 .dashboard-table tbody tr:nth-child(even) { background-color: #171717; }
 .dashboard-table tbody tr:hover { background: var(--hover); }
 /* Sticky first column: header keeps its own bg; cells inherit row bg to preserve striping */
