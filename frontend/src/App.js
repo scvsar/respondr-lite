@@ -71,7 +71,18 @@ function MainApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [vehicleFilter, setVehicleFilter] = useState([]); // e.g., ["POV","SAR-7"]
-  const [statusFilter, setStatusFilter] = useState(["Responding"]); // ["Responding","Not Responding","Unknown"]
+  // Defaults: All Messages tab should start with filters cleared; Current Status shows Responding by default
+  const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
+  const [activeTab, setActiveTab] = useState('all');
+  const handleTabChange = useCallback((tab) => {
+    setActiveTab(tab);
+    if (tab === 'current') {
+      setStatusFilter(['Responding']);
+    } else if (tab === 'all') {
+  setStatusFilter([]);
+  setVehicleFilter([]);
+    }
+  }, []);
   const [live, setLive] = useState(true);
   const [useUTC, setUseUTC] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -747,6 +758,8 @@ function MainApp() {
         vehicleFilter={vehicleFilter}
         query={query}
   refreshNonce={refreshNonce}
+        activeTab={activeTab}
+        onTabChange={handleTabChange}
       />
       </div>
 
