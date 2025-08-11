@@ -54,6 +54,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis-service")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_KEY = "respondr_messages"
+REDIS_DELETED_KEY = "respondr_deleted_messages"
 
 # Fast local parse mode (bypass Azure for local/dev seeding)
 FAST_LOCAL_PARSE = os.getenv("FAST_LOCAL_PARSE", "false").lower() == "true"
@@ -1238,6 +1239,9 @@ def health() -> Dict[str, Any]:
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def display_dashboard() -> str:
+    # Reload messages from Redis to ensure we have the latest data
+    reload_messages()
+    
     current_time = datetime.now()
     
     html = f"""

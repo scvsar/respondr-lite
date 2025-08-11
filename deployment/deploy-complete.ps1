@@ -575,7 +575,11 @@ Write-Host "Deployment completed!" -ForegroundColor Green
 
 if ($SetupAcrWebhook -and -not $DryRun) {
     Write-Host "\n🪝 Configuring ACR webhook..." -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot 'configure-acr-webhook.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain
+    
+    # Determine environment from HostPrefix
+    $Environment = if ($HostPrefix -eq "respondr-preprod") { "preprod" } else { "main" }
+    
+    & (Join-Path $PSScriptRoot 'configure-acr-webhook.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain -Environment $Environment -HostPrefix $HostPrefix
 }
 
 # Optional: Configure GitHub OIDC and repo secrets
