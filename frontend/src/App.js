@@ -591,6 +591,7 @@ function MainApp() {
           <label className="toggle"><input type="checkbox" checked={useUTC} onChange={e=>setUseUTC(e.target.checked)} /> UTC</label>
           <button className="btn" onClick={()=>fetchData()} title="Refresh now">Refresh</button>
           <button className="btn" onClick={exportCsv} title="Export CSV">Export</button>
+          <a href="/deleted-dashboard" className="btn" target="_blank" rel="noopener noreferrer" title="View deleted messages">Deleted</a>
           {/* Clear-all removed; use Edit Mode delete instead */}
           <span style={{width:12}} />
           <label className="toggle"><input type="checkbox" checked={editMode} onChange={e=>{ setEditMode(e.target.checked); setSelected(new Set()); }} /> Edit</label>

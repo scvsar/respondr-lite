@@ -343,6 +343,7 @@ app = FastAPI(
 )
 
 messages: list[Dict[str, Any]] = []
+deleted_messages: list[Dict[str, Any]] = []
 
 def init_redis():
     """Initialize Redis connection"""
@@ -428,6 +429,103 @@ def save_messages():
 def reload_messages():
     """Reload messages from Redis to get latest data"""
     load_messages()
+
+def load_deleted_messages():
+    """Load deleted messages from Redis"""
+    global deleted_messages
+    
+    # In testing mode, use in-memory storage
+    if is_testing:
+        logger.debug(f"Test mode: Using in-memory deleted storage with {len(deleted_messages)} messages")
+        return
+        
+    try:
+        init_redis()
+        if redis_client:
+            data = redis_client.get(REDIS_DELETED_KEY)
+            if data:
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                deleted_messages = json.loads(cast(str, data))
+                logger.debug(f"Loaded {len(deleted_messages)} deleted messages from Redis")
+            else:
+                logger.debug("No deleted messages in Redis")
+        else:
+            logger.warning("Redis not available for deleted messages")
+    except Exception as e:
+        logger.error(f"Error loading deleted messages from Redis: {e}")
+
+def save_deleted_messages():
+    """Save deleted messages to Redis"""
+    global deleted_messages
+    
+    # In testing mode, just keep in memory
+    if is_testing:
+        logger.debug(f"Test mode: Deleted messages stored in memory ({len(deleted_messages)} messages)")
+        return
+        
+    try:
+        init_redis()
+        if redis_client:
+            data = json.dumps(deleted_messages)
+            redis_client.set(REDIS_DELETED_KEY, data)
+            logger.debug(f"Saved {len(deleted_messages)} deleted messages to Redis")
+        else:
+            logger.warning("Redis not available; keeping deleted messages only in memory")
+    except Exception as e:
+        logger.error(f"Error saving deleted messages to Redis: {e}")
+
+def soft_delete_messages(messages_to_delete: List[Dict[str, Any]]):
+    """Move messages to deleted storage with timestamp"""
+    global deleted_messages
+    
+    # Load current deleted messages
+    load_deleted_messages()
+    
+    # Add deletion timestamp to each message
+    current_time = datetime.now().isoformat()
+    for msg in messages_to_delete:
+        msg["deleted_at"] = current_time
+        deleted_messages.append(msg)
+    
+    # Save updated deleted messages
+    save_deleted_messages()
+    logger.info(f"Soft deleted {len(messages_to_delete)} messages")
+
+def undelete_messages(message_ids: List[str]) -> int:
+    """Restore messages from deleted storage back to active messages"""
+    global messages, deleted_messages
+    
+    # Load current state
+    load_deleted_messages()
+    reload_messages()
+    
+    # Find messages to restore
+    to_restore = []
+    remaining_deleted = []
+    
+    for msg in deleted_messages:
+        if str(msg.get("id")) in message_ids:
+            # Remove deletion timestamp and restore
+            if "deleted_at" in msg:
+                del msg["deleted_at"]
+            to_restore.append(msg)
+        else:
+            remaining_deleted.append(msg)
+    
+    if to_restore:
+        # Add back to active messages
+        messages.extend(to_restore)
+        save_messages()
+        
+        # Update deleted messages
+        deleted_messages.clear()
+        deleted_messages.extend(remaining_deleted)
+        save_deleted_messages()
+        
+        logger.info(f"Restored {len(to_restore)} messages from deleted storage")
+    
+    return len(to_restore)
 
 def _clear_all_messages():
     """Clear all stored messages from memory and Redis."""
@@ -1068,24 +1166,31 @@ async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
 
 @app.delete("/api/responders/{msg_id}")
 def delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
-    """Delete a responder message by ID."""
+    """Delete a responder message by ID (soft delete - moves to deleted storage)."""
     if not _authn_and_domain_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     reload_messages()
-    initial = len(messages)
-    remaining = [m for m in messages if str(m.get("id")) != msg_id]
-    if len(remaining) == initial:
+    
+    # Find the message to delete
+    to_delete = [m for m in messages if str(m.get("id")) == msg_id]
+    if not to_delete:
         raise HTTPException(status_code=404, detail="Not found")
-    # Update and persist
+    
+    # Soft delete - move to deleted storage
+    soft_delete_messages(to_delete)
+    
+    # Remove from active messages
+    remaining = [m for m in messages if str(m.get("id")) != msg_id]
     messages.clear()
     messages.extend(remaining)
     save_messages()
-    return {"status": "deleted", "id": msg_id}
+    
+    return {"status": "deleted", "id": msg_id, "soft_delete": True}
 
 @app.post("/api/responders/bulk-delete")
 async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
-    """Bulk delete messages by IDs. Body: {"ids": [..]}"""
+    """Bulk delete messages by IDs (soft delete - moves to deleted storage). Body: {"ids": [..]}"""
     if not _authn_and_domain_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
@@ -1098,13 +1203,23 @@ async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="No IDs provided")
 
     reload_messages()
-    before = len(messages)
-    to_keep = [m for m in messages if str(m.get("id")) not in set(ids)]
-    removed = before - len(to_keep)
-    messages.clear()
-    messages.extend(to_keep)
-    save_messages()
-    return {"status": "deleted", "removed": int(removed)}
+    
+    # Find messages to delete
+    ids_set = set(ids)
+    to_delete = [m for m in messages if str(m.get("id")) in ids_set]
+    to_keep = [m for m in messages if str(m.get("id")) not in ids_set]
+    
+    if to_delete:
+        # Soft delete - move to deleted storage
+        soft_delete_messages(to_delete)
+        
+        # Update active messages
+        messages.clear()
+        messages.extend(to_keep)
+        save_messages()
+    
+    removed = len(to_delete)
+    return {"status": "deleted", "removed": int(removed), "soft_delete": True}
 
 @app.post("/api/clear-all")
 def clear_all_data(request: Request) -> Dict[str, Any]:
@@ -1124,6 +1239,64 @@ def clear_all_data(request: Request) -> Dict[str, Any]:
     reload_messages()
     initial = len(messages)
     _clear_all_messages()
+    return {"status": "cleared", "removed": int(initial)}
+
+@app.get("/api/deleted-responders")
+def get_deleted_responders(request: Request) -> List[Dict[str, Any]]:
+    """Get all deleted responder messages."""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    load_deleted_messages()
+    return deleted_messages
+
+@app.post("/api/deleted-responders/undelete")
+async def undelete_responder_entries(request: Request) -> Dict[str, Any]:
+    """Restore deleted messages back to active state. Body: {"ids": [..]}"""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        body = await request.json()
+        ids: List[str] = list(map(str, body.get("ids", [])))
+    except Exception:
+        ids = []
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    restored_count = undelete_messages(ids)
+    return {"status": "restored", "restored": restored_count}
+
+@app.delete("/api/deleted-responders/{msg_id}")
+def permanently_delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
+    """Permanently delete a message from deleted storage."""
+    if not _authn_and_domain_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    load_deleted_messages()
+    initial = len(deleted_messages)
+    remaining = [m for m in deleted_messages if str(m.get("id")) != msg_id]
+    if len(remaining) == initial:
+        raise HTTPException(status_code=404, detail="Not found in deleted storage")
+    
+    deleted_messages.clear()
+    deleted_messages.extend(remaining)
+    save_deleted_messages()
+    return {"status": "permanently_deleted", "id": msg_id}
+
+@app.post("/api/deleted-responders/clear-all")
+def clear_all_deleted_data(request: Request) -> Dict[str, Any]:
+    """Permanently clear all deleted responder data. Protected by env gate or API key."""
+    allow_env = os.getenv("ALLOW_CLEAR_ALL", "false").lower() == "true"
+    provided_key = request.headers.get("X-API-Key")
+    key_ok = webhook_api_key and provided_key == webhook_api_key
+    if not (allow_env or key_ok):
+        raise HTTPException(status_code=403, detail="Clear-all is disabled")
+
+    load_deleted_messages()
+    initial = len(deleted_messages)
+    deleted_messages.clear()
+    save_deleted_messages()
     return {"status": "cleared", "removed": int(initial)}
 
 @app.get("/api/user")
@@ -1247,6 +1420,7 @@ def display_dashboard() -> str:
     html = f"""
     <h1>🚨 Responder Dashboard</h1>
     <p><strong>Current Time:</strong> {current_time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <p><a href="/deleted-dashboard">View Deleted Messages →</a></p>
     <table border='1' cellpadding='8' style='border-collapse: collapse; font-family: monospace;'>
         <tr style='background-color: #f0f0f0;'>
             <th>Message Time</th>
@@ -1310,6 +1484,89 @@ def display_dashboard() -> str:
         <div style='background-color: #cceeff; display: inline-block; padding: 2px 8px; margin: 2px;'>Arriving Medium (≤15 min)</div>
         <div style='background-color: #ffffcc; display: inline-block; padding: 2px 8px; margin: 2px;'>Unknown Vehicle/ETA</div>
         <div style='background-color: #ffcccc; display: inline-block; padding: 2px 8px; margin: 2px;'>Not Responding</div>
+    </div>
+    """
+    return html
+
+@app.get("/deleted-dashboard", response_class=HTMLResponse)
+def display_deleted_dashboard() -> str:
+    """Display dashboard of deleted responder messages"""
+    # Reload deleted messages from Redis to ensure we have the latest data
+    load_deleted_messages()
+    
+    current_time = datetime.now()
+    
+    html = f"""
+    <h1>🗑️ Deleted Responder Dashboard</h1>
+    <p><strong>Current Time:</strong> {current_time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <p><strong>Total Deleted Messages:</strong> {len(deleted_messages)}</p>
+    <p><a href="/dashboard">← Back to Active Dashboard</a></p>
+    <table border='1' cellpadding='8' style='border-collapse: collapse; font-family: monospace;'>
+        <tr style='background-color: #f0f0f0;'>
+            <th>Message Time</th>
+            <th>Deleted At</th>
+            <th>Name</th>
+            <th>Unit/Team</th>
+            <th>Vehicle</th>
+            <th>ETA</th>
+            <th>Message</th>
+            <th>Message ID</th>
+        </tr>
+    """
+    
+    # Sort by deletion time (most recent first)
+    sorted_deleted = sorted(deleted_messages, key=lambda x: x.get('deleted_at', ''), reverse=True)
+    
+    for msg in sorted_deleted:
+        msg_time = msg.get('timestamp', 'Unknown')
+        deleted_time = msg.get('deleted_at', 'Unknown')
+        name = msg.get('name', '')
+        team = msg.get('team', msg.get('unit', ''))  # Handle both team and unit
+        vehicle = msg.get('vehicle', 'Unknown')
+        eta = msg.get('eta', 'Unknown')
+        message_text = msg.get('text', '')
+        msg_id = msg.get('id', '')
+        
+        # Truncate long message text
+        if len(message_text) > 100:
+            message_text = message_text[:100] + "..."
+        
+        # Format deleted time
+        try:
+            if deleted_time != 'Unknown':
+                dt = datetime.fromisoformat(deleted_time.replace('Z', '+00:00'))
+                deleted_display = dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                deleted_display = 'Unknown'
+        except:
+            deleted_display = deleted_time
+        
+        html += f"""
+        <tr style='background-color: #fff0f0;'>
+            <td>{msg_time}</td>
+            <td>{deleted_display}</td>
+            <td>{name}</td>
+            <td>{team}</td>
+            <td>{vehicle}</td>
+            <td>{eta}</td>
+            <td style='max-width: 300px; word-wrap: break-word;'>{message_text}</td>
+            <td style='font-size: 10px; color: #666;'>{msg_id}</td>
+        </tr>
+        """
+    
+    if not deleted_messages:
+        html += """
+        <tr>
+            <td colspan="8" style="text-align: center; color: #666; font-style: italic;">No deleted messages</td>
+        </tr>
+        """
+    
+    html += """
+    </table>
+    <br>
+    <div style='font-size: 12px; color: #666;'>
+        <p><strong>Note:</strong> Deleted messages are stored in Redis under 'respondr_deleted_messages' key.</p>
+        <p>Use the API endpoints to restore messages: POST /api/deleted-responders/undelete</p>
     </div>
     """
     return html
