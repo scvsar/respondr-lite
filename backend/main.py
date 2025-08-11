@@ -1009,15 +1009,16 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     
     "ETA EXTRACTION:\n"
     "- Absolute times: '0830' → '08:30', '1150' → '11:50', '15:00' → '15:00'\n"
-    "- Relative times: Add to current time and return calculated result\n"
-    f"  * Current time: {current_time_short}\n"
-    f"  * '15 minutes'/'15min'/'15 mins' → add 15 minutes to {current_time_short}\n"
-    f"  * '30min'/'30 minutes' → add 30 minutes to {current_time_short}\n"
-    f"  * '60min'/'60 minutes'/'1 hour' → add 60 minutes to {current_time_short}\n"
-    f"  * '90min'/'90 minutes' → add 90 minutes to {current_time_short}\n"
-    "- Examples with current time calculations:\n"
-    f"  Current time {current_time_short}: 'ETA 30min' → '{(current_time + timedelta(minutes=30)).strftime('%H:%M')}'\n"
-    f"  Current time {current_time_short}: 'ETA 60min' → '{(current_time + timedelta(minutes=60)).strftime('%H:%M')}'\n"
+    "- Relative times: Return the pattern EXACTLY as found, system will calculate\n"
+    "  * '15 minutes', '15min', '15 mins' → 'RELATIVE:15min'\n"
+    "  * '30min', '30 minutes' → 'RELATIVE:30min'\n"
+    "  * '45 minutes', '45min' → 'RELATIVE:45min'\n"
+    "  * '60min', '60 minutes', '1 hour' → 'RELATIVE:60min'\n"
+    "  * '90min', '90 minutes' → 'RELATIVE:90min'\n"
+    "  * '2 hours', '120 minutes' → 'RELATIVE:120min'\n"
+    "  * 'in 20', 'be there in 20' → 'RELATIVE:20min'\n"
+    "- Unknown/unclear → 'unknown'\n"
+    "- If cancelled status → 'cancelled'\n\n"
     f"  Current time {current_time_short}: 'ETA 15 minutes' → '{(current_time + timedelta(minutes=15)).strftime('%H:%M')}'\n"
     "- No time mentioned → 'unknown'\n"
     "- DON'T interpret 'Xmin' as 'X:00' - calculate relative time!\n"
@@ -1038,9 +1039,10 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "  'Who can respond to Vesper?' → {\"status\": \"informational\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
     "  'SAR-5 ETA 15:45' → {\"status\": \"responding\", \"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
     "  'Responding sar78 1150' → {\"status\": \"responding\", \"vehicle\": \"SAR-78\", \"eta\": \"11:50\"}\n"
-    f"  'Responding SAR7 ETA 60min' (current: {current_time_short}) → {{\"status\": \"responding\", \"vehicle\": \"SAR-7\", \"eta\": \"{(current_time + timedelta(minutes=60)).strftime('%H:%M')}\"}}\n"
-    f"  'SAR-3 ETA 30min' (current: {current_time_short}) → {{\"status\": \"responding\", \"vehicle\": \"SAR-3\", \"eta\": \"{(current_time + timedelta(minutes=30)).strftime('%H:%M')}\"}}\n"
-    f"  'ETA 45 minutes' (current: {current_time_short}) → {{\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"{(current_time + timedelta(minutes=45)).strftime('%H:%M')}\"}}\n\n"
+    "  'Responding SAR7 ETA 60min' → {\"status\": \"responding\", \"vehicle\": \"SAR-7\", \"eta\": \"RELATIVE:60min\"}\n"
+    "  'SAR-3 ETA 30min' → {\"status\": \"responding\", \"vehicle\": \"SAR-3\", \"eta\": \"RELATIVE:30min\"}\n"
+    "  'ETA 45 minutes' → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:45min\"}\n"
+    "  'POV ETA 90min' → {\"status\": \"responding\", \"vehicle\": \"POV\", \"eta\": \"RELATIVE:90min\"}\n\n"
     
     f"MESSAGE: \"{text}\"\n\n"
     "Return ONLY this JSON format: "
@@ -1106,6 +1108,71 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         # Normalize stand down to Cancelled
         if isinstance(eta_value, str) and eta_value.strip().lower() in {"cancelled", "canceled", "stand down", "stand-down"}:
             eta_value = "Cancelled"
+            
+        # Handle relative time calculations - detect patterns and calculate ourselves
+        if isinstance(eta_value, str):
+            # Check if this looks like an AI-miscalculated relative time
+            # Look for patterns in the original message that suggest relative time
+            original_text = text.lower()
+            
+            # Extract relative time patterns from the original message
+            import re
+            relative_patterns = [
+                (r'(\d+)\s*min(?:ute)?s?(?:\s|$)', 'minutes'),
+                (r'(\d+)\s*hour?s?(?:\s|$)', 'hours'),
+                (r'eta\s+(\d+)(?:\s|$)', 'minutes'),  # "ETA 90" pattern
+            ]
+            
+            for pattern, unit in relative_patterns:
+                match = re.search(pattern, original_text)
+                if match:
+                    number = int(match.group(1))
+                    
+                    # Convert to minutes
+                    if unit == 'hours':
+                        total_minutes = number * 60
+                    else:
+                        total_minutes = number
+                    
+                    # Only apply if it's a reasonable relative time (5min to 8 hours)
+                    if 5 <= total_minutes <= 480:
+                        # Calculate the new time using proper datetime arithmetic
+                        new_time = anchor_time + timedelta(minutes=total_minutes)
+                        calculated_eta = new_time.strftime("%H:%M")
+                        
+                        logger.info(f"Detected relative time pattern: {match.group(0)} ({total_minutes}min)")
+                        logger.info(f"Original AI eta: {eta_value}, Calculated eta: {calculated_eta}")
+                        
+                        # Replace the AI's calculation with our calculation
+                        eta_value = calculated_eta
+                        break
+            
+            # Also handle the RELATIVE: format if AI ever starts using it
+            if eta_value.startswith("RELATIVE:"):
+                relative_part = eta_value[9:]  # Remove "RELATIVE:" prefix
+                try:
+                    # Extract minutes from the relative time pattern
+                    minutes_match = re.search(r'(\d+)min', relative_part)
+                    hours_match = re.search(r'(\d+)\s*hour', relative_part)
+                    
+                    total_minutes = 0
+                    if minutes_match:
+                        total_minutes = int(minutes_match.group(1))
+                    elif hours_match:
+                        total_minutes = int(hours_match.group(1)) * 60
+                    
+                    if total_minutes > 0:
+                        # Calculate the new time using proper datetime arithmetic
+                        new_time = anchor_time + timedelta(minutes=total_minutes)
+                        eta_value = new_time.strftime("%H:%M")
+                        logger.info(f"Calculated relative time: {relative_part} + {total_minutes}min = {eta_value}")
+                    else:
+                        logger.warning(f"Could not parse relative time: {relative_part}")
+                        eta_value = "Unknown"
+                except Exception as e:
+                    logger.error(f"Error calculating relative time {eta_value}: {e}")
+                    eta_value = "Unknown"
+                
         if eta_value not in ("Unknown", "Not Responding", "Cancelled"):
             eta_after_duration = convert_eta_to_timestamp(eta_value, anchor_time)
             if eta_after_duration != "Unknown":
