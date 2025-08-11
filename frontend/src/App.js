@@ -398,7 +398,7 @@ function MainApp() {
   };
 
   const exportCsv = () => {
-    const rows = ['Time,Name,Unit,Message,Vehicle,ETA,Status'];
+    const rows = ['Time,Name,Team,Message,Vehicle,ETA,Status'];
     sorted.forEach(r => {
       const ts = formatTimestampDirect(useUTC ? r.timestamp_utc : r.timestamp);
       const etaStr = etaDisplay(r);
@@ -635,7 +635,7 @@ function MainApp() {
               )}
               <th className="col-time">{sortButton('Time','timestamp')}</th>
               <th>Name</th>
-              <th>Unit</th>
+              <th>Team</th>
               <th>Message</th>
               <th>Vehicle</th>
               <th>{sortButton('ETA','eta')}</th>
