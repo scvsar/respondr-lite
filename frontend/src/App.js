@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import "./App.css";
 import Logout from './Logout';
@@ -129,6 +129,8 @@ function MainApp() {
     }
   }, []);
 
+  // Initial load + Live-controlled polling
+  const firstLoadRef = useRef(true);
   useEffect(() => {
     // Don't fetch data if user just logged out
     if (sessionStorage.getItem('loggedOut')) {
@@ -136,45 +138,52 @@ function MainApp() {
       return;
     }
 
-    fetchData();
-    
+    // Only auto-fetch on initial mount
+    if (firstLoadRef.current) {
+      firstLoadRef.current = false;
+      fetchData();
+    }
+
+    // If Live is off, do not schedule polling
+    if (!live) {
+      return;
+    }
+
     // Polling with backoff and live toggle
     let pollInterval = 15000; // 15s default
     const maxInterval = 60000; // Max 60 seconds
     let currentTimeoutId = null;
     let isCancelled = false;
-    
+
     const pollData = () => {
       if (isCancelled) return;
-      
+
       currentTimeoutId = setTimeout(async () => {
         if (isCancelled) return;
-        
+
         try {
-          if (live) {
-            await fetchData();
-          }
+          await fetchData();
           pollInterval = 15000; // Reset on success
         } catch (err) {
           // Exponential backoff on error
           pollInterval = Math.min(pollInterval * 2, maxInterval);
         }
-        
-        if (!isCancelled) {
-          pollData(); // Schedule next poll
+
+        if (!isCancelled && live) {
+          pollData(); // Schedule next poll only if still Live
         }
       }, pollInterval);
     };
-    
+
     pollData();
-    
+
     return () => {
       isCancelled = true;
       if (currentTimeoutId) {
         clearTimeout(currentTimeoutId);
       }
     };
-  }, [fetchData]);
+  }, [fetchData, live]);
 
   // User info (for avatar initials)
   useEffect(() => {
@@ -361,9 +370,11 @@ function MainApp() {
   // Live-updating elapsed string for lastUpdated
   const [nowTick, setNowTick] = useState(Date.now());
   useEffect(() => {
+    // Only tick the "updated ago" timer when Live is on to avoid periodic UI changes
+    if (!live) return;
     const id = setInterval(() => setNowTick(Date.now()), 30000); // update every 30s
     return () => clearInterval(id);
-  }, []);
+  }, [live]);
   const updatedAgo = useMemo(() => {
     if (!lastUpdated) return '—';
     const diffMs = Date.now() - lastUpdated.getTime();

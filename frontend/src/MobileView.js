@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import './App.css';
 
 // Minimal, focused mobile view: Name, Vehicle, ETA for Responding only
@@ -40,12 +40,18 @@ export default function MobileView() {
     }
   }, []);
 
+  const firstLoadRef = useRef(true);
   useEffect(() => {
-    fetchData();
+    if (firstLoadRef.current) {
+      firstLoadRef.current = false;
+      fetchData();
+    }
     let id;
     const poll = async () => {
+      // If Live is off, don't schedule the next poll
+      if (!live) return;
       id = setTimeout(async () => {
-        try { if (live) await fetchData(); } finally { poll(); }
+        try { await fetchData(); } finally { poll(); }
       }, 15000);
     };
     poll();
@@ -238,7 +244,7 @@ export default function MobileView() {
         </div>
         <div className="mobile-stat">
           <div className="mobile-stat-label">Responders</div>
-          <div className="mobile-stat-value">{uniqueFilteredResponders}/{uniqueTotalResponders}</div>
+          <div className="mobile-stat-value">{uniqueFilteredResponders}</div>
         </div>
         <div className="mobile-stat">
           <div className="mobile-stat-label">Avg ETA</div>
