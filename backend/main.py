@@ -5,6 +5,9 @@ import logging
 import re
 from typing import Any, Dict, Optional, cast, List
 # Test ACR webhook auto-deployment - v3
+
+# Test comment 2
+
 from datetime import datetime, timedelta, timezone
 try:
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -28,7 +31,6 @@ def get_timezone(name: str) -> timezone:
 from urllib.parse import quote
 import importlib
 import redis
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -51,6 +53,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis-service")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 REDIS_KEY = "respondr_messages"
+REDIS_DELETED_KEY = "respondr_deleted_messages"
 
 # Fast local parse mode (bypass Azure for local/dev seeding)
 FAST_LOCAL_PARSE = os.getenv("FAST_LOCAL_PARSE", "false").lower() == "true"
@@ -67,6 +70,10 @@ webhook_api_key = os.getenv("WEBHOOK_API_KEY")
 # Multi-tenant authentication configuration
 allowed_email_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "scvsar.org,rtreit.com").split(",")
 allowed_email_domains = [domain.strip() for domain in allowed_email_domains if domain.strip()]
+
+# Admin users configuration (comma-separated emails)
+allowed_admin_users = os.getenv("ALLOWED_ADMIN_USERS", "").split(",")
+allowed_admin_users = [u.strip().lower() for u in allowed_admin_users if u.strip()]
 
 # Local dev bypass: allow running without OAuth2 proxy
 ALLOW_LOCAL_AUTH_BYPASS = os.getenv("ALLOW_LOCAL_AUTH_BYPASS", "false").lower() == "true"
@@ -87,10 +94,53 @@ def now_tz() -> datetime:
 # Feature flag: enable an extra AI finalization pass on ETA
 ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
 
+# ----------------------------------------------------------------------------
+# FastAPI app and global state
+# ----------------------------------------------------------------------------
+app = FastAPI()
+
+# In-memory message stores; tests will patch these
+messages: List[Dict[str, Any]] = []
+deleted_messages: List[Dict[str, Any]] = []
+
+# Redis client (initialized on demand)
+redis_client: Optional[redis.Redis] = None
+
+def validate_webhook_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
+    """Validate API key for protected endpoints.
+
+    In tests or when disabled, always allow. Otherwise require header to match WEBHOOK_API_KEY.
+    """
+    if disable_api_key_check or is_testing:
+        return True
+    if not webhook_api_key:
+        raise HTTPException(status_code=500, detail="Webhook API key not configured")
+    if not x_api_key or x_api_key != webhook_api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
+
 # GroupMe group_id to Team mapping
 # Source: provided GroupMe group list
+""" <select name="bot[group_id]" id="bot_group_id">
+<option value="102193274">OSU Test group</option>
+<option value="97608845">SCVSAR 4X4 Team</option>
+<option value="6846970">ASAR MEMBERS</option>
+<option value="61402638">ASAR Social</option>
+<option value="19723040">Snohomish Unit Mission Response</option>
+<option value="96018206">SCVSAR-IMT</option>
+<option value="1596896">SCVSAR K9 Team</option>
+<option value="92390332">ASAR Drivers</option>
+<option value="99606944">OSU - Social</option>
+<option value="14533239">MSAR Mission Response</option>
+<option value="106549466">ESAR Coordination</option>
+<option value="16649586">OSU-MISSION RESPONSE</option>
+<option value="109174633">PreProd-Responder</option>
+ """
+
+
 GROUP_ID_TO_TEAM: Dict[str, str] = {
     "102193274": "OSUTest",
+    "109174633": "PreProd",    
     "97608845": "4X4",
     "6846970": "ASAR",
     "61402638": "ASAR",
@@ -265,12 +315,10 @@ def is_email_domain_allowed(email: str) -> bool:
     """Check if the user's email domain is in the allowed domains list"""
     if not email:
         return False
-    
     # Allow test domains when running tests
     if is_testing and email.endswith("@example.com"):
         logger.info(f"Test mode: allowing test domain for {email}")
         return True
-    
     try:
         domain = email.split("@")[1].lower()
         allowed_domains_lower = [d.lower() for d in allowed_email_domains]
@@ -281,64 +329,97 @@ def is_email_domain_allowed(email: str) -> bool:
         logger.warning(f"Invalid email format: {email}")
         return False
 
-# Initialize Redis client
-redis_client = None
+def is_admin(email: Optional[str]) -> bool:
+    """Check if the user's email is in the allowed admin users list.
 
-# Only require Azure configuration if not in fast local parse mode
-if not is_testing and not FAST_LOCAL_PARSE and (not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment):
-    logger.error("Missing required Azure OpenAI configuration")
-    raise ValueError("AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in the .env file")
-elif is_testing:
-    logger.info("Running in test mode - using mock Azure OpenAI configuration")
-    # Set default test values if not provided
-    azure_openai_api_key = azure_openai_api_key or "test-key"
-    azure_openai_endpoint = azure_openai_endpoint or "https://test-endpoint.openai.azure.com/"
-    azure_openai_deployment = azure_openai_deployment or "test-deployment"
-    azure_openai_api_version = azure_openai_api_version or "2025-01-01-preview"
-    webhook_api_key = webhook_api_key or "test-webhook-key"
-
-if not is_testing and not webhook_api_key:
-    logger.error("Missing WEBHOOK_API_KEY environment variable")
-    raise ValueError("WEBHOOK_API_KEY must be set for webhook authentication")
-
-
-def validate_webhook_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
-    """Validate the API key for webhook endpoint"""
-    if is_testing:
-        return True  # Skip validation in tests
-    
-    if disable_api_key_check:
+    In testing or when local auth bypass is enabled, treat as admin to avoid breaking tests/dev.
+    """
+    if is_testing or ALLOW_LOCAL_AUTH_BYPASS:
         return True
+    if not email:
+        return False
+    try:
+        return email.strip().lower() in allowed_admin_users
+    except Exception:
+        return False
 
-    if not x_api_key or x_api_key != webhook_api_key:
-        logger.warning(f"Invalid or missing API key for webhook request")
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or missing API key. Include 'X-API-Key' header.",
-            headers={"WWW-Authenticate": "API-Key"}
-        )
-    return True
+@app.get("/api/user")
+def get_user_info(request: Request) -> JSONResponse:
+    """Get authenticated user information from OAuth2 Proxy headers"""
+    # Debug: log all headers to see what OAuth2 proxy is sending
+    print("=== DEBUG: All headers received ===")
+    for header_name, header_value in request.headers.items():
+        if header_name.lower().startswith('x-'):
+            print(f"Header: {header_name} = {header_value}")
+    print("=== END DEBUG ===")
 
+    # Check for the correct OAuth2 Proxy headers, including forwarded headers
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+    )
+    user_name = (
+        request.headers.get("X-Auth-Request-Preferred-Username")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-preferred-username")
+    )
+    user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan context manager"""
-    # Startup
-    logger.info("Starting Respondr API application")
-    logger.info(f"Using Azure OpenAI API at: {azure_openai_endpoint}")
-    logger.info(f"Using deployment: {azure_openai_deployment}")
-    yield
-    # Shutdown
-    logger.info("Shutting down Respondr API application")
+    # Fallback to legacy header names for backwards compatibility
+    if not user_email:
+        user_email = request.headers.get("X-User")
+    if not user_name:
+        user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
+    if not user_groups:
+        user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
 
-app = FastAPI(
-    title="Respondr API",
-    description="API for tracking responder information",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+    authenticated: bool
+    display_name: Optional[str]
+    email: Optional[str]
 
-messages: list[Dict[str, Any]] = []
+    # Check if we have user information from OAuth2 proxy
+    if user_email or user_name:
+        # Check if the user's email domain is allowed
+        if user_email and not is_email_domain_allowed(user_email):
+            logger.warning(f"Access denied for user {user_email}: domain not in allowed list")
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "authenticated": False,
+                    "error": "Access denied",
+                    "message": f"Your domain is not authorized to access this application. Allowed domains: {', '.join(allowed_email_domains)}",
+                    "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+                }
+            )
+        authenticated = True
+        display_name = user_name or user_email
+        email = user_email
+        logger.info(f"User authenticated: {email} from allowed domain")
+    else:
+        # No OAuth2 headers - user might not be properly authenticated
+        if ALLOW_LOCAL_AUTH_BYPASS:
+            # Local dev: pretend there's a logged-in user
+            authenticated = True
+            display_name = os.getenv("LOCAL_DEV_USER_NAME", "Local Dev")
+            email = os.getenv("LOCAL_DEV_USER_EMAIL", "dev@local.test")
+        else:
+            authenticated = False
+            display_name = None
+            email = None
+
+    # Admin flag
+    admin_flag = is_admin(email)
+
+    return JSONResponse(content={
+        "authenticated": authenticated,
+        "email": email,
+        "name": display_name,
+        "groups": [group.strip() for group in user_groups if group.strip()],
+        "is_admin": admin_flag,
+        # Redirect to root after logout so OAuth2 Proxy can initiate a new login
+        "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+    })
 
 def init_redis():
     """Initialize Redis connection"""
@@ -425,6 +506,103 @@ def reload_messages():
     """Reload messages from Redis to get latest data"""
     load_messages()
 
+def load_deleted_messages():
+    """Load deleted messages from Redis"""
+    global deleted_messages
+    
+    # In testing mode, use in-memory storage
+    if is_testing:
+        logger.debug(f"Test mode: Using in-memory deleted storage with {len(deleted_messages)} messages")
+        return
+        
+    try:
+        init_redis()
+        if redis_client:
+            data = redis_client.get(REDIS_DELETED_KEY)
+            if data:
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                deleted_messages = json.loads(cast(str, data))
+                logger.debug(f"Loaded {len(deleted_messages)} deleted messages from Redis")
+            else:
+                logger.debug("No deleted messages in Redis")
+        else:
+            logger.warning("Redis not available for deleted messages")
+    except Exception as e:
+        logger.error(f"Error loading deleted messages from Redis: {e}")
+
+def save_deleted_messages():
+    """Save deleted messages to Redis"""
+    global deleted_messages
+    
+    # In testing mode, just keep in memory
+    if is_testing:
+        logger.debug(f"Test mode: Deleted messages stored in memory ({len(deleted_messages)} messages)")
+        return
+        
+    try:
+        init_redis()
+        if redis_client:
+            data = json.dumps(deleted_messages)
+            redis_client.set(REDIS_DELETED_KEY, data)
+            logger.debug(f"Saved {len(deleted_messages)} deleted messages to Redis")
+        else:
+            logger.warning("Redis not available; keeping deleted messages only in memory")
+    except Exception as e:
+        logger.error(f"Error saving deleted messages to Redis: {e}")
+
+def soft_delete_messages(messages_to_delete: List[Dict[str, Any]]):
+    """Move messages to deleted storage with timestamp"""
+    global deleted_messages
+    
+    # Load current deleted messages
+    load_deleted_messages()
+    
+    # Add deletion timestamp to each message
+    current_time = datetime.now().isoformat()
+    for msg in messages_to_delete:
+        msg["deleted_at"] = current_time
+        deleted_messages.append(msg)
+    
+    # Save updated deleted messages
+    save_deleted_messages()
+    logger.info(f"Soft deleted {len(messages_to_delete)} messages")
+
+def undelete_messages(message_ids: List[str]) -> int:
+    """Restore messages from deleted storage back to active messages"""
+    global messages, deleted_messages
+    
+    # Load current state
+    load_deleted_messages()
+    reload_messages()
+    
+    # Find messages to restore
+    to_restore: List[Dict[str, Any]] = []
+    remaining_deleted: List[Dict[str, Any]] = []
+    
+    for msg in deleted_messages:
+        if str(msg.get("id")) in message_ids:
+            # Remove deletion timestamp and restore
+            if "deleted_at" in msg:
+                del msg["deleted_at"]
+            to_restore.append(msg)
+        else:
+            remaining_deleted.append(msg)
+    
+    if to_restore:
+        # Add back to active messages
+        messages.extend(to_restore)
+        save_messages()
+        
+        # Update deleted messages
+        deleted_messages.clear()
+        deleted_messages.extend(remaining_deleted)
+        save_deleted_messages()
+        
+        logger.info(f"Restored {len(to_restore)} messages from deleted storage")
+    
+    return len(to_restore)
+
 def _clear_all_messages():
     """Clear all stored messages from memory and Redis."""
     global messages
@@ -447,17 +625,21 @@ def ensure_message_ids() -> int:
             count += 1
     return count
 
-def _authn_and_domain_ok(request: Request) -> bool:
-    """Minimal auth check used by mutating endpoints; mirrors /api/responders behavior."""
+ 
+ 
+
+def _authn_domain_and_admin_ok(request: Request) -> bool:
+    """Require authenticated, allowed domain, and admin user for mutating/admin endpoints."""
     user_email = (
         request.headers.get("X-Auth-Request-Email")
         or request.headers.get("X-Auth-Request-User")
         or request.headers.get("x-forwarded-email")
         or request.headers.get("X-User")
     )
+    # In tests or local bypass, allow
     if not user_email:
         return bool(is_testing or ALLOW_LOCAL_AUTH_BYPASS)
-    return is_email_domain_allowed(user_email)
+    return is_email_domain_allowed(user_email) and is_admin(user_email)
 
 def _parse_datetime_like(value: Any) -> Optional[datetime]:
     """Parse various datetime forms into app timezone-aware datetime.
@@ -574,23 +756,62 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         # Convert to lowercase for easier matching
         eta_lower = eta_str.lower()
 
-        # Extract numbers from the string
-        numbers = re.findall(r'\d+', eta_str)
+        # Normalize common duration shorthand
+        eta_norm = eta_lower.replace('~', '')
+        eta_norm = re.sub(r'\bmins?\.?(?=\b)', 'min', eta_norm)
+        eta_norm = re.sub(r'\bhrs?\.?(?=\b)', 'hr', eta_norm)
 
-        # Handle duration patterns
-        if any(word in eta_lower for word in ['min', 'minute']):
+        # Compact forms like "30m", "2h" (including decimals)
+        m_compact = re.match(r'^\s*(\d+(?:\.\d+)?)\s*([mh])\s*$', eta_norm)
+        if m_compact:
+            val, unit = m_compact.groups()
+            minutes = float(val) * (60 if unit == 'h' else 1)
+            if minutes > 1440:
+                logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
+                minutes = 1440
+            result_time = current_time + timedelta(minutes=int(minutes))
+            return result_time.strftime('%H:%M')
+
+        # Remove leading 'in '
+        eta_norm = re.sub(r'^\s*in\s+', '', eta_norm)
+
+        # Re-check compact forms after stripping 'in'
+        m_compact = re.match(r'^\s*(\d+(?:\.\d+)?)\s*([mh])\s*$', eta_norm)
+        if m_compact:
+            val, unit = m_compact.groups()
+            minutes = float(val) * (60 if unit == 'h' else 1)
+            if minutes > 1440:
+                logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
+                minutes = 1440
+            result_time = current_time + timedelta(minutes=int(minutes))
+            return result_time.strftime('%H:%M')
+
+        # Extract numbers from the normalized string
+        numbers = re.findall(r'\d+(?:\.\d+)?', eta_norm)
+
+        # Handle bare numbers (e.g., "in 30") as minutes
+        if re.match(r'^\s*\d+(?:\.\d+)?\s*$', eta_norm) and numbers:
+            minutes = float(numbers[0])
+            if minutes > 1440:
+                logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
+                minutes = 1440
+            result_time = current_time + timedelta(minutes=int(minutes))
+            return result_time.strftime('%H:%M')
+
+        # Handle duration patterns with units
+        if any(word in eta_norm for word in ['min', 'minute']):
             if numbers:
-                minutes = int(numbers[0])
+                minutes = float(numbers[0])
                 # Cap at reasonable maximum (24 hours)
                 if minutes > 1440:
                     logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
                     minutes = 1440
-                result_time = current_time + timedelta(minutes=minutes)
+                result_time = current_time + timedelta(minutes=int(minutes))
                 return result_time.strftime('%H:%M')
 
-        elif any(word in eta_lower for word in ['hour', 'hr']):
+        elif any(word in eta_norm for word in ['hour', 'hr']):
             if numbers:
-                hours = int(numbers[0])
+                hours = float(numbers[0])
                 # Cap at reasonable maximum
                 if hours > 24:
                     logger.warning(f"ETA of {hours} hours is unrealistic, capping at 24 hours")
@@ -598,7 +819,7 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
                 result_time = current_time + timedelta(hours=hours)
                 return result_time.strftime('%H:%M')
 
-        elif 'half' in eta_lower and any(word in eta_lower for word in ['hour', 'hr']):
+        elif 'half' in eta_norm and any(word in eta_norm for word in ['hour', 'hr']):
             result_time = current_time + timedelta(minutes=30)
             return result_time.strftime('%H:%M')
 
@@ -724,20 +945,50 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
 
         # Simplified prompt for direct parsing (no function calling)
         prompt = (
-            "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
-            f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
-            "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
-            "- Messages like \"can't make it\", \"cannot make it\", \"won't make it\", \"not coming\", \"family emergency\", \"sorry\"\n"
-            "- For ANY declining/negative response, return: {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
-            "For responding messages:\n"
-            "- Vehicle: Extract SAR identifier (e.g., 'SAR-12') or return 'POV' for personal vehicle or 'Unknown'\n"
-            "- ETA: Convert to 24-hour format (HH:MM) or 'Unknown'\n"
-            "- For durations like '30 minutes', add to current time\n"
-            "- For times like '9:15 PM', convert to 24-hour format (21:15)\n\n"
-            f"MESSAGE: \"{text}\"\n\n"
-            "Return ONLY this JSON format: "
-            '{\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}'
-        )
+    "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
+    f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
+    
+    "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
+    "- Examples of declining/negative responses:\n"
+    "  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'family emergency', 'sorry', 'unavailable', 'out of town', 'can't respond'\n"
+    "- For ANY negative response, return exactly:\n"
+    "  {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
+    
+    "For responding messages:\n"
+    "- Vehicle:\n"
+    "  - If message contains a SAR identifier like 'SAR-12' or 'SAR 12', set vehicle to that.\n"
+    "  - If personal vehicle, set vehicle to 'POV'.\n"
+    "  - If unclear, set vehicle to 'Unknown'.\n"
+    "  Examples:\n"
+    "    'SAR-3 on the way' → vehicle: 'SAR-3'\n"
+    "    'Driving POV' → vehicle: 'POV'\n"
+    "    'Leaving now' → vehicle: 'Unknown'\n\n"
+    
+    "- ETA:\n"
+    "  - If time is given, convert to 24-hour format HH:MM.\n"
+    "  - If a duration is given (e.g., '30 minutes'), add to current time.\n"
+    "  - If unclear, set to 'Unknown'.\n"
+    "  - Be smart with AM/PM inference: if current time is after the stated hour but before midnight, assume the time is later the same day.\n"
+    "    Example: current time 20:30 and message says 'ETA 9:15' or 'ETA 9:00' → 21:15 or 21:00 (same evening).\n"
+    "  Examples:\n"
+    "    Current time 14:20, message: 'ETA 15:00' → 15:00\n"
+    "    Current time 14:20, message: '30 min out' → 14:50\n"
+    "    Current time 20:30, message: 'ETA 9:15' → 21:15\n"
+    "    'ETA 9:15 PM' → 21:15\n\n"
+    
+    "ADDITIONAL EXAMPLES:\n"
+    "  'Can't make it today, sorry' → {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n"
+    "  'SAR-5 ETA 15:45' → {\"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
+    "  'Driving POV, ETA 30 mins' (current time 13:10) → {\"vehicle\": \"POV\", \"eta\": \"13:40\"}\n"
+    "  'Leaving now' (no vehicle mentioned) → {\"vehicle\": \"Unknown\", \"eta\": \"Unknown\"}\n"
+    "  'ETA 7am tomorrow' → {\"vehicle\": \"Unknown\", \"eta\": \"07:00\"} (assume next day)\n"
+    "  'Responding sar78 eta 9:00' (current time 20:00) → {\"vehicle\": \"SAR-78\", \"eta\": \"21:00\"}\n\n"
+    
+    f"MESSAGE: \"{text}\"\n\n"
+    "Return ONLY this JSON format: "
+    '{\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}'
+)
+
 
         logger.info(f"Calling Azure OpenAI with simplified prompt, deployment: {azure_openai_deployment}")
         
@@ -771,15 +1022,20 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         # Apply additional validation to the AI's result
         eta_value = parsed_json.get("eta", "Unknown")
         if eta_value not in ("Unknown", "Not Responding"):
-            # Validate the AI's ETA result
-            validation_result = validate_and_format_time(eta_value)
-            if validation_result.get("valid"):
-                eta_value = validation_result["normalized"]
-                if validation_result.get("warning"):
-                    logger.warning(f"ETA validation warning: {validation_result['warning']}")
+            eta_after_duration = convert_eta_to_timestamp(eta_value, anchor_time)
+            if eta_after_duration != "Unknown":
+                eta_value = eta_after_duration
             else:
-                logger.warning(f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}")
-                eta_value = "Unknown"
+                validation_result = validate_and_format_time(eta_value)
+                if validation_result.get("valid"):
+                    eta_value = validation_result["normalized"]
+                    if validation_result.get("warning"):
+                        logger.warning(f"ETA validation warning: {validation_result['warning']}")
+                else:
+                    logger.warning(
+                        f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}"
+                    )
+                    eta_value = "Unknown"
 
         # Ensure normalized/validated ETA is applied to payload
         parsed_json["eta"] = eta_value
@@ -820,6 +1076,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     created_at = data.get("created_at", 0)
     group_id = str(data.get("group_id") or "")
     team = GROUP_ID_TO_TEAM.get(group_id, "Unknown") if group_id else "Unknown"
+    user_id = str(data.get("user_id") or data.get("sender_id") or "")
     message_dt: datetime
     
     # Handle invalid or missing timestamps
@@ -864,7 +1121,8 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat() if message_dt else None,
         "group_id": group_id or None,
         "team": team,
-    "id": str(uuid.uuid4()),
+        "user_id": user_id or None,
+        "id": str(uuid.uuid4()),
         "vehicle": parsed.get("vehicle", "Unknown"),
         "eta": parsed.get("eta", "Unknown"),
         "eta_timestamp": eta_info.get("eta_timestamp"),
@@ -965,7 +1223,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
 
     Body accepts: name, text, timestamp, vehicle, eta, eta_timestamp, team, group_id
     """
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -979,6 +1237,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
     team = str(cast(Any, body.get("team")) or "Unknown")
     group_id = str(cast(Any, body.get("group_id")) or "")
     vehicle = str(cast(Any, body.get("vehicle")) or "Unknown")
+    user_id = str(cast(Any, body.get("user_id")) or "")
     eta_str = cast(Optional[str], body.get("eta") if "eta" in body else None)
     ts_input: Any = body.get("timestamp") if "timestamp" in body else None
     eta_ts_input: Any = body.get("eta_timestamp") if "eta_timestamp" in body else None
@@ -998,6 +1257,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat(),
         "group_id": group_id or None,
         "team": team,
+        "user_id": user_id or None,
         "vehicle": vehicle,
         "eta": eta_fields.get("eta", "Unknown"),
         "eta_timestamp": eta_fields.get("eta_timestamp"),
@@ -1014,7 +1274,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
 @app.put("/api/responders/{msg_id}")
 async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
     """Update an existing responder message by ID."""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     reload_messages()
@@ -1031,7 +1291,7 @@ async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
     current = dict(messages[idx])
 
     # Updatable fields
-    for key in ["name", "text", "team", "group_id", "vehicle"]:
+    for key in ["name", "text", "team", "group_id", "vehicle", "user_id"]:
         if key in patch:
             val = patch.get(key)
             if key == "name":
@@ -1064,25 +1324,32 @@ async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
 
 @app.delete("/api/responders/{msg_id}")
 def delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
-    """Delete a responder message by ID."""
-    if not _authn_and_domain_ok(request):
+    """Delete a responder message by ID (soft delete - moves to deleted storage)."""
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     reload_messages()
-    initial = len(messages)
-    remaining = [m for m in messages if str(m.get("id")) != msg_id]
-    if len(remaining) == initial:
+    
+    # Find the message to delete
+    to_delete = [m for m in messages if str(m.get("id")) == msg_id]
+    if not to_delete:
         raise HTTPException(status_code=404, detail="Not found")
-    # Update and persist
+    
+    # Soft delete - move to deleted storage
+    soft_delete_messages(to_delete)
+    
+    # Remove from active messages
+    remaining = [m for m in messages if str(m.get("id")) != msg_id]
     messages.clear()
     messages.extend(remaining)
     save_messages()
-    return {"status": "deleted", "id": msg_id}
+    
+    return {"status": "deleted", "id": msg_id, "soft_delete": True}
 
 @app.post("/api/responders/bulk-delete")
 async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
-    """Bulk delete messages by IDs. Body: {"ids": [..]}"""
-    if not _authn_and_domain_ok(request):
+    """Bulk delete messages by IDs (soft delete - moves to deleted storage). Body: {"ids": [..]}"""
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -1094,13 +1361,23 @@ async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="No IDs provided")
 
     reload_messages()
-    before = len(messages)
-    to_keep = [m for m in messages if str(m.get("id")) not in set(ids)]
-    removed = before - len(to_keep)
-    messages.clear()
-    messages.extend(to_keep)
-    save_messages()
-    return {"status": "deleted", "removed": int(removed)}
+    
+    # Find messages to delete
+    ids_set = set(ids)
+    to_delete = [m for m in messages if str(m.get("id")) in ids_set]
+    to_keep = [m for m in messages if str(m.get("id")) not in ids_set]
+    
+    if to_delete:
+        # Soft delete - move to deleted storage
+        soft_delete_messages(to_delete)
+        
+        # Update active messages
+        messages.clear()
+        messages.extend(to_keep)
+        save_messages()
+    
+    removed = len(to_delete)
+    return {"status": "deleted", "removed": int(removed), "soft_delete": True}
 
 @app.post("/api/clear-all")
 def clear_all_data(request: Request) -> Dict[str, Any]:
@@ -1122,76 +1399,65 @@ def clear_all_data(request: Request) -> Dict[str, Any]:
     _clear_all_messages()
     return {"status": "cleared", "removed": int(initial)}
 
-@app.get("/api/user")
-def get_user_info(request: Request) -> JSONResponse:
-    """Get authenticated user information from OAuth2 Proxy headers"""
-    # Debug: log all headers to see what OAuth2 proxy is sending
-    print("=== DEBUG: All headers received ===")
-    for header_name, header_value in request.headers.items():
-        if header_name.lower().startswith('x-'):
-            print(f"Header: {header_name} = {header_value}")
-    print("=== END DEBUG ===")
+@app.get("/api/deleted-responders")
+def get_deleted_responders(request: Request) -> List[Dict[str, Any]]:
+    """Get all deleted responder messages."""
+    if not _authn_domain_and_admin_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
     
-    # Check for the correct OAuth2 Proxy headers, including forwarded headers
-    user_email = (
-        request.headers.get("X-Auth-Request-Email")
-        or request.headers.get("X-Auth-Request-User")
-        or request.headers.get("x-forwarded-email")
-    )
-    user_name = (
-        request.headers.get("X-Auth-Request-Preferred-Username")
-        or request.headers.get("X-Auth-Request-User")
-        or request.headers.get("x-forwarded-preferred-username")
-    )
-    user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
+    load_deleted_messages()
+    return deleted_messages
+
+@app.post("/api/deleted-responders/undelete")
+async def undelete_responder_entries(request: Request) -> Dict[str, Any]:
+    """Restore deleted messages back to active state. Body: {"ids": [..]}"""
+    if not _authn_domain_and_admin_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        body = await request.json()
+        ids: List[str] = list(map(str, body.get("ids", [])))
+    except Exception:
+        ids = []
+    if not ids:
+        raise HTTPException(status_code=400, detail="No IDs provided")
+
+    restored_count = undelete_messages(ids)
+    return {"status": "restored", "restored": restored_count}
+
+@app.delete("/api/deleted-responders/{msg_id}")
+def permanently_delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
+    """Permanently delete a message from deleted storage."""
+    if not _authn_domain_and_admin_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    load_deleted_messages()
+    initial = len(deleted_messages)
+    remaining = [m for m in deleted_messages if str(m.get("id")) != msg_id]
+    if len(remaining) == initial:
+        raise HTTPException(status_code=404, detail="Not found in deleted storage")
     
-    # Fallback to legacy header names for backwards compatibility
-    if not user_email:
-        user_email = request.headers.get("X-User")
-    if not user_name:
-        user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
-    if not user_groups:
-        user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
-    
-    # Check if we have user information from OAuth2 proxy
-    if user_email or user_name:
-        # Check if the user's email domain is allowed
-        if user_email and not is_email_domain_allowed(user_email):
-            logger.warning(f"Access denied for user {user_email}: domain not in allowed list")
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "authenticated": False,
-                    "error": "Access denied",
-                    "message": f"Your domain is not authorized to access this application. Allowed domains: {', '.join(allowed_email_domains)}",
-                    "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
-                }
-            )
-        
-        authenticated = True
-        display_name = user_name or user_email
-        email = user_email
-        logger.info(f"User authenticated: {email} from allowed domain")
-    else:
-        # No OAuth2 headers - user might not be properly authenticated
-        if ALLOW_LOCAL_AUTH_BYPASS:
-            # Local dev: pretend there's a logged-in user
-            authenticated = True
-            display_name = os.getenv("LOCAL_DEV_USER_NAME", "Local Dev")
-            email = os.getenv("LOCAL_DEV_USER_EMAIL", "dev@local.test")
-        else:
-            authenticated = False
-            display_name = None
-            email = None
-    
-    return JSONResponse(content={
-        "authenticated": authenticated,
-        "email": email,
-        "name": display_name,
-        "groups": [group.strip() for group in user_groups if group.strip()],
-        # Redirect to root after logout so OAuth2 Proxy can initiate a new login
-        "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
-    })
+    deleted_messages.clear()
+    deleted_messages.extend(remaining)
+    save_deleted_messages()
+    return {"status": "permanently_deleted", "id": msg_id}
+
+@app.post("/api/deleted-responders/clear-all")
+def clear_all_deleted_data(request: Request) -> Dict[str, Any]:
+    """Permanently clear all deleted responder data. Protected by env gate or API key."""
+    allow_env = os.getenv("ALLOW_CLEAR_ALL", "false").lower() == "true"
+    provided_key = request.headers.get("X-API-Key")
+    key_ok = webhook_api_key and provided_key == webhook_api_key
+    if not (allow_env or key_ok):
+        raise HTTPException(status_code=403, detail="Clear-all is disabled")
+
+    load_deleted_messages()
+    initial = len(deleted_messages)
+    deleted_messages.clear()
+    save_deleted_messages()
+    return {"status": "cleared", "removed": int(initial)}
+
+ 
 
 @app.get("/debug/pod-info")
 def get_pod_info():
@@ -1235,11 +1501,15 @@ def health() -> Dict[str, Any]:
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def display_dashboard() -> str:
+    # Reload messages from Redis to ensure we have the latest data
+    reload_messages()
+    
     current_time = datetime.now()
     
     html = f"""
     <h1>🚨 Responder Dashboard</h1>
     <p><strong>Current Time:</strong> {current_time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <p><a href="/deleted-dashboard">View Deleted Messages →</a></p>
     <table border='1' cellpadding='8' style='border-collapse: collapse; font-family: monospace;'>
         <tr style='background-color: #f0f0f0;'>
             <th>Message Time</th>
@@ -1303,6 +1573,89 @@ def display_dashboard() -> str:
         <div style='background-color: #cceeff; display: inline-block; padding: 2px 8px; margin: 2px;'>Arriving Medium (≤15 min)</div>
         <div style='background-color: #ffffcc; display: inline-block; padding: 2px 8px; margin: 2px;'>Unknown Vehicle/ETA</div>
         <div style='background-color: #ffcccc; display: inline-block; padding: 2px 8px; margin: 2px;'>Not Responding</div>
+    </div>
+    """
+    return html
+
+@app.get("/deleted-dashboard", response_class=HTMLResponse)
+def display_deleted_dashboard() -> str:
+    """Display dashboard of deleted responder messages"""
+    # Reload deleted messages from Redis to ensure we have the latest data
+    load_deleted_messages()
+    
+    current_time = datetime.now()
+    
+    html = f"""
+    <h1>🗑️ Deleted Responder Dashboard</h1>
+    <p><strong>Current Time:</strong> {current_time.strftime('%Y-%m-%d %H:%M:%S')}</p>
+    <p><strong>Total Deleted Messages:</strong> {len(deleted_messages)}</p>
+    <p><a href="/dashboard">← Back to Active Dashboard</a></p>
+    <table border='1' cellpadding='8' style='border-collapse: collapse; font-family: monospace;'>
+        <tr style='background-color: #f0f0f0;'>
+            <th>Message Time</th>
+            <th>Deleted At</th>
+            <th>Name</th>
+            <th>Unit/Team</th>
+            <th>Vehicle</th>
+            <th>ETA</th>
+            <th>Message</th>
+            <th>Message ID</th>
+        </tr>
+    """
+    
+    # Sort by deletion time (most recent first)
+    sorted_deleted = sorted(deleted_messages, key=lambda x: x.get('deleted_at', ''), reverse=True)
+    
+    for msg in sorted_deleted:
+        msg_time = msg.get('timestamp', 'Unknown')
+        deleted_time = msg.get('deleted_at', 'Unknown')
+        name = msg.get('name', '')
+        team = msg.get('team', msg.get('unit', ''))  # Handle both team and unit
+        vehicle = msg.get('vehicle', 'Unknown')
+        eta = msg.get('eta', 'Unknown')
+        message_text = msg.get('text', '')
+        msg_id = msg.get('id', '')
+        
+        # Truncate long message text
+        if len(message_text) > 100:
+            message_text = message_text[:100] + "..."
+        
+        # Format deleted time
+        try:
+            if deleted_time != 'Unknown':
+                dt = datetime.fromisoformat(deleted_time.replace('Z', '+00:00'))
+                deleted_display = dt.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                deleted_display = 'Unknown'
+        except:
+            deleted_display = deleted_time
+        
+        html += f"""
+        <tr style='background-color: #fff0f0;'>
+            <td>{msg_time}</td>
+            <td>{deleted_display}</td>
+            <td>{name}</td>
+            <td>{team}</td>
+            <td>{vehicle}</td>
+            <td>{eta}</td>
+            <td style='max-width: 300px; word-wrap: break-word;'>{message_text}</td>
+            <td style='font-size: 10px; color: #666;'>{msg_id}</td>
+        </tr>
+        """
+    
+    if not deleted_messages:
+        html += """
+        <tr>
+            <td colspan="8" style="text-align: center; color: #666; font-style: italic;">No deleted messages</td>
+        </tr>
+        """
+    
+    html += """
+    </table>
+    <br>
+    <div style='font-size: 12px; color: #666;'>
+        <p><strong>Note:</strong> Deleted messages are stored in Redis under 'respondr_deleted_messages' key.</p>
+        <p>Use the API endpoints to restore messages: POST /api/deleted-responders/undelete</p>
     </div>
     """
     return html

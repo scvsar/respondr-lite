@@ -6,6 +6,8 @@ param(
     [string]$Domain,
     
     [string]$Location = "westus",
+    [string]$Namespace = "respondr",
+    [string]$HostPrefix = "respondr",
     [switch]$SkipInfrastructure,
     [switch]$SkipImageBuild,
     [bool]$UseOAuth2 = $true,
@@ -16,13 +18,15 @@ Write-Host "🚀 Template-Based Respondr Deployment" -ForegroundColor Cyan
 Write-Host "======================================" -ForegroundColor Cyan
 Write-Host "Resource Group: $ResourceGroupName" -ForegroundColor Yellow
 Write-Host "Domain: $Domain" -ForegroundColor Yellow
+Write-Host "Namespace: $Namespace" -ForegroundColor Yellow
+Write-Host "HostPrefix: $HostPrefix" -ForegroundColor Yellow
 Write-Host "Location: $Location" -ForegroundColor Yellow
 Write-Host "Use OAuth2: $UseOAuth2" -ForegroundColor Yellow
 Write-Host ""
 
 # Step 1: Generate values from current environment
 Write-Host "📋 Step 1: Generating configuration from current Azure environment..." -ForegroundColor Green
-& ".\generate-values.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain
+& ".\generate-values.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain -Namespace $Namespace -HostPrefix $HostPrefix
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to generate values from environment"
     exit 1
@@ -77,14 +81,14 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "☸️  Step 6: Deploying to Kubernetes..." -ForegroundColor Green
 
 # Deploy Redis first
-kubectl apply -f redis-deployment.yaml
+kubectl apply -f redis-deployment.yaml -n $Namespace
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to deploy Redis"
     exit 1
 }
 
 # Deploy application
-kubectl apply -f $outputFile
+kubectl apply -f $outputFile -n $Namespace
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to deploy application"
     exit 1
@@ -92,7 +96,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # Wait for deployment
 Write-Host "⏳ Waiting for deployment to be ready..." -ForegroundColor Yellow
-kubectl rollout status deployment/respondr-deployment -n respondr --timeout=300s
+kubectl rollout status deployment/respondr-deployment -n $Namespace --timeout=300s
 
 # Step 7: Verification
 Write-Host "✅ Step 7: Verifying deployment..." -ForegroundColor Green
@@ -109,14 +113,18 @@ Write-Host "   - values.yaml (environment configuration)" -ForegroundColor White
 Write-Host "   - secrets.yaml (Kubernetes secrets)" -ForegroundColor White
 Write-Host "   - $outputFile (generated deployment)" -ForegroundColor White
 Write-Host ""
-Write-Host "🔗 Your application is available at: https://respondr.$Domain" -ForegroundColor Green
+Write-Host "🔗 Your application is available at: https://$HostPrefix.$Domain" -ForegroundColor Green
 Write-Host ""
 Write-Host "⚠️  IMPORTANT: All generated files are in .gitignore and should never be committed!" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "🪝 ACR Webhook (optional): Configure your ACR to POST to https://respondr.$Domain/internal/acr-webhook" -ForegroundColor Cyan
+Write-Host "🪝 ACR Webhook (optional): Configure your ACR to POST to https://$HostPrefix.$Domain/internal/acr-webhook" -ForegroundColor Cyan
 Write-Host "   Header: X-ACR-Token (value is in deployment/secrets.yaml under ACR_WEBHOOK_TOKEN)" -ForegroundColor White
 
 if ($SetupAcrWebhook) {
     Write-Host "Configuring ACR webhook now..." -ForegroundColor Yellow
-    & ".\configure-acr-webhook.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain
+    
+    # Determine environment from HostPrefix
+    $Environment = if ($HostPrefix -eq "respondr-preprod") { "preprod" } else { "main" }
+    
+    & ".\configure-acr-webhook.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain -Environment $Environment -HostPrefix $HostPrefix
 }

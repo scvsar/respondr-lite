@@ -5,6 +5,7 @@ respondr-k8s-oauth2.yaml
 respondr-k8s-current.yaml
 respondr-k8s-temp.yaml
 values.yaml
+values-preprod.yaml
 .generated/
 
 # Environment files with secrets

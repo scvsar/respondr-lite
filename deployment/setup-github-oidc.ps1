@@ -153,7 +153,12 @@ $owner,$repoName = $Repo.Split('/')
 if (-not $owner -or -not $repoName) { throw "Repo must be in 'owner/repo' format" }
 
 $repoFullName = "$owner/$repoName"
-Ensure-FedCred -Name "push-$Branch" -Subject "repo:$repoFullName`:ref:refs/heads/$Branch"
+# Support comma-separated branches (e.g., "main,preprod")
+$branches = $Branch -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+if ($branches.Count -eq 0) { $branches = @('main') }
+foreach ($b in $branches) {
+    Ensure-FedCred -Name "push-$b" -Subject "repo:$repoFullName`:ref:refs/heads/$b"
+}
 Ensure-FedCred -Name "pull-request" -Subject "repo:$repoFullName`:pull_request"
 
 # Set GitHub repo secrets
