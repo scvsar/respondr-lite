@@ -245,6 +245,35 @@ Tests:
 (cd frontend; npm test)
 ```
 
+## Testing across environments (local, preprod, prod)
+
+Quick guidance to exercise webhooks, APIs, and the UI in each environment.
+
+Prereqs
+- WEBHOOK_API_KEY configured (via environment or `deployment/create-secrets.ps1` which writes Kubernetes secrets and a local `.env`)
+- Python deps installed for backend tests: `(cd backend; pip install -r requirements.txt)`
+
+Key URLs (replace hosts for your setup)
+- Local: http://localhost:8000 (webhook: `/webhook`, API: `/api/responders`, UI: `/`)
+- Preprod: https://respondr-preprod.<your-domain> (webhook: `/webhook`, API: `/api/responders`)
+- Production: https://respondr.<your-domain> (webhook: `/webhook`, API: `/api/responders`)
+
+Common test flows (from `backend/`)
+- Webhook, local default: `python test_webhook.py`
+- Webhook, production: `python test_webhook.py --production`
+- Preprod smoke and custom message: `python test_preprod.py [--name "Your Name" --message "Your test message"]`
+- ACR webhook unit tests: `pytest test_acr_webhook.py -v`
+
+Manual verification (preprod/prod)
+1) Open the environment host in a browser and sign in via Azure AD
+2) Confirm your test message appears on the dashboard and fields (vehicle, ETA) look correct
+3) API spot check (requires OAuth via ingress): `GET /api/responders`
+
+Troubleshooting
+- 401 on webhook: ensure `X-API-Key` header matches `WEBHOOK_API_KEY`; regenerate secrets if needed (`deployment/create-secrets.ps1`)
+- Connection errors: verify DNS points to App Gateway IP and cert-manager has issued TLS
+- OAuth2 issues: try a private window, or validate the Azure AD app registration and allowed domains
+
 ## Pre‑production environment (separate namespace + host)
 
 Deploy a fully isolated pre‑production environment that shares the same Application Gateway/Public IP using host‑based routing and a unique DNS name.

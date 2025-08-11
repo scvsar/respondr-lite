@@ -93,8 +93,26 @@ ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
 
 # GroupMe group_id to Team mapping
 # Source: provided GroupMe group list
+""" <select name="bot[group_id]" id="bot_group_id">
+<option value="102193274">OSU Test group</option>
+<option value="97608845">SCVSAR 4X4 Team</option>
+<option value="6846970">ASAR MEMBERS</option>
+<option value="61402638">ASAR Social</option>
+<option value="19723040">Snohomish Unit Mission Response</option>
+<option value="96018206">SCVSAR-IMT</option>
+<option value="1596896">SCVSAR K9 Team</option>
+<option value="92390332">ASAR Drivers</option>
+<option value="99606944">OSU - Social</option>
+<option value="14533239">MSAR Mission Response</option>
+<option value="106549466">ESAR Coordination</option>
+<option value="16649586">OSU-MISSION RESPONSE</option>
+<option value="109174633">PreProd-Responder</option>
+ """
+
+
 GROUP_ID_TO_TEAM: Dict[str, str] = {
     "102193274": "OSUTest",
+    "109174633": "PreProd",    
     "97608845": "4X4",
     "6846970": "ASAR",
     "61402638": "ASAR",
