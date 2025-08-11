@@ -12,6 +12,7 @@ const StatusTabs = ({
   setSortBy, 
   toggleRow, 
   toggleAll,
+  toggleAllVisible,
   statusOf, 
   unitOf, 
   resolveVehicle, 
@@ -20,7 +21,8 @@ const StatusTabs = ({
   useUTC,
   statusFilter = [],
   vehicleFilter = [],
-  query = '' 
+  query = '',
+  refreshNonce = 0,
 }) => {
   const [activeTab, setActiveTab] = useState('current');
   const [currentStatusData, setCurrentStatusData] = useState([]);
@@ -32,7 +34,7 @@ const StatusTabs = ({
     try {
       setCurrentStatusError(null);
       setCurrentStatusLoading(true);
-      const response = await fetch('/api/current-status');
+  const response = await fetch(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -51,6 +53,13 @@ const StatusTabs = ({
       fetchCurrentStatus();
     }
   }, [activeTab]);
+
+  // Also refresh current status whenever parent indicates data changes (e.g., delete/save)
+  useEffect(() => {
+    if (activeTab === 'current') {
+      fetchCurrentStatus();
+    }
+  }, [refreshNonce, activeTab]);
 
   // Re-fetch current status when main data updates
   useEffect(() => {
@@ -200,6 +209,8 @@ const StatusTabs = ({
   );
 
   const renderTable = (tableData, loading, error, showAllColumns = false) => {
+    const visibleIds = (tableData || []).map(r => r.id).filter(Boolean);
+    const allVisibleChecked = visibleIds.length > 0 && visibleIds.every(id => selected.has(id)) && selected.size === visibleIds.length;
     return (
   <div className="table-wrap">
         <table className="dashboard-table" role="table">
@@ -210,8 +221,8 @@ const StatusTabs = ({
                   <input 
                     type="checkbox" 
                     aria-label="Select all" 
-                    checked={selected.size === tableData.length && tableData.length > 0} 
-                    onChange={toggleAll} 
+                    checked={allVisibleChecked} 
+                    onChange={() => toggleAllVisible(visibleIds)} 
                   />
                 </th>
               )}
@@ -390,12 +401,18 @@ const StatusTabs = ({
               </div>
             )}
             
-            {renderTable(allLatestOnly ? dedupedAllMessages : sortedAllMessages, isLoading, error, false)}
+            {renderTable(
+              allLatestOnly ? dedupedAllMessages : sortedAllMessages,
+              isLoading,
+              error,
+              !!(isAdmin && editMode) // show selection column only for All Messages in edit mode
+            )}
             
             {!isLoading && !error && data?.length > 0 && (
-              <div className="tab-footer">
+        <div className="tab-footer">
                 <small className="tab-help">
-                  {allLatestOnly ? '👤 Showing latest message per person • Toggle off to see all messages' : '💬 Showing all messages chronologically • Use filters to narrow down results'}
+          {allLatestOnly ? '👤 Showing latest message per person • Toggle off to see all messages' : '💬 Showing all messages chronologically • Use filters to narrow down results'}
+          {isAdmin && editMode ? ' • Edit mode: select rows to Edit/Delete' : ''}
                 </small>
               </div>
             )}

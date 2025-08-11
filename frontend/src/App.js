@@ -83,6 +83,7 @@ function MainApp() {
   const [selected, setSelected] = useState(()=>new Set());
   const [showEditor, setShowEditor] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const [form, setForm] = useState({
     name: '',
     team: '',
@@ -549,7 +550,8 @@ function MainApp() {
     setShowEditor(false);
     setEditingId(null);
     setSelected(new Set());
-    await fetchData();
+  setRefreshNonce(n=>n+1);
+  await fetchData();
   };
   const deleteSelected = async () => {
     if (!isAdmin) { alert('Only admins can delete entries.'); return; }
@@ -569,7 +571,8 @@ function MainApp() {
     }
     if (!ok) { alert('Delete failed'); return; }
     setSelected(new Set());
-    await fetchData();
+  setRefreshNonce(n=>n+1);
+  await fetchData();
   };
   const toggleRow = (id) => {
     setSelected(prev => {
@@ -581,6 +584,17 @@ function MainApp() {
   const toggleAll = () => {
     if (selected.size === sorted.length) setSelected(new Set());
     else setSelected(new Set(sorted.map(x => x.id)));
+  };
+
+  // Select/Deselect only the currently visible rows in the active table
+  const toggleAllVisible = (ids = []) => {
+    if (!Array.isArray(ids)) ids = [];
+    const allVisibleSelected = ids.length > 0 && ids.every(id => selected.has(id)) && selected.size === ids.length;
+    if (allVisibleSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(ids));
+    }
   };
 
   const sortButton = (label, key) => (
@@ -711,6 +725,7 @@ function MainApp() {
         setSortBy={setSortBy}
         toggleRow={toggleRow}
         toggleAll={toggleAll}
+  toggleAllVisible={toggleAllVisible}
         statusOf={statusOf}
         unitOf={unitOf}
         resolveVehicle={resolveVehicle}
@@ -720,6 +735,7 @@ function MainApp() {
         statusFilter={statusFilter}
         vehicleFilter={vehicleFilter}
         query={query}
+  refreshNonce={refreshNonce}
       />
       </div>
 
