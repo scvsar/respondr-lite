@@ -204,6 +204,8 @@ function MainApp() {
     if (entry.arrival_status) {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
       if (entry.arrival_status === 'Cancelled') return 'Cancelled';
+      if (entry.arrival_status === 'Available') return 'Available';
+      if (entry.arrival_status === 'Informational') return 'Informational';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
       if (entry.arrival_status === 'Arrived') return 'Responding';
@@ -653,7 +655,7 @@ function MainApp() {
             .map(v => (
               <div key={v} className={"chip "+(vehicleFilter.includes(v)?'active':'')} onClick={()=>toggleInArray(vehicleFilter, v, setVehicleFilter)}>{v}</div>
             ))}
-          {["Responding","Cancelled","Not Responding","Unknown"].map(s => (
+          {["Responding","Available","Informational","Cancelled","Not Responding","Unknown"].map(s => (
             <div key={s} className={"chip "+(statusFilter.includes(s)?'active':'')} onClick={()=>toggleInArray(statusFilter, s, setStatusFilter)}>{s}</div>
           ))}
         </div>
@@ -732,7 +734,7 @@ function MainApp() {
             )}
             {!isLoading && sorted.map((entry, index) => {
               const s = statusOf(entry);
-              const pillClass = s==='Responding' ? 'status-responding' : (s==='Cancelled' ? 'status-cancelled' : (s==='Not Responding' ? 'status-not' : 'status-unknown'));
+              const pillClass = s==='Responding' ? 'status-responding' : (s==='Available' ? 'status-available' : (s==='Informational' ? 'status-informational' : (s==='Cancelled' ? 'status-cancelled' : (s==='Not Responding' ? 'status-not' : 'status-unknown'))));
               return (
                 <tr key={entry.id || index} className={selected.has(entry.id)?'row-selected':''}>
                   {editMode && (

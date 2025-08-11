@@ -1008,13 +1008,23 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "  'I can respond as IMT' → 'unknown'\n\n"
     
     "ETA EXTRACTION:\n"
-    "- Format times: '0830' → '08:30', '1150' → '11:50'\n"
-    "- Relative times: '15 minutes', 'in 20', 'be there in 20' → add to current time\n"
+    "- Absolute times: '0830' → '08:30', '1150' → '11:50', '15:00' → '15:00'\n"
+    "- Relative times: Add to current time and return calculated result\n"
+    f"  * Current time: {current_time_short}\n"
+    f"  * '15 minutes'/'15min'/'15 mins' → add 15 minutes to {current_time_short}\n"
+    f"  * '30min'/'30 minutes' → add 30 minutes to {current_time_short}\n"
+    f"  * '60min'/'60 minutes'/'1 hour' → add 60 minutes to {current_time_short}\n"
+    f"  * '90min'/'90 minutes' → add 90 minutes to {current_time_short}\n"
+    "- Examples with current time calculations:\n"
+    f"  Current time {current_time_short}: 'ETA 30min' → '{(current_time + timedelta(minutes=30)).strftime('%H:%M')}'\n"
+    f"  Current time {current_time_short}: 'ETA 60min' → '{(current_time + timedelta(minutes=60)).strftime('%H:%M')}'\n"
+    f"  Current time {current_time_short}: 'ETA 15 minutes' → '{(current_time + timedelta(minutes=15)).strftime('%H:%M')}'\n"
     "- No time mentioned → 'unknown'\n"
-    "- DON'T interpret bare '1022' as time unless clearly '10:22'\n"
+    "- DON'T interpret 'Xmin' as 'X:00' - calculate relative time!\n"
     "Examples:\n"
     "  Current time 14:20, 'ETA 15:00' → '15:00'\n"
     "  Current time 14:20, '30 min out' → '14:50'\n"
+    "  Current time 12:07, 'ETA 60min' → '13:07' (NOT '01:00'!)\n"
     "  'POV ETA 0830' → '08:30'\n"
     "  'Updated eta: arriving 11:30' → '11:30'\n\n"
     
@@ -1027,7 +1037,10 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "  'Mission canceled. Subject found' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
     "  'Who can respond to Vesper?' → {\"status\": \"informational\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
     "  'SAR-5 ETA 15:45' → {\"status\": \"responding\", \"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
-    "  'Responding sar78 1150' → {\"status\": \"responding\", \"vehicle\": \"SAR-78\", \"eta\": \"11:50\"}\n\n"
+    "  'Responding sar78 1150' → {\"status\": \"responding\", \"vehicle\": \"SAR-78\", \"eta\": \"11:50\"}\n"
+    f"  'Responding SAR7 ETA 60min' (current: {current_time_short}) → {{\"status\": \"responding\", \"vehicle\": \"SAR-7\", \"eta\": \"{(current_time + timedelta(minutes=60)).strftime('%H:%M')}\"}}\n"
+    f"  'SAR-3 ETA 30min' (current: {current_time_short}) → {{\"status\": \"responding\", \"vehicle\": \"SAR-3\", \"eta\": \"{(current_time + timedelta(minutes=30)).strftime('%H:%M')}\"}}\n"
+    f"  'ETA 45 minutes' (current: {current_time_short}) → {{\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"{(current_time + timedelta(minutes=45)).strftime('%H:%M')}\"}}\n\n"
     
     f"MESSAGE: \"{text}\"\n\n"
     "Return ONLY this JSON format: "
@@ -1061,23 +1074,27 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
                 return {"vehicle": "Unknown", "eta": "Unknown"}
 
         # Handle new status-based format
+        raw_status = None  # Preserve raw status for frontend
         if "status" in parsed_json:
             status = parsed_json.get("status", "unknown").lower()
             vehicle = parsed_json.get("vehicle", "unknown")
             eta = parsed_json.get("eta", "unknown")
             
+            # Preserve the raw status for the frontend
+            raw_status = status.capitalize()
+            
             # Convert status to legacy format for backward compatibility
             if status == "cancelled":
-                return {"vehicle": "Not Responding", "eta": "Cancelled"}
+                return {"vehicle": "Not Responding", "eta": "Cancelled", "raw_status": raw_status}
             elif status == "informational" and vehicle == "unknown" and eta == "unknown":
-                return {"vehicle": "Not Responding", "eta": "Cancelled"}
+                return {"vehicle": "Not Responding", "eta": "Cancelled", "raw_status": raw_status}
             else:
                 # For responding, available, or unknown status, use the vehicle and eta as provided
                 if vehicle == "unknown":
                     vehicle = "Unknown"
                 if eta == "unknown":
                     eta = "Unknown"
-                parsed_json = {"vehicle": vehicle, "eta": eta}
+                parsed_json = {"vehicle": vehicle, "eta": eta, "raw_status": raw_status}
         
         # Legacy format validation (for old format responses)
         if "vehicle" not in parsed_json or "eta" not in parsed_json:
@@ -1107,6 +1124,10 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
 
         # Ensure normalized/validated ETA is applied to payload
         parsed_json["eta"] = eta_value
+        
+        # Include raw_status if it was captured
+        if "raw_status" in parsed_json:
+            parsed_json["raw_status"] = parsed_json["raw_status"]
         
         return parsed_json
         
@@ -1177,10 +1198,13 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
 
     # Provide sender context to AI while instructing it (in the prompt) to ignore names for vehicle/ETA
     parsed = extract_details_from_text(f"Sender: {display_name}. Message: {text}", base_time=message_dt)
-    logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}")
+    logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}, raw_status={parsed.get('raw_status')}")
 
     # Calculate additional fields for better display
     eta_info = calculate_eta_info(parsed.get("eta", "Unknown"), message_dt)
+    
+    # Use raw_status from AI parsing if available, otherwise fall back to eta_info status
+    arrival_status = parsed.get("raw_status") or eta_info.get("status")
 
     message_record: Dict[str, Any] = {
         "name": display_name,
@@ -1196,7 +1220,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "eta_timestamp": eta_info.get("eta_timestamp"),
         "eta_timestamp_utc": eta_info.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
-        "arrival_status": eta_info.get("status")
+        "arrival_status": arrival_status
     }
 
     # Reload messages to get latest data from other pods

@@ -130,6 +130,11 @@ TEST_MESSAGES = [
         "category": "responding"
     },
     {
+        "message": "Responding SAR7 ETA 60min",
+        "expected": {"vehicle": "SAR-7", "eta": "10:00"},  # 09:00 + 60 mins = 10:00
+        "category": "responding"
+    },
+    {
         "message": "Responding but presumably to field",
         "expected": {"vehicle": "Unknown", "eta": "Unknown"},
         "category": "responding"

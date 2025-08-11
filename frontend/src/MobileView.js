@@ -54,9 +54,12 @@ export default function MobileView() {
 
   // Helpers local to this view
   const statusOf = (entry) => {
+    // Use arrival_status from backend if available, otherwise fall back to vehicle-based logic
     if (entry.arrival_status) {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
-  if (entry.arrival_status === 'Cancelled') return 'Cancelled';
+      if (entry.arrival_status === 'Cancelled') return 'Cancelled';
+      if (entry.arrival_status === 'Available') return 'Available';
+      if (entry.arrival_status === 'Informational') return 'Informational';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
       if (entry.arrival_status === 'Arrived') return 'Responding';
