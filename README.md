@@ -139,32 +139,39 @@ cd deployment
 
 ## Automatic rollouts on new images (ACR webhook)
 
-When a new image is pushed to ACR, auto‑restart the AKS deployment to pull the latest tag.
+When a new image is pushed to ACR, an ACR Webhook calls the backend to trigger a rolling restart so pods pull the latest image.
 
 - Endpoint: `POST /internal/acr-webhook`
   - Header: `X-ACR-Token: <token>` (or `?token=<token>`)
   - Token stored in secret `respondr-secrets` key `ACR_WEBHOOK_TOKEN`
 - Handler patches the Deployment pod template with a restart timestamp → rolling restart
-- RBAC permits patching Deployments in namespace `respondr`
-- OAuth2 Proxy skips auth for this path
+- OAuth2 Proxy skips auth for this path (regex exempt)
 
-Automated setup (recommended):
+Environment‑scoped webhooks (recommended):
+- Production (main): webhook name `respondrmain`, scope `respondr:latest`, URL `https://respondr.<domain>/internal/acr-webhook`
+- Pre‑production: webhook name `respondrpreprod`, scope `respondr:preprod*`, URL `https://respondr-preprod.<domain>/internal/acr-webhook`
+
+Automated setup:
 ```powershell
+# Detects your environment and configures a correctly-scoped ACR webhook
 ./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
 # OR
 ./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
-# OR manually configure existing deployment
-./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
+
+# Direct call (examples)
+./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -Environment main   -HostPrefix respondr
+./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -Environment preprod -HostPrefix respondr-preprod
 ```
 
-Manual ACR wiring:
-1) Azure Portal → Container Registry → Webhooks → Add
-   - Name: respondrrestart (alphanumeric only)
-   - Service URI: https://<host>/internal/acr-webhook
-   - Actions: Push; Scope: respondr:*
-   - Custom header: X-ACR-Token: <same token as in secret>
+Manual ACR wiring (Portal):
+1) Container Registry → Webhooks → Add
+   - Name: `respondrmain`  | `respondrpreprod`
+   - Service URI: `https://respondr.<domain>/internal/acr-webhook` | `https://respondr-preprod.<domain>/internal/acr-webhook`
+   - Actions: Push
+   - Scope: `respondr:latest` (prod) | `respondr:preprod*` (preprod)
+   - Custom header: `X-ACR-Token: <same token as in Kubernetes secret>`
 2) Ensure `imagePullPolicy: Always`
-3) Verify by pushing a new tag; watch: `kubectl rollout status deploy/respondr-deployment -n respondr`
+3) Push an image and watch rollout: `kubectl rollout status deploy/respondr-deployment -n <namespace>`
 
 ## CI/CD with GitHub Actions
 
@@ -237,6 +244,58 @@ Tests:
 (cd backend; python run_tests.py)
 (cd frontend; npm test)
 ```
+
+## Pre‑production environment (separate namespace + host)
+
+Deploy a fully isolated pre‑production environment that shares the same Application Gateway/Public IP using host‑based routing and a unique DNS name.
+
+Key points:
+- Separate Kubernetes namespace (e.g., `respondr-preprod`)
+- Separate DNS host (e.g., `respondr-preprod.<domain>`) via `-HostPrefix`
+- Separate image tag (e.g., `preprod`) to avoid impacting `latest`
+- Separate ACR webhook, scoped to `respondr:preprod*` (see ACR section above)
+
+Deploy (automated):
+```powershell
+cd deployment
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
+  -Namespace respondr-preprod -HostPrefix respondr-preprod -ImageTag preprod -SkipInfrastructure
+```
+
+Manual flow (condensed):
+```powershell
+cd deployment
+./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -Namespace respondr-preprod -HostPrefix respondr-preprod -ImageTag preprod
+./process-template.ps1 -TemplateFile respondr-k8s-unified-template.yaml -OutputFile respondr-k8s-generated.yaml
+kubectl create namespace respondr-preprod --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n respondr get secret respondr-secrets -o yaml | `
+  sed 's/namespace: respondr/namespace: respondr-preprod/' | kubectl apply -f -
+kubectl apply -f redis-deployment.yaml -n respondr-preprod
+kubectl apply -f respondr-k8s-generated.yaml -n respondr-preprod
+```
+
+Add a DNS A record for your preprod host to the same App Gateway IP and wait for cert‑manager to issue TLS.
+
+## Soft delete and recovery (safety net for deletes)
+
+Deletes in the UI are “soft deletes.” Instead of permanently removing data, entries are moved to a separate Redis key so you can review and restore if needed.
+
+- Active messages Redis key: `respondr_messages`
+- Deleted messages Redis key: `respondr_deleted_messages`
+
+New endpoints (OAuth2‑protected via ingress):
+- `GET /api/deleted-responders` → list deleted messages (includes `deleted_at` timestamps)
+- `POST /api/deleted-responders/undelete` → restore messages; body: `{ "ids": ["<id1>", "<id2>"] }`
+- `DELETE /api/deleted-responders/{id}` → permanently remove an entry from deleted storage
+
+Web views:
+- Active dashboard: `/dashboard`
+- Deleted dashboard: `/deleted-dashboard` (also linked from the main toolbar)
+
+Typical recovery flow:
+1) Open `/deleted-dashboard`, copy the message IDs you want to restore
+2) Call `POST /api/deleted-responders/undelete` with those IDs
+3) Verify the entries appear again on the main page and dashboard
 
 ## How AI processes responder messages
 
