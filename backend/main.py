@@ -975,49 +975,63 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
     f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
     
-    "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
+    "Return JSON with three fields: status, vehicle, eta\n\n"
+    
+    "STATUS DETECTION:\n"
+    "- 'responding': Actively responding with intention to arrive\n"
+    "  Examples: 'Responding POV ETA 08:45', 'POV ETA 0830', 'Headed to Taylor's Landing'\n"
+    "- 'cancelled': Mission cancelled or person can't respond\n"
+    "  Examples: 'can't make it', 'backing out', '10-22', 'Mission canceled', 'Subject found'\n"
+    "- 'available': Can respond but no firm commitment\n"
+    "  Examples: 'I can respond as IMT', 'I can help with planning'\n"
+    "- 'informational': Providing information, logistics, questions\n"
+    "  Examples: 'Key for 74 is in key box', 'Who can respond?', 'checking with Hayden'\n"
+    "- 'unknown': Cannot determine clear status\n\n"
+    
+    "CANCELLATION DETECTION - Return status 'cancelled':\n"
     "- Examples of declining/negative responses:\n"
-    "  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'family emergency', 'sorry', 'unavailable', 'out of town', 'can't respond'\n"
-    "- Special codes: '10-22' (or '1022') means stand down / cancel unless it is clearly part of an ETA like 'ETA 10:22' or 'ETA 1022'.\n"
-    "- For ANY negative response or stand-down code, return exactly:\n"
-    "  {\"vehicle\": \"Not Responding\", \"eta\": \"Cancelled\"}\n\n"
+    "  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'backing out'\n"
+    "  'Ok I can't make it', 'I also can't make it', 'Sorry, backing out'\n"
+    "- Special codes: '10-22' (or '1022') means mission complete/cancelled\n"
+    "  'Copied 10-22', 'Copy 10-22', '10-22', '1022 subj found'\n"
+    "- Mission status: 'Mission canceled', 'Mission cancelled', 'Subject found'\n"
+    "- Logistics/info only: 'Key for 74 is in key box', 'Who can respond?'\n\n"
     
-    "For responding messages:\n"
-    "- Vehicle:\n"
-    "  - If message contains a SAR identifier like 'SAR-12' or 'SAR 12', set vehicle to that.\n"
-    "  - If personal vehicle, set vehicle to 'POV'.\n"
-    "  - If unclear, set vehicle to 'Unknown'.\n"
-    "  Examples:\n"
-    "    'SAR-3 on the way' → vehicle: 'SAR-3'\n"
-    "    'Driving POV' → vehicle: 'POV'\n"
-    "    'Leaving now' → vehicle: 'Unknown'\n\n"
+    "VEHICLE EXTRACTION:\n"
+    "- SAR units: 'SAR-12', 'SAR 12', 'sar78', 'SAR-60' → format as 'SAR-XX'\n"
+    "- Personal vehicle: 'POV', 'personal vehicle', 'own car' → 'POV'\n"
+    "- Unknown/unclear → 'unknown'\n"
+    "Examples:\n"
+    "  'SAR-3 on the way' → 'SAR-3'\n"
+    "  'Responding sar78' → 'SAR-78'\n"
+    "  'Driving POV' → 'POV'\n"
+    "  'I can respond as IMT' → 'unknown'\n\n"
     
-    "- ETA:\n"
-    "  - If time is given, convert to 24-hour format HH:MM.\n"
-    "  - If a duration is given (e.g., '30 minutes'), add to current time.\n"
-    "  - If unclear, set to 'Unknown'.\n"
-    "  - Never interpret a bare '1022' as a time; only treat it as '10:22' if explicitly written as '10:22' or in a clear context like 'ETA 1022'.\n"
-    "  - Be smart with AM/PM inference: if current time is after the stated hour but before midnight, assume the time is later the same day.\n"
-    "    Example: current time 20:30 and message says 'ETA 9:15' or 'ETA 9:00' → 21:15 or 21:00 (same evening).\n"
-    "  Examples:\n"
-    "    Current time 14:20, message: 'ETA 15:00' → 15:00\n"
-    "    Current time 14:20, message: '30 min out' → 14:50\n"
-    "    Current time 20:30, message: 'ETA 9:15' → 21:15\n"
-    "    'ETA 9:15 PM' → 21:15\n\n"
+    "ETA EXTRACTION:\n"
+    "- Format times: '0830' → '08:30', '1150' → '11:50'\n"
+    "- Relative times: '15 minutes', 'in 20', 'be there in 20' → add to current time\n"
+    "- No time mentioned → 'unknown'\n"
+    "- DON'T interpret bare '1022' as time unless clearly '10:22'\n"
+    "Examples:\n"
+    "  Current time 14:20, 'ETA 15:00' → '15:00'\n"
+    "  Current time 14:20, '30 min out' → '14:50'\n"
+    "  'POV ETA 0830' → '08:30'\n"
+    "  'Updated eta: arriving 11:30' → '11:30'\n\n"
     
-    "ADDITIONAL EXAMPLES:\n"
-    "  'Can't make it today, sorry' → {\"vehicle\": \"Not Responding\", \"eta\": \"Cancelled\"}\n"
-    "  '10-22' or '1022' → {\"vehicle\": \"Not Responding\", \"eta\": \"Cancelled\"}\n"
-    "  'ETA 1022' → {\"vehicle\": \"Unknown\", \"eta\": \"10:22\"}\n"
-    "  'SAR-5 ETA 15:45' → {\"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
-    "  'Driving POV, ETA 30 mins' (current time 13:10) → {\"vehicle\": \"POV\", \"eta\": \"13:40\"}\n"
-    "  'Leaving now' (no vehicle mentioned) → {\"vehicle\": \"Unknown\", \"eta\": \"Unknown\"}\n"
-    "  'ETA 7am tomorrow' → {\"vehicle\": \"Unknown\", \"eta\": \"07:00\"} (assume next day)\n"
-    "  'Responding sar78 eta 9:00' (current time 20:00) → {\"vehicle\": \"SAR-78\", \"eta\": \"21:00\"}\n\n"
+    "COMPLETE EXAMPLES:\n"
+    "  'Responding POV ETA 08:45' → {\"status\": \"responding\", \"vehicle\": \"POV\", \"eta\": \"08:45\"}\n"
+    "  'can't make it, sorry' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
+    "  'I can respond as IMT' → {\"status\": \"available\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
+    "  'Key for 74 is in key box' → {\"status\": \"informational\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
+    "  '10-22' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
+    "  'Mission canceled. Subject found' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
+    "  'Who can respond to Vesper?' → {\"status\": \"informational\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
+    "  'SAR-5 ETA 15:45' → {\"status\": \"responding\", \"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
+    "  'Responding sar78 1150' → {\"status\": \"responding\", \"vehicle\": \"SAR-78\", \"eta\": \"11:50\"}\n\n"
     
     f"MESSAGE: \"{text}\"\n\n"
     "Return ONLY this JSON format: "
-    '{\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}'
+    '{\"status\": \"responding|cancelled|available|informational|unknown\", \"vehicle\": \"value\", \"eta\": \"HH:MM|unknown\"}'
 )
 
 
@@ -1046,6 +1060,26 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
                 logger.warning(f"No valid JSON found in response: '{reply}'")
                 return {"vehicle": "Unknown", "eta": "Unknown"}
 
+        # Handle new status-based format
+        if "status" in parsed_json:
+            status = parsed_json.get("status", "unknown").lower()
+            vehicle = parsed_json.get("vehicle", "unknown")
+            eta = parsed_json.get("eta", "unknown")
+            
+            # Convert status to legacy format for backward compatibility
+            if status == "cancelled":
+                return {"vehicle": "Not Responding", "eta": "Cancelled"}
+            elif status == "informational" and vehicle == "unknown" and eta == "unknown":
+                return {"vehicle": "Not Responding", "eta": "Cancelled"}
+            else:
+                # For responding, available, or unknown status, use the vehicle and eta as provided
+                if vehicle == "unknown":
+                    vehicle = "Unknown"
+                if eta == "unknown":
+                    eta = "Unknown"
+                parsed_json = {"vehicle": vehicle, "eta": eta}
+        
+        # Legacy format validation (for old format responses)
         if "vehicle" not in parsed_json or "eta" not in parsed_json:
             logger.warning(f"Missing required fields in response: {parsed_json}")
             return {"vehicle": "Unknown", "eta": "Unknown"}
@@ -1055,7 +1089,7 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         # Normalize stand down to Cancelled
         if isinstance(eta_value, str) and eta_value.strip().lower() in {"cancelled", "canceled", "stand down", "stand-down"}:
             eta_value = "Cancelled"
-        if eta_value not in ("Unknown", "Not Responding"):
+        if eta_value not in ("Unknown", "Not Responding", "Cancelled"):
             eta_after_duration = convert_eta_to_timestamp(eta_value, anchor_time)
             if eta_after_duration != "Unknown":
                 eta_value = eta_after_duration
