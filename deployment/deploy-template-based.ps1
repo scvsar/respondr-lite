@@ -122,5 +122,9 @@ Write-Host "   Header: X-ACR-Token (value is in deployment/secrets.yaml under AC
 
 if ($SetupAcrWebhook) {
     Write-Host "Configuring ACR webhook now..." -ForegroundColor Yellow
-    & ".\configure-acr-webhook.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain
+    
+    # Determine environment from HostPrefix
+    $Environment = if ($HostPrefix -eq "respondr-preprod") { "preprod" } else { "main" }
+    
+    & ".\configure-acr-webhook.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain -Environment $Environment -HostPrefix $HostPrefix
 }
