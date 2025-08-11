@@ -594,9 +594,9 @@ if ($SetupGithubOidc -and -not $DryRun) {
             } catch {}
         }
         if ($acrNameForOidc) {
-            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -AcrName $acrNameForOidc -Branch $GithubBranch
+            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -AcrName $acrNameForOidc -Branch "main,preprod"
         } else {
-            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -Branch $GithubBranch
+            & (Join-Path $PSScriptRoot 'setup-github-oidc.ps1') -ResourceGroupName $ResourceGroupName -Repo $GithubRepo -Branch "main,preprod"
         }
     }
 }
