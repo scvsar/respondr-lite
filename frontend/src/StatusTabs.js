@@ -144,6 +144,50 @@ const StatusTabs = ({
     return sorted;
   }, [data, sortBy]);
 
+  // Optional dedupe for All Messages: keep latest message per user, then sort by current sort key
+  const [allLatestOnly, setAllLatestOnly] = useState(false);
+  const dedupedAllMessages = useMemo(() => {
+    if (!data?.length) return [];
+    // Pick latest per user by timestamp
+    const latest = new Map();
+    const tsOf = (e) => {
+      const t = e.timestamp || e.timestamp_utc || 0;
+      const d = new Date(t);
+      return isNaN(d.getTime()) ? 0 : d.getTime();
+    };
+    const uidOf = (e) => e.user_id || e.name || String(e.id || '');
+    for (const m of data) {
+      const uid = uidOf(m);
+      if (!uid) continue;
+      const prev = latest.get(uid);
+      if (!prev || tsOf(m) > tsOf(prev)) latest.set(uid, m);
+    }
+    const arr = Array.from(latest.values());
+    // Sort using same logic as sortedAllMessages
+    const key = sortBy.key;
+    const dir = sortBy.dir === 'desc' ? -1 : 1;
+    arr.sort((a,b) => {
+      let aVal, bVal;
+      switch (key) {
+        case 'timestamp':
+          aVal = new Date(a.timestamp || 0).getTime();
+          bVal = new Date(b.timestamp || 0).getTime();
+          break;
+        case 'eta':
+          aVal = a.eta_timestamp ? new Date(a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
+          bVal = b.eta_timestamp ? new Date(b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
+          break;
+        default:
+          aVal = String(a[key] || '').toLowerCase();
+          bVal = String(b[key] || '').toLowerCase();
+      }
+      if (aVal < bVal) return -1 * dir;
+      if (aVal > bVal) return 1 * dir;
+      return 0;
+    });
+    return arr;
+  }, [data, sortBy]);
+
   const sortButton = (label, key) => (
     <button
       className="btn sort-btn"
@@ -337,15 +381,21 @@ const StatusTabs = ({
                   <div className="summary-count">{data.length}</div>
                   <div className="summary-label">Total Messages</div>
                 </div>
+                <div className="summary-card summary-other" style={{minWidth:180}}>
+                  <div className="summary-label" style={{marginBottom:6}}>View</div>
+                  <label className="toggle">
+                    <input type="checkbox" checked={allLatestOnly} onChange={e=>setAllLatestOnly(e.target.checked)} /> Latest only
+                  </label>
+                </div>
               </div>
             )}
             
-            {renderTable(sortedAllMessages, isLoading, error, false)}
+            {renderTable(allLatestOnly ? dedupedAllMessages : sortedAllMessages, isLoading, error, false)}
             
             {!isLoading && !error && data?.length > 0 && (
               <div className="tab-footer">
                 <small className="tab-help">
-                  💬 Showing all messages chronologically • Use filters to narrow down results
+                  {allLatestOnly ? '👤 Showing latest message per person • Toggle off to see all messages' : '💬 Showing all messages chronologically • Use filters to narrow down results'}
                 </small>
               </div>
             )}

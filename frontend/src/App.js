@@ -206,6 +206,7 @@ function MainApp() {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
       if (entry.arrival_status === 'Cancelled') return 'Cancelled';
       if (entry.arrival_status === 'Available') return 'Available';
+  if (entry.arrival_status === 'Responding') return 'Responding';
       if (entry.arrival_status === 'Informational') return 'Informational';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
@@ -405,19 +406,11 @@ function MainApp() {
     });
   }, [data, query, vehicleFilter, statusFilter, resolveVehicle]);
 
-  // When filtered, dedupe by user keeping the latest message that passed filters; when unfiltered, show all
+  // Show all matching messages (no deduplication) in All Messages view
   const viewData = useMemo(() => {
-    if (isUnfiltered) return [...data];
-    const latest = new Map();
-    for (const msg of filteredMessagesFlat) {
-      const uid = getUserId(msg);
-      if (!uid) continue;
-      const ts = parseTs(msg.timestamp)?.getTime() || 0;
-      const prev = latest.get(uid);
-      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
-    }
-    return Array.from(latest.values());
-  }, [isUnfiltered, data, filteredMessagesFlat]);
+    // When no filters, this is equivalent to data; with filters, include all matching rows (no per-user collapse)
+    return [...filteredMessagesFlat];
+  }, [filteredMessagesFlat]);
 
   // Filtering and sorting
   const filtered = useMemo(() => viewData, [viewData]);
@@ -443,18 +436,16 @@ function MainApp() {
   }, [filtered, sortBy]);
 
   const avgMinutesVal = () => {
-    // Average over unique users represented in the current view (or all users if unfiltered)
-    const base = isUnfiltered ? (() => {
-      // Use latest per user across all data for a stable metric
-      const latest = new Map();
-      for (const msg of data) {
-        const uid = getUserId(msg); if (!uid) continue;
-        const ts = parseTs(msg.timestamp)?.getTime() || 0;
-        const prev = latest.get(uid);
-        if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
-      }
-      return Array.from(latest.values());
-    })() : filtered;
+    // Average over unique users using latest message per user to avoid double-counting
+    const source = isUnfiltered ? data : filteredMessagesFlat;
+    const latest = new Map();
+    for (const msg of source) {
+      const uid = getUserId(msg); if (!uid) continue;
+      const ts = parseTs(msg.timestamp)?.getTime() || 0;
+      const prev = latest.get(uid);
+      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
+    }
+    const base = Array.from(latest.values());
     const times = base.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
     if (!times.length) return null;
     const total = times.reduce((a,b)=>a+b,0);

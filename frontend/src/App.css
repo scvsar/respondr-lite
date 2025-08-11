@@ -66,11 +66,15 @@
   background: var(--bg-elev);
   border-bottom: 1px solid var(--divider);
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: 12px;
+  /* Two columns: main content + controls; two rows: search on top, chips below */
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 10px 12px;
   align-items: center;
   padding: 10px 16px;
 }
+/* Ensure grid children can shrink within their cells to avoid overlap */
+.toolbar > * { min-width: 0; }
 .search-input {
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
@@ -79,12 +83,35 @@
   border-radius: 6px;
   width: 100%;
 }
+/* Place search in the top-left grid cell */
+.toolbar .search-input { grid-column: 1 / 2; grid-row: 1; }
 .chip-row, .controls {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
+/* Controls sit on the right and span both rows so they never collide */
+.toolbar .controls { grid-column: 2 / 3; grid-row: 1 / 3; justify-content: flex-end; align-self: start; }
+/* Chip row sits under the search, becomes a single-line horizontal scroller when content overflows */
+.toolbar .chip-row {
+  grid-column: 1 / 2; grid-row: 2;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  padding-bottom: 2px; /* room for thin scrollbar */
+  /* subtle edge fade to suggest scrollability */
+  -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,0) 0, rgba(0,0,0,1) 20px, rgba(0,0,0,1) calc(100% - 20px), rgba(0,0,0,0) 100%);
+          mask-image: linear-gradient(to right, rgba(0,0,0,0) 0, rgba(0,0,0,1) 20px, rgba(0,0,0,1) calc(100% - 20px), rgba(0,0,0,0) 100%);
+}
+.toolbar .chip-row .chip { scroll-snap-align: start; }
+/* Thin horizontal scrollbar styling */
+.toolbar .chip-row { scrollbar-width: thin; scrollbar-color: var(--divider) transparent; }
+.toolbar .chip-row::-webkit-scrollbar { height: 6px; }
+.toolbar .chip-row::-webkit-scrollbar-track { background: transparent; }
+.toolbar .chip-row::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 3px; }
 .chip { 
   padding: 6px 10px; 
   border-radius: 16px; 
@@ -218,7 +245,14 @@
 
 /* Responsive */
 @media (max-width: 900px) {
-  .toolbar { grid-template-columns: 1fr; top: 56px; }
+  .toolbar { 
+    grid-template-columns: 1fr; 
+    grid-template-rows: auto auto auto; 
+    top: 56px; 
+  }
+  .toolbar .search-input { grid-column: 1; grid-row: 1; }
+  .toolbar .chip-row { grid-column: 1; grid-row: 2; }
+  .toolbar .controls { grid-column: 1; grid-row: 3; justify-content: flex-start; align-self: center; }
   .app-bar .center { display: none; }
   .dashboard-table { table-layout: auto; }
   .col-time { position: static; }
