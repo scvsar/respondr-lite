@@ -1,3 +1,4 @@
+/* Default to dark theme variables */
 :root {
   --bg: #121212;
   --bg-elev: #1a1a1a;
@@ -12,6 +13,23 @@
   --yellow: #b28704;
   --gray: #616161;
   --red: #c62828;
+}
+
+/* Light theme overrides when body has class 'light' */
+body.light {
+  --bg: #ffffff;
+  --bg-elev: #f5f5f5;
+  --bg-elev-2: #eeeeee;
+  --text: #212121;
+  --muted: #555555;
+  --divider: rgba(0,0,0,0.12);
+  --accent: #fb8c00;
+  --border: #dddddd;
+  --hover: rgba(0,0,0,0.04);
+  --green: #388e3c;
+  --yellow: #fbc02d;
+  --gray: #757575;
+  --red: #d32f2f;
 }
 
 .App {
