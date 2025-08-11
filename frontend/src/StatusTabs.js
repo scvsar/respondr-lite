@@ -23,8 +23,21 @@ const StatusTabs = ({
   vehicleFilter = [],
   query = '',
   refreshNonce = 0,
+  // Controlled tab props (optional)
+  activeTab: controlledActiveTab,
+  onTabChange,
 }) => {
-  const [activeTab, setActiveTab] = useState('current');
+  // Support controlled or uncontrolled active tab
+  const [internalActiveTab, setInternalActiveTab] = useState('current');
+  const activeTab = (typeof controlledActiveTab !== 'undefined' && controlledActiveTab !== null)
+    ? controlledActiveTab
+    : internalActiveTab;
+  const changeTab = (tab) => {
+    if (typeof onTabChange === 'function') onTabChange(tab);
+    if (typeof controlledActiveTab === 'undefined' || controlledActiveTab === null) {
+      setInternalActiveTab(tab);
+    }
+  };
   const [currentStatusData, setCurrentStatusData] = useState([]);
   const [currentStatusLoading, setCurrentStatusLoading] = useState(true);
   const [currentStatusError, setCurrentStatusError] = useState(null);
@@ -49,21 +62,21 @@ const StatusTabs = ({
   };
 
   useEffect(() => {
-    if (activeTab === 'current') {
+  if (activeTab === 'current') {
       fetchCurrentStatus();
     }
   }, [activeTab]);
 
   // Also refresh current status whenever parent indicates data changes (e.g., delete/save)
   useEffect(() => {
-    if (activeTab === 'current') {
+  if (activeTab === 'current') {
       fetchCurrentStatus();
     }
   }, [refreshNonce, activeTab]);
 
   // Re-fetch current status when main data updates
   useEffect(() => {
-    if (activeTab === 'current' && data.length > 0) {
+  if (activeTab === 'current' && data.length > 0) {
       fetchCurrentStatus();
     }
   }, [data, activeTab]);
@@ -327,7 +340,7 @@ const StatusTabs = ({
   <div className="tab-nav">
         <button 
           className={`tab-btn ${activeTab === 'current' ? 'active' : ''}`}
-          onClick={() => setActiveTab('current')}
+          onClick={() => changeTab('current')}
         >
           <span className="tab-icon">👥</span>
           Current Status
@@ -337,7 +350,7 @@ const StatusTabs = ({
         </button>
         <button 
           className={`tab-btn ${activeTab === 'all' ? 'active' : ''}`}
-          onClick={() => setActiveTab('all')}
+          onClick={() => changeTab('all')}
         >
           <span className="tab-icon">💬</span>
           All Messages
