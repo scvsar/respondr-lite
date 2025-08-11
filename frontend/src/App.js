@@ -93,6 +93,22 @@ function MainApp() {
     eta_timestamp: '', // datetime-local string
   });
 
+  // Dark mode preference stored in localStorage
+  const [darkMode, setDarkMode] = useState(() => {
+    try {
+      return window.localStorage.getItem('respondr_dark') !== '0';
+    } catch {
+      return true; // default to dark
+    }
+  });
+
+  useEffect(() => {
+    document.body.classList.toggle('light', !darkMode);
+    try {
+      window.localStorage.setItem('respondr_dark', darkMode ? '1' : '0');
+    } catch {}
+  }, [darkMode]);
+
   const fetchData = useCallback(async () => {
     try {
       // Don't fetch data if user just logged out
@@ -594,6 +610,7 @@ function MainApp() {
         <div className="controls">
           <label className="toggle"><input type="checkbox" checked={live} onChange={e=>setLive(e.target.checked)} /> Live</label>
           <label className="toggle"><input type="checkbox" checked={useUTC} onChange={e=>setUseUTC(e.target.checked)} /> UTC</label>
+          <label className="toggle"><input type="checkbox" checked={darkMode} onChange={e=>setDarkMode(e.target.checked)} /> Dark</label>
           <button className="btn" onClick={()=>fetchData()} title="Refresh now">Refresh</button>
           <button className="btn" onClick={exportCsv} title="Export CSV">Export</button>
           <a href="/deleted-dashboard" className="btn" target="_blank" rel="noopener noreferrer" title="View deleted messages">Deleted</a>
