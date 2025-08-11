@@ -980,10 +980,13 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "STATUS DETECTION:\n"
     "- 'responding': Actively responding with intention to arrive\n"
     "  Examples: 'Responding POV ETA 08:45', 'POV ETA 0830', 'Headed to Taylor's Landing'\n"
+    "  IMPORTANT: ETA updates from already responding people stay 'responding'\n"
+    "  'Actually I'll be an hour and 10 min', 'Updated ETA 15:30', 'Make that 20 minutes'\n"
     "- 'cancelled': Mission cancelled or person can't respond\n"
     "  Examples: 'can't make it', 'backing out', '10-22', 'Mission canceled', 'Subject found'\n"
-    "- 'available': Can respond but no firm commitment\n"
+    "- 'available': Can respond but no firm commitment (initial offer only)\n"
     "  Examples: 'I can respond as IMT', 'I can help with planning'\n"
+    "  NOTE: If someone already responded, ETA updates are 'responding', not 'available'\n"
     "- 'informational': Providing information, logistics, questions\n"
     "  Examples: 'Key for 74 is in key box', 'Who can respond?', 'checking with Hayden'\n"
     "- 'unknown': Cannot determine clear status\n\n"
@@ -1015,6 +1018,9 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "  * '45 minutes', '45min' → 'RELATIVE:45min'\n"
     "  * '60min', '60 minutes', '1 hour' → 'RELATIVE:60min'\n"
     "  * '90min', '90 minutes' → 'RELATIVE:90min'\n"
+    "  * 'hour and 10 min', 'hour and 10 minutes' → 'RELATIVE:70min'\n"
+    "  * 'hour and a half', '1.5 hours' → 'RELATIVE:90min'\n"
+    "  * '2 hours', '120 minutes' → 'RELATIVE:120min'\n"
     "  * '2 hours', '120 minutes' → 'RELATIVE:120min'\n"
     "  * 'in 20', 'be there in 20' → 'RELATIVE:20min'\n"
     "- Unknown/unclear → 'unknown'\n"
@@ -1042,7 +1048,10 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     "  'Responding SAR7 ETA 60min' → {\"status\": \"responding\", \"vehicle\": \"SAR-7\", \"eta\": \"RELATIVE:60min\"}\n"
     "  'SAR-3 ETA 30min' → {\"status\": \"responding\", \"vehicle\": \"SAR-3\", \"eta\": \"RELATIVE:30min\"}\n"
     "  'ETA 45 minutes' → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:45min\"}\n"
-    "  'POV ETA 90min' → {\"status\": \"responding\", \"vehicle\": \"POV\", \"eta\": \"RELATIVE:90min\"}\n\n"
+    "  'POV ETA 90min' → {\"status\": \"responding\", \"vehicle\": \"POV\", \"eta\": \"RELATIVE:90min\"}\n"
+    "  'Actually I'll be an hour and 10 min' (if already responding) → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:70min\"}\n"
+    "  'Updated ETA 20 minutes' (if already responding) → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:20min\"}\n"
+    "  'Make that 30 min' (if already responding) → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:30min\"}\n\n"
     
     f"MESSAGE: \"{text}\"\n\n"
     "Return ONLY this JSON format: "
@@ -1121,18 +1130,29 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
                 (r'(\d+)\s*min(?:ute)?s?(?:\s|$)', 'minutes'),
                 (r'(\d+)\s*hour?s?(?:\s|$)', 'hours'),
                 (r'eta\s+(\d+)(?:\s|$)', 'minutes'),  # "ETA 90" pattern
+                (r'hour\s+and\s+(\d+)\s*min(?:ute)?s?', 'hour_plus_minutes'),  # "hour and 10 min"
+                (r'(\d+)\s*hours?\s+and\s+(\d+)\s*min(?:ute)?s?', 'hours_plus_minutes'),  # "2 hours and 30 min"
             ]
             
             for pattern, unit in relative_patterns:
                 match = re.search(pattern, original_text)
                 if match:
-                    number = int(match.group(1))
-                    
-                    # Convert to minutes
-                    if unit == 'hours':
-                        total_minutes = number * 60
+                    if unit == 'hour_plus_minutes':
+                        # "hour and X min" = 60 + X minutes
+                        additional_minutes = int(match.group(1))
+                        total_minutes = 60 + additional_minutes
+                    elif unit == 'hours_plus_minutes':
+                        # "X hours and Y min" = (X * 60) + Y minutes
+                        hours = int(match.group(1))
+                        minutes = int(match.group(2))
+                        total_minutes = (hours * 60) + minutes
                     else:
-                        total_minutes = number
+                        number = int(match.group(1))
+                        # Convert to minutes
+                        if unit == 'hours':
+                            total_minutes = number * 60
+                        else:
+                            total_minutes = number
                     
                     # Only apply if it's a reasonable relative time (5min to 8 hours)
                     if 5 <= total_minutes <= 480:
@@ -1263,8 +1283,23 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         logger.info(f"Skipping placeholder message with no content")
         return {"status": "skipped", "reason": "placeholder message"}
 
-    # Provide sender context to AI while instructing it (in the prompt) to ignore names for vehicle/ETA
-    parsed = extract_details_from_text(f"Sender: {display_name}. Message: {text}", base_time=message_dt)
+    # Check if this user already has a "responding" status to provide context to AI
+    user_previous_status = None
+    try:
+        for msg in reversed(messages):  # Check recent messages first
+            if msg.get("name") == display_name and msg.get("arrival_status") == "Responding":
+                user_previous_status = "responding"
+                logger.info(f"Found previous responding status for {display_name}")
+                break
+    except Exception as e:
+        logger.warning(f"Error checking previous status for {display_name}: {e}")
+
+    # Provide sender context and previous status to AI
+    context_message = f"Sender: {display_name}. Message: {text}"
+    if user_previous_status == "responding":
+        context_message += f" (Note: This user is already responding and may be updating their ETA)"
+    
+    parsed = extract_details_from_text(context_message, base_time=message_dt)
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}, raw_status={parsed.get('raw_status')}")
 
     # Calculate additional fields for better display
@@ -1375,6 +1410,87 @@ def get_responder_data(request: Request) -> JSONResponse:
 
     reload_messages()  # Get latest data from shared storage
     return JSONResponse(content=messages)
+
+@app.get("/api/current-status")
+def get_current_status(request: Request) -> JSONResponse:
+    """Get the latest status for each person - most robust aggregated view for mission control."""
+    # Same auth as responders endpoint
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    if not user_email:
+        if not (is_testing or ALLOW_LOCAL_AUTH_BYPASS):
+            raise HTTPException(status_code=401, detail="Not authenticated")
+    else:
+        if not is_email_domain_allowed(user_email):
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    reload_messages()  # Get latest data from shared storage
+    
+    # Dictionary to track latest message per person
+    latest_by_person: Dict[str, Dict[str, Any]] = {}
+    
+    # Process messages chronologically to build latest status per person
+    sorted_messages = sorted(messages, key=lambda x: x.get('timestamp', ''))
+    
+    for msg in sorted_messages:
+        name = msg.get('name', '').strip()
+        if not name:
+            continue
+            
+        # Determine status priority for conflict resolution
+        arrival_status = msg.get('arrival_status', 'Unknown')
+        eta = msg.get('eta', 'Unknown')
+        text = msg.get('text', '').lower()
+        
+        # Calculate status priority (higher = more definitive)
+        priority = 0
+        if arrival_status == 'Cancelled' or 'can\'t make it' in text or 'cannot make it' in text:
+            priority = 100  # Highest - definitive cancellation
+        elif arrival_status == 'Not Responding':
+            priority = 10   # Low - absence of response
+        elif arrival_status == 'Responding' and eta != 'Unknown':
+            priority = 80   # High - active response with ETA
+        elif arrival_status == 'Responding':
+            priority = 60   # Medium - active response without ETA
+        elif eta != 'Unknown':
+            priority = 70   # Medium-high - ETA provided
+        else:
+            priority = 20   # Low-medium - generic message
+            
+        # Always update to latest message, but track priority for tie-breaking
+        current_entry = latest_by_person.get(name)
+        if current_entry is None:
+            # First message for this person
+            latest_by_person[name] = dict(msg)
+            latest_by_person[name]['_priority'] = priority
+        else:
+            # Compare timestamps - always take latest chronologically
+            current_ts = current_entry.get('timestamp', '')
+            new_ts = msg.get('timestamp', '')
+            
+            if new_ts >= current_ts:
+                # This message is newer, so it becomes the latest
+                latest_by_person[name] = dict(msg)
+                latest_by_person[name]['_priority'] = priority
+            elif new_ts == current_ts and priority > current_entry.get('_priority', 0):
+                # Same timestamp but higher priority status
+                latest_by_person[name] = dict(msg)
+                latest_by_person[name]['_priority'] = priority
+    
+    # Clean up internal priority field and prepare response
+    result = []
+    for person_data in latest_by_person.values():
+        person_data.pop('_priority', None)  # Remove internal field
+        result.append(person_data)
+    
+    # Sort by latest activity (most recent first) for mission control relevance
+    result.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    
+    return JSONResponse(content=result)
 
 @app.post("/api/responders")
 async def create_responder_entry(request: Request) -> JSONResponse:
