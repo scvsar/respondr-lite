@@ -75,6 +75,23 @@ export default function MobileView() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : String(v)));
   };
+  const getUserId = (e) => e.user_id || e.name || e.id;
+  const resolveVehicle = useCallback((entry) => {
+    const v0 = vehicleMap(entry.vehicle);
+    if (v0 && v0 !== 'Unknown' && v0 !== 'Not Responding') return v0;
+    const uid = getUserId(entry);
+    if (!uid) return v0 || 'Unknown';
+    const ts = parseTs(entry.timestamp)?.getTime() || Number.MAX_SAFE_INTEGER;
+    let bestV = null, bestT = -1;
+    for (const m of data) {
+      const mid = getUserId(m); if (mid !== uid) continue;
+      const mv = vehicleMap(m.vehicle);
+      if (!mv || mv === 'Unknown' || mv === 'Not Responding') continue;
+      const mt = parseTs(m.timestamp)?.getTime() || 0;
+      if (mt <= ts && mt > bestT) { bestT = mt; bestV = mv; }
+    }
+    return bestV || v0 || 'Unknown';
+  }, [data]);
   // Fallback mapping for unit display on mobile
   const GROUP_ID_TO_UNIT = {
     "102193274": "OSU Test group",
@@ -145,11 +162,11 @@ export default function MobileView() {
   // Filter to Responding only
   const responding = useMemo(() => data.filter((e) => statusOf(e) === 'Responding'), [data]);
 
-  // Dedupe by user_id keeping latest message per user
+  // Dedupe by user_id keeping latest message per user among Responding
   const deduped = useMemo(() => {
     const latest = new Map();
     responding.forEach(msg => {
-      const uid = msg.user_id || msg.name || msg.id;
+      const uid = getUserId(msg);
       if (!uid) return;
       const ts = parseTs(msg.timestamp)?.getTime() || 0;
       const prev = latest.get(uid);
@@ -256,14 +273,14 @@ export default function MobileView() {
           {sorted.length === 0 && (
             <div className="empty">No responders yet.</div>
           )}
-          {sorted.map((e, idx) => (
+      {sorted.map((e, idx) => (
             <div className="mobile-card" key={idx}>
               <div className="mobile-row">
                 <div className="mobile-name">{e.name || 'Unknown'}</div>
                 <div className="mobile-eta" title={`ETA ${etaDisplay(e)}`}>{etaDisplay(e)}</div>
               </div>
               <div className="mobile-unit">{unitOf(e)}</div>
-              <div className="mobile-vehicle">{vehicleMap(e.vehicle)}</div>
+        <div className="mobile-vehicle">{resolveVehicle(e)}</div>
             </div>
           ))}
         </div>

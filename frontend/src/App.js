@@ -223,6 +223,28 @@ function MainApp() {
     const m = s.match(/SAR[- ]?(\d+)/);
     return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : v));
   };
+  // Resolve a user's vehicle for a given message by falling back to the most recent prior known vehicle
+  const getUserId = (entry) => entry.user_id || entry.name || entry.id;
+  const resolveVehicle = useCallback((entry) => {
+    const v0 = vehicleMap(entry.vehicle);
+    // If this message already has a clear vehicle, use it
+    if (v0 && v0 !== 'Unknown' && v0 !== 'Not Responding') return v0;
+    const uid = getUserId(entry);
+    if (!uid) return v0 || 'Unknown';
+    const ts = parseTs(entry.timestamp)?.getTime() || Number.MAX_SAFE_INTEGER;
+    let bestV = null;
+    let bestT = -1;
+    for (const m of data) {
+      const mid = getUserId(m);
+      if (mid !== uid) continue;
+      const mv = vehicleMap(m.vehicle);
+      if (!mv || mv === 'Unknown' || mv === 'Not Responding') continue;
+      const mt = parseTs(m.timestamp)?.getTime() || 0;
+      // Only consider prior or equal timestamps to avoid future-leak
+      if (mt <= ts && mt > bestT) { bestT = mt; bestV = mv; }
+    }
+    return bestV || v0 || 'Unknown';
+  }, [data]);
   // Fallback mapping for older messages without `team`
   const GROUP_ID_TO_UNIT = {
     "102193274": "OSU Test group",
@@ -362,34 +384,48 @@ function MainApp() {
     return entry.eta || 'Unknown';
   };
 
-  // Dedupe messages by user_id, keeping the latest message per user
-  const dedupedData = useMemo(() => {
-    const latest = new Map();
-    data.forEach(msg => {
-      const uid = msg.user_id || msg.name || msg.id;
-      if (!uid) return;
-      const ts = parseTs(msg.timestamp)?.getTime() || 0;
-      const prev = latest.get(uid);
-      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) {
-        latest.set(uid, msg);
-      }
-    });
-    return Array.from(latest.values());
-  }, [data]);
+  // Determine if we are in unfiltered mode (show all messages including duplicates)
+  const isUnfiltered = useMemo(() => {
+    return (vehicleFilter.length === 0) && (statusFilter.length === 0) && (query.trim() === '');
+  }, [vehicleFilter, statusFilter, query]);
 
-  // Filtering and sorting
-  const filtered = useMemo(() => {
+  // Apply message-level filters using resolved vehicle and computed status
+  const filteredMessagesFlat = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return dedupedData.filter(r => {
-      const matchesQuery = !q || [r.name, r.text, vehicleMap(r.vehicle)].some(x => (x||'').toLowerCase().includes(q));
-      const vOK = vehicleFilter.length === 0 || vehicleFilter.includes(vehicleMap(r.vehicle));
+    return data.filter(r => {
+      const rv = resolveVehicle(r);
+      const matchesQuery = !q || [r.name, r.text, rv].some(x => (String(x||'')).toLowerCase().includes(q));
+      const vOK = vehicleFilter.length === 0 || vehicleFilter.includes(rv);
       const sOK = statusFilter.length === 0 || statusFilter.includes(statusOf(r));
       return matchesQuery && vOK && sOK;
     });
-  }, [dedupedData, query, vehicleFilter, statusFilter]);
+  }, [data, query, vehicleFilter, statusFilter, resolveVehicle]);
+
+  // When filtered, dedupe by user keeping the latest message that passed filters; when unfiltered, show all
+  const viewData = useMemo(() => {
+    if (isUnfiltered) return [...data];
+    const latest = new Map();
+    for (const msg of filteredMessagesFlat) {
+      const uid = getUserId(msg);
+      if (!uid) continue;
+      const ts = parseTs(msg.timestamp)?.getTime() || 0;
+      const prev = latest.get(uid);
+      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
+    }
+    return Array.from(latest.values());
+  }, [isUnfiltered, data, filteredMessagesFlat]);
+
+  // Filtering and sorting
+  const filtered = useMemo(() => viewData, [viewData]);
   const [sortBy, setSortBy] = useState({ key: 'timestamp', dir: 'desc' });
-  const totalUniqueResponders = dedupedData.length;
-  const filteredUniqueResponders = filtered.length;
+  const totalUniqueResponders = useMemo(() => {
+    const ids = new Set(data.map(getUserId).filter(Boolean));
+    return ids.size;
+  }, [data]);
+  const filteredUniqueResponders = useMemo(() => {
+    const ids = new Set(filtered.map(getUserId).filter(Boolean));
+    return ids.size;
+  }, [filtered]);
   const sorted = useMemo(() => {
     const arr = [...filtered];
     arr.sort((a,b) => {
@@ -403,7 +439,19 @@ function MainApp() {
   }, [filtered, sortBy]);
 
   const avgMinutesVal = () => {
-    const times = dedupedData.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
+    // Average over unique users represented in the current view (or all users if unfiltered)
+    const base = isUnfiltered ? (() => {
+      // Use latest per user across all data for a stable metric
+      const latest = new Map();
+      for (const msg of data) {
+        const uid = getUserId(msg); if (!uid) continue;
+        const ts = parseTs(msg.timestamp)?.getTime() || 0;
+        const prev = latest.get(uid);
+        if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
+      }
+      return Array.from(latest.values());
+    })() : filtered;
+    const times = base.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
     if (!times.length) return null;
     const total = times.reduce((a,b)=>a+b,0);
     return Math.round(total / times.length);
@@ -420,7 +468,7 @@ function MainApp() {
     sorted.forEach(r => {
       const ts = formatTimestampDirect(useUTC ? r.timestamp_utc : r.timestamp);
       const etaStr = etaDisplay(r);
-      const row = [ts, r.name, unitOf(r), (r.text||'').replace(/"/g,'""'), vehicleMap(r.vehicle), etaStr, statusOf(r)];
+      const row = [ts, r.name, unitOf(r), (r.text||'').replace(/"/g,'""'), resolveVehicle(r), etaStr, statusOf(r)];
       rows.push(row.map(v => /[",\n]/.test(String(v)) ? '"'+String(v)+'"' : String(v)).join(','));
     });
     const blob = new Blob([rows.join('\n')], {type: 'text/csv'});
@@ -596,7 +644,7 @@ function MainApp() {
         <div className="chip-row" aria-label="Quick filters">
           {Array.from(new Set(
             data
-              .map(e => vehicleMap(e.vehicle))
+              .map(e => resolveVehicle(e))
               // Exclude status-like values from vehicle chips to avoid duplicates
               .filter(v => v && v !== 'Not Responding' && v !== 'Unknown')
           ))
@@ -697,7 +745,7 @@ function MainApp() {
                   <td>
                     <div className="msg">{entry.text}</div>
                   </td>
-                  <td>{vehicleMap(entry.vehicle)}</td>
+                  <td>{resolveVehicle(entry)}</td>
                   <td title={etaDisplay(entry)}>{etaDisplay(entry)}</td>
                   <td>
                     <span className={`status-pill ${pillClass}`} aria-label={`Status: ${s}`}>{s}</span>
