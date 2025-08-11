@@ -24,7 +24,11 @@ oauth2TenantId: ""  # kept for backward compatibility if single-tenant is desire
 multiTenantAuth: true
 allowedEmailDomains:
 	- scvsar.org
-	- rtreit.com
+
+# admin users
+allowedAdminUsers:
+    - "user1@domain.org"
+    - "user2@domain.org"	
 oauth2RedirectUrl: ""
 
 # Domain Configuration

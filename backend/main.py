@@ -31,7 +31,6 @@ def get_timezone(name: str) -> timezone:
 from urllib.parse import quote
 import importlib
 import redis
-from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -72,6 +71,10 @@ webhook_api_key = os.getenv("WEBHOOK_API_KEY")
 allowed_email_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "scvsar.org,rtreit.com").split(",")
 allowed_email_domains = [domain.strip() for domain in allowed_email_domains if domain.strip()]
 
+# Admin users configuration (comma-separated emails)
+allowed_admin_users = os.getenv("ALLOWED_ADMIN_USERS", "").split(",")
+allowed_admin_users = [u.strip().lower() for u in allowed_admin_users if u.strip()]
+
 # Local dev bypass: allow running without OAuth2 proxy
 ALLOW_LOCAL_AUTH_BYPASS = os.getenv("ALLOW_LOCAL_AUTH_BYPASS", "false").lower() == "true"
 
@@ -90,6 +93,31 @@ def now_tz() -> datetime:
 
 # Feature flag: enable an extra AI finalization pass on ETA
 ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
+
+# ----------------------------------------------------------------------------
+# FastAPI app and global state
+# ----------------------------------------------------------------------------
+app = FastAPI()
+
+# In-memory message stores; tests will patch these
+messages: List[Dict[str, Any]] = []
+deleted_messages: List[Dict[str, Any]] = []
+
+# Redis client (initialized on demand)
+redis_client: Optional[redis.Redis] = None
+
+def validate_webhook_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
+    """Validate API key for protected endpoints.
+
+    In tests or when disabled, always allow. Otherwise require header to match WEBHOOK_API_KEY.
+    """
+    if disable_api_key_check or is_testing:
+        return True
+    if not webhook_api_key:
+        raise HTTPException(status_code=500, detail="Webhook API key not configured")
+    if not x_api_key or x_api_key != webhook_api_key:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    return True
 
 # GroupMe group_id to Team mapping
 # Source: provided GroupMe group list
@@ -287,12 +315,10 @@ def is_email_domain_allowed(email: str) -> bool:
     """Check if the user's email domain is in the allowed domains list"""
     if not email:
         return False
-    
     # Allow test domains when running tests
     if is_testing and email.endswith("@example.com"):
         logger.info(f"Test mode: allowing test domain for {email}")
         return True
-    
     try:
         domain = email.split("@")[1].lower()
         allowed_domains_lower = [d.lower() for d in allowed_email_domains]
@@ -303,65 +329,97 @@ def is_email_domain_allowed(email: str) -> bool:
         logger.warning(f"Invalid email format: {email}")
         return False
 
-# Initialize Redis client
-redis_client = None
+def is_admin(email: Optional[str]) -> bool:
+    """Check if the user's email is in the allowed admin users list.
 
-# Only require Azure configuration if not in fast local parse mode
-if not is_testing and not FAST_LOCAL_PARSE and (not azure_openai_api_key or not azure_openai_endpoint or not azure_openai_deployment):
-    logger.error("Missing required Azure OpenAI configuration")
-    raise ValueError("AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, and AZURE_OPENAI_DEPLOYMENT must be set in the .env file")
-elif is_testing:
-    logger.info("Running in test mode - using mock Azure OpenAI configuration")
-    # Set default test values if not provided
-    azure_openai_api_key = azure_openai_api_key or "test-key"
-    azure_openai_endpoint = azure_openai_endpoint or "https://test-endpoint.openai.azure.com/"
-    azure_openai_deployment = azure_openai_deployment or "test-deployment"
-    azure_openai_api_version = azure_openai_api_version or "2025-01-01-preview"
-    webhook_api_key = webhook_api_key or "test-webhook-key"
-
-if not is_testing and not webhook_api_key:
-    logger.error("Missing WEBHOOK_API_KEY environment variable")
-    raise ValueError("WEBHOOK_API_KEY must be set for webhook authentication")
-
-
-def validate_webhook_api_key(x_api_key: str = Header(None, alias="X-API-Key")):
-    """Validate the API key for webhook endpoint"""
-    if is_testing:
-        return True  # Skip validation in tests
-    
-    if disable_api_key_check:
+    In testing or when local auth bypass is enabled, treat as admin to avoid breaking tests/dev.
+    """
+    if is_testing or ALLOW_LOCAL_AUTH_BYPASS:
         return True
+    if not email:
+        return False
+    try:
+        return email.strip().lower() in allowed_admin_users
+    except Exception:
+        return False
 
-    if not x_api_key or x_api_key != webhook_api_key:
-        logger.warning(f"Invalid or missing API key for webhook request")
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or missing API key. Include 'X-API-Key' header.",
-            headers={"WWW-Authenticate": "API-Key"}
-        )
-    return True
+@app.get("/api/user")
+def get_user_info(request: Request) -> JSONResponse:
+    """Get authenticated user information from OAuth2 Proxy headers"""
+    # Debug: log all headers to see what OAuth2 proxy is sending
+    print("=== DEBUG: All headers received ===")
+    for header_name, header_value in request.headers.items():
+        if header_name.lower().startswith('x-'):
+            print(f"Header: {header_name} = {header_value}")
+    print("=== END DEBUG ===")
 
+    # Check for the correct OAuth2 Proxy headers, including forwarded headers
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+    )
+    user_name = (
+        request.headers.get("X-Auth-Request-Preferred-Username")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-preferred-username")
+    )
+    user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan context manager"""
-    # Startup
-    logger.info("Starting Respondr API application")
-    logger.info(f"Using Azure OpenAI API at: {azure_openai_endpoint}")
-    logger.info(f"Using deployment: {azure_openai_deployment}")
-    yield
-    # Shutdown
-    logger.info("Shutting down Respondr API application")
+    # Fallback to legacy header names for backwards compatibility
+    if not user_email:
+        user_email = request.headers.get("X-User")
+    if not user_name:
+        user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
+    if not user_groups:
+        user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
 
-app = FastAPI(
-    title="Respondr API",
-    description="API for tracking responder information",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+    authenticated: bool
+    display_name: Optional[str]
+    email: Optional[str]
 
-messages: list[Dict[str, Any]] = []
-deleted_messages: list[Dict[str, Any]] = []
+    # Check if we have user information from OAuth2 proxy
+    if user_email or user_name:
+        # Check if the user's email domain is allowed
+        if user_email and not is_email_domain_allowed(user_email):
+            logger.warning(f"Access denied for user {user_email}: domain not in allowed list")
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "authenticated": False,
+                    "error": "Access denied",
+                    "message": f"Your domain is not authorized to access this application. Allowed domains: {', '.join(allowed_email_domains)}",
+                    "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+                }
+            )
+        authenticated = True
+        display_name = user_name or user_email
+        email = user_email
+        logger.info(f"User authenticated: {email} from allowed domain")
+    else:
+        # No OAuth2 headers - user might not be properly authenticated
+        if ALLOW_LOCAL_AUTH_BYPASS:
+            # Local dev: pretend there's a logged-in user
+            authenticated = True
+            display_name = os.getenv("LOCAL_DEV_USER_NAME", "Local Dev")
+            email = os.getenv("LOCAL_DEV_USER_EMAIL", "dev@local.test")
+        else:
+            authenticated = False
+            display_name = None
+            email = None
+
+    # Admin flag
+    admin_flag = is_admin(email)
+
+    return JSONResponse(content={
+        "authenticated": authenticated,
+        "email": email,
+        "name": display_name,
+        "groups": [group.strip() for group in user_groups if group.strip()],
+        "is_admin": admin_flag,
+        # Redirect to root after logout so OAuth2 Proxy can initiate a new login
+        "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+    })
 
 def init_redis():
     """Initialize Redis connection"""
@@ -519,8 +577,8 @@ def undelete_messages(message_ids: List[str]) -> int:
     reload_messages()
     
     # Find messages to restore
-    to_restore = []
-    remaining_deleted = []
+    to_restore: List[Dict[str, Any]] = []
+    remaining_deleted: List[Dict[str, Any]] = []
     
     for msg in deleted_messages:
         if str(msg.get("id")) in message_ids:
@@ -567,17 +625,21 @@ def ensure_message_ids() -> int:
             count += 1
     return count
 
-def _authn_and_domain_ok(request: Request) -> bool:
-    """Minimal auth check used by mutating endpoints; mirrors /api/responders behavior."""
+ 
+ 
+
+def _authn_domain_and_admin_ok(request: Request) -> bool:
+    """Require authenticated, allowed domain, and admin user for mutating/admin endpoints."""
     user_email = (
         request.headers.get("X-Auth-Request-Email")
         or request.headers.get("X-Auth-Request-User")
         or request.headers.get("x-forwarded-email")
         or request.headers.get("X-User")
     )
+    # In tests or local bypass, allow
     if not user_email:
         return bool(is_testing or ALLOW_LOCAL_AUTH_BYPASS)
-    return is_email_domain_allowed(user_email)
+    return is_email_domain_allowed(user_email) and is_admin(user_email)
 
 def _parse_datetime_like(value: Any) -> Optional[datetime]:
     """Parse various datetime forms into app timezone-aware datetime.
@@ -844,20 +906,48 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
 
         # Simplified prompt for direct parsing (no function calling)
         prompt = (
-            "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
-            f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
-            "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
-            "- Messages like \"can't make it\", \"cannot make it\", \"won't make it\", \"not coming\", \"family emergency\", \"sorry\"\n"
-            "- For ANY declining/negative response, return: {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
-            "For responding messages:\n"
-            "- Vehicle: Extract SAR identifier (e.g., 'SAR-12') or return 'POV' for personal vehicle or 'Unknown'\n"
-            "- ETA: Convert to 24-hour format (HH:MM) or 'Unknown'\n"
-            "- For durations like '30 minutes', add to current time\n"
-            "- For times like '9:15 PM', convert to 24-hour format (21:15)\n\n"
-            f"MESSAGE: \"{text}\"\n\n"
-            "Return ONLY this JSON format: "
-            '{\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}'
-        )
+    "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
+    f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
+    
+    "CRITICAL: First check if the message indicates the person CANNOT or WILL NOT respond:\n"
+    "- Examples of declining/negative responses:\n"
+    "  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'family emergency', 'sorry', 'unavailable', 'out of town', 'can't respond'\n"
+    "- For ANY negative response, return exactly:\n"
+    "  {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n\n"
+    
+    "For responding messages:\n"
+    "- Vehicle:\n"
+    "  - If message contains a SAR identifier like 'SAR-12' or 'SAR 12', set vehicle to that.\n"
+    "  - If personal vehicle, set vehicle to 'POV'.\n"
+    "  - If unclear, set vehicle to 'Unknown'.\n"
+    "  Examples:\n"
+    "    'SAR-3 on the way' → vehicle: 'SAR-3'\n"
+    "    'Driving POV' → vehicle: 'POV'\n"
+    "    'Leaving now' → vehicle: 'Unknown'\n\n"
+    
+    "- ETA:\n"
+    "  - If time is given, convert to 24-hour format HH:MM.\n"
+    "  - If a duration is given (e.g., '30 minutes'), add to current time.\n"
+    "  - If unclear, set to 'Unknown'.\n"
+    "  - Be smart with AM/PM inference: if current time is 20:30 and message says 'ETA 9:15', assume 21:15 (same evening).\n"
+    "  Examples:\n"
+    "    Current time 14:20, message: 'ETA 15:00' → 15:00\n"
+    "    Current time 14:20, message: '30 min out' → 14:50\n"
+    "    Current time 20:30, message: 'ETA 9:15' → 21:15\n"
+    "    'ETA 9:15 PM' → 21:15\n\n"
+    
+    "ADDITIONAL EXAMPLES:\n"
+    "  'Can't make it today, sorry' → {\"vehicle\": \"Not Responding\", \"eta\": \"Not Responding\"}\n"
+    "  'SAR-5 ETA 15:45' → {\"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
+    "  'Driving POV, ETA 30 mins' (current time 13:10) → {\"vehicle\": \"POV\", \"eta\": \"13:40\"}\n"
+    "  'Leaving now' (no vehicle mentioned) → {\"vehicle\": \"Unknown\", \"eta\": \"Unknown\"}\n"
+    "  'ETA 7am tomorrow' → {\"vehicle\": \"Unknown\", \"eta\": \"07:00\"} (assume next day)\n\n"
+    
+    f"MESSAGE: \"{text}\"\n\n"
+    "Return ONLY this JSON format: "
+    '{\"vehicle\": \"value\", \"eta\": \"HH:MM|Unknown|Not Responding\"}'
+)
+
 
         logger.info(f"Calling Azure OpenAI with simplified prompt, deployment: {azure_openai_deployment}")
         
@@ -1085,7 +1175,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
 
     Body accepts: name, text, timestamp, vehicle, eta, eta_timestamp, team, group_id
     """
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -1134,7 +1224,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
 @app.put("/api/responders/{msg_id}")
 async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
     """Update an existing responder message by ID."""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     reload_messages()
@@ -1185,7 +1275,7 @@ async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
 @app.delete("/api/responders/{msg_id}")
 def delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
     """Delete a responder message by ID (soft delete - moves to deleted storage)."""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     reload_messages()
@@ -1209,7 +1299,7 @@ def delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
 @app.post("/api/responders/bulk-delete")
 async def bulk_delete_responder_entries(request: Request) -> Dict[str, Any]:
     """Bulk delete messages by IDs (soft delete - moves to deleted storage). Body: {"ids": [..]}"""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -1262,7 +1352,7 @@ def clear_all_data(request: Request) -> Dict[str, Any]:
 @app.get("/api/deleted-responders")
 def get_deleted_responders(request: Request) -> List[Dict[str, Any]]:
     """Get all deleted responder messages."""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
     
     load_deleted_messages()
@@ -1271,7 +1361,7 @@ def get_deleted_responders(request: Request) -> List[Dict[str, Any]]:
 @app.post("/api/deleted-responders/undelete")
 async def undelete_responder_entries(request: Request) -> Dict[str, Any]:
     """Restore deleted messages back to active state. Body: {"ids": [..]}"""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     try:
@@ -1288,7 +1378,7 @@ async def undelete_responder_entries(request: Request) -> Dict[str, Any]:
 @app.delete("/api/deleted-responders/{msg_id}")
 def permanently_delete_responder_entry(msg_id: str, request: Request) -> Dict[str, Any]:
     """Permanently delete a message from deleted storage."""
-    if not _authn_and_domain_ok(request):
+    if not _authn_domain_and_admin_ok(request):
         raise HTTPException(status_code=403, detail="Not authorized")
 
     load_deleted_messages()
@@ -1317,76 +1407,7 @@ def clear_all_deleted_data(request: Request) -> Dict[str, Any]:
     save_deleted_messages()
     return {"status": "cleared", "removed": int(initial)}
 
-@app.get("/api/user")
-def get_user_info(request: Request) -> JSONResponse:
-    """Get authenticated user information from OAuth2 Proxy headers"""
-    # Debug: log all headers to see what OAuth2 proxy is sending
-    print("=== DEBUG: All headers received ===")
-    for header_name, header_value in request.headers.items():
-        if header_name.lower().startswith('x-'):
-            print(f"Header: {header_name} = {header_value}")
-    print("=== END DEBUG ===")
-    
-    # Check for the correct OAuth2 Proxy headers, including forwarded headers
-    user_email = (
-        request.headers.get("X-Auth-Request-Email")
-        or request.headers.get("X-Auth-Request-User")
-        or request.headers.get("x-forwarded-email")
-    )
-    user_name = (
-        request.headers.get("X-Auth-Request-Preferred-Username")
-        or request.headers.get("X-Auth-Request-User")
-        or request.headers.get("x-forwarded-preferred-username")
-    )
-    user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
-    
-    # Fallback to legacy header names for backwards compatibility
-    if not user_email:
-        user_email = request.headers.get("X-User")
-    if not user_name:
-        user_name = request.headers.get("X-Preferred-Username") or request.headers.get("X-User-Name")
-    if not user_groups:
-        user_groups = request.headers.get("X-User-Groups", "").split(",") if request.headers.get("X-User-Groups") else []
-    
-    # Check if we have user information from OAuth2 proxy
-    if user_email or user_name:
-        # Check if the user's email domain is allowed
-        if user_email and not is_email_domain_allowed(user_email):
-            logger.warning(f"Access denied for user {user_email}: domain not in allowed list")
-            return JSONResponse(
-                status_code=403,
-                content={
-                    "authenticated": False,
-                    "error": "Access denied",
-                    "message": f"Your domain is not authorized to access this application. Allowed domains: {', '.join(allowed_email_domains)}",
-                    "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
-                }
-            )
-        
-        authenticated = True
-        display_name = user_name or user_email
-        email = user_email
-        logger.info(f"User authenticated: {email} from allowed domain")
-    else:
-        # No OAuth2 headers - user might not be properly authenticated
-        if ALLOW_LOCAL_AUTH_BYPASS:
-            # Local dev: pretend there's a logged-in user
-            authenticated = True
-            display_name = os.getenv("LOCAL_DEV_USER_NAME", "Local Dev")
-            email = os.getenv("LOCAL_DEV_USER_EMAIL", "dev@local.test")
-        else:
-            authenticated = False
-            display_name = None
-            email = None
-    
-    return JSONResponse(content={
-        "authenticated": authenticated,
-        "email": email,
-        "name": display_name,
-        "groups": [group.strip() for group in user_groups if group.strip()],
-        # Redirect to root after logout so OAuth2 Proxy can initiate a new login
-        "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
-    })
+ 
 
 @app.get("/debug/pod-info")
 def get_pod_info():
