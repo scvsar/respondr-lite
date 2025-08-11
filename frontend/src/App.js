@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import "./App.css";
 import Logout from './Logout';
 import MobileView from './MobileView';
 import Profile from './Profile';
+import StatusTabs from './StatusTabs';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -70,7 +71,18 @@ function MainApp() {
   const [isLoading, setIsLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [vehicleFilter, setVehicleFilter] = useState([]); // e.g., ["POV","SAR-7"]
-  const [statusFilter, setStatusFilter] = useState(["Responding"]); // ["Responding","Not Responding","Unknown"]
+  // Defaults: All Messages tab should start with filters cleared; Current Status shows Responding by default
+  const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
+  const [activeTab, setActiveTab] = useState('all');
+  const handleTabChange = useCallback((tab) => {
+    setActiveTab(tab);
+    if (tab === 'current') {
+      setStatusFilter(['Responding']);
+    } else if (tab === 'all') {
+  setStatusFilter([]);
+  setVehicleFilter([]);
+    }
+  }, []);
   const [live, setLive] = useState(true);
   const [useUTC, setUseUTC] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -82,6 +94,7 @@ function MainApp() {
   const [selected, setSelected] = useState(()=>new Set());
   const [showEditor, setShowEditor] = useState(false);
   const [editingId, setEditingId] = useState(null);
+  const [refreshNonce, setRefreshNonce] = useState(0);
   const [form, setForm] = useState({
     name: '',
     team: '',
@@ -127,6 +140,8 @@ function MainApp() {
     }
   }, []);
 
+  // Initial load + Live-controlled polling
+  const firstLoadRef = useRef(true);
   useEffect(() => {
     // Don't fetch data if user just logged out
     if (sessionStorage.getItem('loggedOut')) {
@@ -134,45 +149,52 @@ function MainApp() {
       return;
     }
 
-    fetchData();
-    
+    // Only auto-fetch on initial mount
+    if (firstLoadRef.current) {
+      firstLoadRef.current = false;
+      fetchData();
+    }
+
+    // If Live is off, do not schedule polling
+    if (!live) {
+      return;
+    }
+
     // Polling with backoff and live toggle
     let pollInterval = 15000; // 15s default
     const maxInterval = 60000; // Max 60 seconds
     let currentTimeoutId = null;
     let isCancelled = false;
-    
+
     const pollData = () => {
       if (isCancelled) return;
-      
+
       currentTimeoutId = setTimeout(async () => {
         if (isCancelled) return;
-        
+
         try {
-          if (live) {
-            await fetchData();
-          }
+          await fetchData();
           pollInterval = 15000; // Reset on success
         } catch (err) {
           // Exponential backoff on error
           pollInterval = Math.min(pollInterval * 2, maxInterval);
         }
-        
-        if (!isCancelled) {
-          pollData(); // Schedule next poll
+
+        if (!isCancelled && live) {
+          pollData(); // Schedule next poll only if still Live
         }
       }, pollInterval);
     };
-    
+
     pollData();
-    
+
     return () => {
       isCancelled = true;
       if (currentTimeoutId) {
         clearTimeout(currentTimeoutId);
       }
     };
-  }, [fetchData]);
+  }, [fetchData, live]);
 
   // User info (for avatar initials)
   useEffect(() => {
@@ -203,6 +225,10 @@ function MainApp() {
     // Use arrival_status from backend if available, otherwise fall back to vehicle-based logic
     if (entry.arrival_status) {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
+      if (entry.arrival_status === 'Cancelled') return 'Cancelled';
+      if (entry.arrival_status === 'Available') return 'Available';
+  if (entry.arrival_status === 'Responding') return 'Responding';
+      if (entry.arrival_status === 'Informational') return 'Informational';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
       if (entry.arrival_status === 'Arrived') return 'Responding';
@@ -355,9 +381,11 @@ function MainApp() {
   // Live-updating elapsed string for lastUpdated
   const [nowTick, setNowTick] = useState(Date.now());
   useEffect(() => {
+    // Only tick the "updated ago" timer when Live is on to avoid periodic UI changes
+    if (!live) return;
     const id = setInterval(() => setNowTick(Date.now()), 30000); // update every 30s
     return () => clearInterval(id);
-  }, []);
+  }, [live]);
   const updatedAgo = useMemo(() => {
     if (!lastUpdated) return '—';
     const diffMs = Date.now() - lastUpdated.getTime();
@@ -401,19 +429,11 @@ function MainApp() {
     });
   }, [data, query, vehicleFilter, statusFilter, resolveVehicle]);
 
-  // When filtered, dedupe by user keeping the latest message that passed filters; when unfiltered, show all
+  // Show all matching messages (no deduplication) in All Messages view
   const viewData = useMemo(() => {
-    if (isUnfiltered) return [...data];
-    const latest = new Map();
-    for (const msg of filteredMessagesFlat) {
-      const uid = getUserId(msg);
-      if (!uid) continue;
-      const ts = parseTs(msg.timestamp)?.getTime() || 0;
-      const prev = latest.get(uid);
-      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
-    }
-    return Array.from(latest.values());
-  }, [isUnfiltered, data, filteredMessagesFlat]);
+    // When no filters, this is equivalent to data; with filters, include all matching rows (no per-user collapse)
+    return [...filteredMessagesFlat];
+  }, [filteredMessagesFlat]);
 
   // Filtering and sorting
   const filtered = useMemo(() => viewData, [viewData]);
@@ -439,18 +459,16 @@ function MainApp() {
   }, [filtered, sortBy]);
 
   const avgMinutesVal = () => {
-    // Average over unique users represented in the current view (or all users if unfiltered)
-    const base = isUnfiltered ? (() => {
-      // Use latest per user across all data for a stable metric
-      const latest = new Map();
-      for (const msg of data) {
-        const uid = getUserId(msg); if (!uid) continue;
-        const ts = parseTs(msg.timestamp)?.getTime() || 0;
-        const prev = latest.get(uid);
-        if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
-      }
-      return Array.from(latest.values());
-    })() : filtered;
+    // Average over unique users using latest message per user to avoid double-counting
+    const source = isUnfiltered ? data : filteredMessagesFlat;
+    const latest = new Map();
+    for (const msg of source) {
+      const uid = getUserId(msg); if (!uid) continue;
+      const ts = parseTs(msg.timestamp)?.getTime() || 0;
+      const prev = latest.get(uid);
+      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
+    }
+    const base = Array.from(latest.values());
     const times = base.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
     if (!times.length) return null;
     const total = times.reduce((a,b)=>a+b,0);
@@ -554,7 +572,8 @@ function MainApp() {
     setShowEditor(false);
     setEditingId(null);
     setSelected(new Set());
-    await fetchData();
+  setRefreshNonce(n=>n+1);
+  await fetchData();
   };
   const deleteSelected = async () => {
     if (!isAdmin) { alert('Only admins can delete entries.'); return; }
@@ -574,7 +593,8 @@ function MainApp() {
     }
     if (!ok) { alert('Delete failed'); return; }
     setSelected(new Set());
-    await fetchData();
+  setRefreshNonce(n=>n+1);
+  await fetchData();
   };
   const toggleRow = (id) => {
     setSelected(prev => {
@@ -586,6 +606,17 @@ function MainApp() {
   const toggleAll = () => {
     if (selected.size === sorted.length) setSelected(new Set());
     else setSelected(new Set(sorted.map(x => x.id)));
+  };
+
+  // Select/Deselect only the currently visible rows in the active table
+  const toggleAllVisible = (ids = []) => {
+    if (!Array.isArray(ids)) ids = [];
+    const allVisibleSelected = ids.length > 0 && ids.every(id => selected.has(id)) && selected.size === ids.length;
+    if (allVisibleSelected) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(ids));
+    }
   };
 
   const sortButton = (label, key) => (
@@ -638,8 +669,10 @@ function MainApp() {
         </div>
       </div>
 
-      {/* Secondary Toolbar */}
-      <div className="toolbar">
+      {/* Main Content */}
+      <div className="main-content">
+        {/* Secondary Toolbar */}
+        <div className="toolbar">
         <input className="search-input" placeholder="Search name/message/vehicle…" value={query} onChange={e=>setQuery(e.target.value)} />
         <div className="chip-row" aria-label="Quick filters">
           {Array.from(new Set(
@@ -652,7 +685,7 @@ function MainApp() {
             .map(v => (
               <div key={v} className={"chip "+(vehicleFilter.includes(v)?'active':'')} onClick={()=>toggleInArray(vehicleFilter, v, setVehicleFilter)}>{v}</div>
             ))}
-          {["Responding","Not Responding","Unknown"].map(s => (
+          {["Responding","Available","Informational","Cancelled","Not Responding","Unknown"].map(s => (
             <div key={s} className={"chip "+(statusFilter.includes(s)?'active':'')} onClick={()=>toggleInArray(statusFilter, s, setStatusFilter)}>{s}</div>
           ))}
         </div>
@@ -701,60 +734,33 @@ function MainApp() {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="table-wrap">
-        <table className="dashboard-table" role="table">
-          <thead>
-            <tr>
-              {editMode && (
-                <th style={{width:36}}>
-                  <input type="checkbox" aria-label="Select all" checked={selected.size===sorted.length && sorted.length>0} onChange={toggleAll} />
-                </th>
-              )}
-              <th className="col-time">{sortButton('Time','timestamp')}</th>
-              <th>Name</th>
-              <th>Team</th>
-              <th>Message</th>
-              <th>Vehicle</th>
-              <th>{sortButton('ETA','eta')}</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
-              [...Array(5)].map((_,i)=> (
-                <tr key={i}><td className="col-time"><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'60px'}}/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton" style={{width:'100px'}}/></td></tr>
-              ))
-            )}
-            {!isLoading && sorted.length === 0 && (
-              <tr><td colSpan="7" className="empty">No data. <button className="btn" onClick={()=>{ setQuery(''); setVehicleFilter([]); setStatusFilter([]); }}>Clear filters</button></td></tr>
-            )}
-            {!isLoading && sorted.map((entry, index) => {
-              const s = statusOf(entry);
-              const pillClass = s==='Responding' ? 'status-responding' : (s==='Not Responding' ? 'status-not' : 'status-unknown');
-              return (
-                <tr key={entry.id || index} className={selected.has(entry.id)?'row-selected':''}>
-                  {editMode && (
-                    <td>
-                      <input type="checkbox" aria-label={`Select ${entry.name}`} checked={selected.has(entry.id)} onChange={()=>toggleRow(entry.id)} />
-                    </td>
-                  )}
-                  <td className="col-time" title={formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}>{formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}</td>
-                  <td>{entry.name}</td>
-                  <td>{unitOf(entry)}</td>
-                  <td>
-                    <div className="msg">{entry.text}</div>
-                  </td>
-                  <td>{resolveVehicle(entry)}</td>
-                  <td title={etaDisplay(entry)}>{etaDisplay(entry)}</td>
-                  <td>
-                    <span className={`status-pill ${pillClass}`} aria-label={`Status: ${s}`}>{s}</span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Status Tabs */}
+      <div className="status-tabs-active">
+      <StatusTabs
+        data={sorted}
+        isLoading={isLoading}
+        error={error}
+        selected={selected}
+        editMode={editMode}
+        isAdmin={isAdmin}
+        sortBy={sortBy}
+        setSortBy={setSortBy}
+        toggleRow={toggleRow}
+        toggleAll={toggleAll}
+  toggleAllVisible={toggleAllVisible}
+        statusOf={statusOf}
+        unitOf={unitOf}
+        resolveVehicle={resolveVehicle}
+        etaDisplay={etaDisplay}
+        formatTimestampDirect={formatTimestampDirect}
+        useUTC={useUTC}
+        statusFilter={statusFilter}
+        vehicleFilter={vehicleFilter}
+        query={query}
+  refreshNonce={refreshNonce}
+        activeTab={activeTab}
+        onTabChange={handleTabChange}
+      />
       </div>
 
       {showEditor && (
@@ -802,6 +808,7 @@ function MainApp() {
           </div>
         </div>
       )}
+      </div> {/* End main-content */}
     </div>
   );
 }

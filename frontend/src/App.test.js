@@ -31,6 +31,35 @@ beforeEach(() => {
         json: async () => ({ authenticated: true, email: 'test@example.com', name: 'Test User' }),
       };
     }
+    if (u.includes('/api/current-status')) {
+      // Mirror responder data in current status so the default tab has content
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ([
+          {
+            id: 'u1',
+            name: 'John Smith',
+            text: 'Taking SAR78, ETA 15 minutes',
+            timestamp: '2025-08-01 12:00:00',
+            vehicle: 'SAR78',
+            eta: '15 minutes',
+            eta_timestamp: '2025-08-01 12:15:00',
+            minutes_until_arrival: 15,
+          },
+          {
+            id: 'u2',
+            name: 'Jane Doe',
+            text: 'Responding with POV, ETA 23:30',
+            timestamp: '2025-08-01 12:05:00',
+            vehicle: 'POV',
+            eta: '23:30',
+            eta_timestamp: '2025-08-01 23:30:00',
+            minutes_until_arrival: 690,
+          },
+        ]),
+      };
+    }
     if (u.includes('/api/responders')) {
       return {
         ok: true,

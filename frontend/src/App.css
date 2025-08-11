@@ -66,11 +66,15 @@
   background: var(--bg-elev);
   border-bottom: 1px solid var(--divider);
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: 12px;
+  /* Two columns: main content + controls; two rows: search on top, chips below */
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 10px 12px;
   align-items: center;
   padding: 10px 16px;
 }
+/* Ensure grid children can shrink within their cells to avoid overlap */
+.toolbar > * { min-width: 0; }
 .search-input {
   background: var(--bg-elev-2);
   border: 1px solid var(--border);
@@ -79,12 +83,35 @@
   border-radius: 6px;
   width: 100%;
 }
+/* Place search in the top-left grid cell */
+.toolbar .search-input { grid-column: 1 / 2; grid-row: 1; }
 .chip-row, .controls {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
 }
+/* Controls sit on the right and span both rows so they never collide */
+.toolbar .controls { grid-column: 2 / 3; grid-row: 1 / 3; justify-content: flex-end; align-self: start; }
+/* Chip row sits under the search, becomes a single-line horizontal scroller when content overflows */
+.toolbar .chip-row {
+  grid-column: 1 / 2; grid-row: 2;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  padding-bottom: 2px; /* room for thin scrollbar */
+  /* subtle edge fade to suggest scrollability */
+  -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,0) 0, rgba(0,0,0,1) 20px, rgba(0,0,0,1) calc(100% - 20px), rgba(0,0,0,0) 100%);
+          mask-image: linear-gradient(to right, rgba(0,0,0,0) 0, rgba(0,0,0,1) 20px, rgba(0,0,0,1) calc(100% - 20px), rgba(0,0,0,0) 100%);
+}
+.toolbar .chip-row .chip { scroll-snap-align: start; }
+/* Thin horizontal scrollbar styling */
+.toolbar .chip-row { scrollbar-width: thin; scrollbar-color: var(--divider) transparent; }
+.toolbar .chip-row::-webkit-scrollbar { height: 6px; }
+.toolbar .chip-row::-webkit-scrollbar-track { background: transparent; }
+.toolbar .chip-row::-webkit-scrollbar-thumb { background: var(--divider); border-radius: 3px; }
 .chip { 
   padding: 6px 10px; 
   border-radius: 16px; 
@@ -131,6 +158,7 @@
 .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#2ecc71; margin-right:6px; }
 
 /* Table */
+:root { --header-offset: 156px; }
 .table-wrap { padding: 16px; }
 .dashboard-table {
   width: 100%;
@@ -153,10 +181,21 @@
   font-size: 12px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  position: sticky;
-  top: 112px; /* appbar (56) + toolbar (56) */
-  z-index: 800;
+  position: static; /* disable sticky header */
+  top: auto;
+  z-index: auto;
 }
+/* Header is not sticky anymore; no per-tab top offsets needed */
+/* .status-tabs-active .current-status-tab .dashboard-table th {}
+.status-tabs-active .all-messages-tab .dashboard-table th {} */
+/* Offset the entire table once (margin) instead of large padding that created excessive visual gap */
+.status-tabs-active .current-status-tab .table-wrap,
+.status-tabs-active .all-messages-tab .table-wrap { 
+  margin-top: 0; /* adjacent to summary/cards */
+  padding-top: 0;
+}
+/* Spacer collapsed (was causing huge vertical gap) */
+.status-tabs-active .table-spacer { height: 0; }
 .dashboard-table tbody tr:nth-child(even) { background-color: #171717; }
 .dashboard-table tbody tr:hover { background: var(--hover); }
 /* Sticky first column: header keeps its own bg; cells inherit row bg to preserve striping */
@@ -167,8 +206,11 @@
   display:inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; 
 }
 .status-responding { background: rgba(46,125,50,0.2); color: #9be19b; border: 1px solid rgba(46,125,50,0.6); }
+.status-available { background: rgba(25,118,210,0.2); color: #90caf9; border: 1px solid rgba(25,118,210,0.6); }
+.status-informational { background: rgba(123,31,162,0.2); color: #ce93d8; border: 1px solid rgba(123,31,162,0.6); }
 .status-not { background: rgba(97,97,97,0.25); color: #d0d0d0; border: 1px solid rgba(97,97,97,0.6); }
 .status-unknown { background: rgba(178,135,4,0.2); color: #ffd666; border: 1px solid rgba(178,135,4,0.6); }
+.status-cancelled { background: rgba(178,135,4,0.25); color: #ffe08a; border: 1px solid rgba(178,135,4,0.7); }
 
 .msg {
   display: -webkit-box;
@@ -203,7 +245,14 @@
 
 /* Responsive */
 @media (max-width: 900px) {
-  .toolbar { grid-template-columns: 1fr; top: 56px; }
+  .toolbar { 
+    grid-template-columns: 1fr; 
+    grid-template-rows: auto auto auto; 
+    top: 56px; 
+  }
+  .toolbar .search-input { grid-column: 1; grid-row: 1; }
+  .toolbar .chip-row { grid-column: 1; grid-row: 2; }
+  .toolbar .controls { grid-column: 1; grid-row: 3; justify-content: flex-start; align-self: center; }
   .app-bar .center { display: none; }
   .dashboard-table { table-layout: auto; }
   .col-time { position: static; }
@@ -253,3 +302,12 @@
 .input { background: var(--bg-elev-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; width: 100%; }
 .form-grid label { display:flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
 .modal-actions { margin-top: 12px; display:flex; justify-content: flex-end; gap: 8px; }
+
+/* Tab Layout Enhancements (revised) */
+/* Keep natural document flow; avoid forcing full-viewport flex which broke scrolling */
+
+/* Restore normal table padding inside tab content */
+.tab-content .table-wrap { padding: 16px; }
+
+/* Ensure dashboard table still spans width with padding context */
+.tab-content .dashboard-table { margin: 0; }
