@@ -185,7 +185,7 @@ function MainApp() {
     loadUser();
   }, []);
 
-  const totalResponders = data.length;
+  const totalMessages = data.length;
 
   const avgMinutes = () => {
     const times = data
@@ -362,17 +362,34 @@ function MainApp() {
     return entry.eta || 'Unknown';
   };
 
+  // Dedupe messages by user_id, keeping the latest message per user
+  const dedupedData = useMemo(() => {
+    const latest = new Map();
+    data.forEach(msg => {
+      const uid = msg.user_id || msg.name || msg.id;
+      if (!uid) return;
+      const ts = parseTs(msg.timestamp)?.getTime() || 0;
+      const prev = latest.get(uid);
+      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) {
+        latest.set(uid, msg);
+      }
+    });
+    return Array.from(latest.values());
+  }, [data]);
+
   // Filtering and sorting
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return data.filter(r => {
+    return dedupedData.filter(r => {
       const matchesQuery = !q || [r.name, r.text, vehicleMap(r.vehicle)].some(x => (x||'').toLowerCase().includes(q));
       const vOK = vehicleFilter.length === 0 || vehicleFilter.includes(vehicleMap(r.vehicle));
       const sOK = statusFilter.length === 0 || statusFilter.includes(statusOf(r));
       return matchesQuery && vOK && sOK;
     });
-  }, [data, query, vehicleFilter, statusFilter]);
+  }, [dedupedData, query, vehicleFilter, statusFilter]);
   const [sortBy, setSortBy] = useState({ key: 'timestamp', dir: 'desc' });
+  const totalUniqueResponders = dedupedData.length;
+  const filteredUniqueResponders = filtered.length;
   const sorted = useMemo(() => {
     const arr = [...filtered];
     arr.sort((a,b) => {
@@ -386,7 +403,7 @@ function MainApp() {
   }, [filtered, sortBy]);
 
   const avgMinutesVal = () => {
-    const times = data.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
+    const times = dedupedData.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
     if (!times.length) return null;
     const total = times.reduce((a,b)=>a+b,0);
     return Math.round(total / times.length);
@@ -615,9 +632,14 @@ function MainApp() {
       {/* Stats Row */}
       <div className="stats-row">
         <div className="stat-card">
-          <div className="stat-title">Responders</div>
-          <div className="stat-value">{totalResponders}</div>
+          <div className="stat-title">Messages</div>
+          <div className="stat-value">{totalMessages}</div>
           <div className="stat-sub">Total messages</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-title">Responders</div>
+          <div className="stat-value">{filteredUniqueResponders}/{totalUniqueResponders}</div>
+          <div className="stat-sub">Unique users</div>
         </div>
         <div className="stat-card">
           <div className="stat-title">Avg ETA</div>
