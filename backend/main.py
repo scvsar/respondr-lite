@@ -1076,6 +1076,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     created_at = data.get("created_at", 0)
     group_id = str(data.get("group_id") or "")
     team = GROUP_ID_TO_TEAM.get(group_id, "Unknown") if group_id else "Unknown"
+    user_id = str(data.get("user_id") or data.get("sender_id") or "")
     message_dt: datetime
     
     # Handle invalid or missing timestamps
@@ -1120,7 +1121,8 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat() if message_dt else None,
         "group_id": group_id or None,
         "team": team,
-    "id": str(uuid.uuid4()),
+        "user_id": user_id or None,
+        "id": str(uuid.uuid4()),
         "vehicle": parsed.get("vehicle", "Unknown"),
         "eta": parsed.get("eta", "Unknown"),
         "eta_timestamp": eta_info.get("eta_timestamp"),
@@ -1235,6 +1237,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
     team = str(cast(Any, body.get("team")) or "Unknown")
     group_id = str(cast(Any, body.get("group_id")) or "")
     vehicle = str(cast(Any, body.get("vehicle")) or "Unknown")
+    user_id = str(cast(Any, body.get("user_id")) or "")
     eta_str = cast(Optional[str], body.get("eta") if "eta" in body else None)
     ts_input: Any = body.get("timestamp") if "timestamp" in body else None
     eta_ts_input: Any = body.get("eta_timestamp") if "eta_timestamp" in body else None
@@ -1254,6 +1257,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
         "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat(),
         "group_id": group_id or None,
         "team": team,
+        "user_id": user_id or None,
         "vehicle": vehicle,
         "eta": eta_fields.get("eta", "Unknown"),
         "eta_timestamp": eta_fields.get("eta_timestamp"),
@@ -1287,7 +1291,7 @@ async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
     current = dict(messages[idx])
 
     # Updatable fields
-    for key in ["name", "text", "team", "group_id", "vehicle"]:
+    for key in ["name", "text", "team", "group_id", "vehicle", "user_id"]:
         if key in patch:
             val = patch.get(key)
             if key == "name":
