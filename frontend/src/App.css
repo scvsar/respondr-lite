@@ -169,6 +169,7 @@
 .status-responding { background: rgba(46,125,50,0.2); color: #9be19b; border: 1px solid rgba(46,125,50,0.6); }
 .status-not { background: rgba(97,97,97,0.25); color: #d0d0d0; border: 1px solid rgba(97,97,97,0.6); }
 .status-unknown { background: rgba(178,135,4,0.2); color: #ffd666; border: 1px solid rgba(178,135,4,0.6); }
+.status-cancelled { background: rgba(178,135,4,0.25); color: #ffe08a; border: 1px solid rgba(178,135,4,0.7); }
 
 .msg {
   display: -webkit-box;

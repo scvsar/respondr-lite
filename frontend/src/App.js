@@ -203,6 +203,7 @@ function MainApp() {
     // Use arrival_status from backend if available, otherwise fall back to vehicle-based logic
     if (entry.arrival_status) {
       if (entry.arrival_status === 'Not Responding') return 'Not Responding';
+      if (entry.arrival_status === 'Cancelled') return 'Cancelled';
       if (entry.arrival_status === 'Unknown') return 'Unknown';
       if (entry.arrival_status === 'On Route') return 'Responding';
       if (entry.arrival_status === 'Arrived') return 'Responding';
@@ -652,7 +653,7 @@ function MainApp() {
             .map(v => (
               <div key={v} className={"chip "+(vehicleFilter.includes(v)?'active':'')} onClick={()=>toggleInArray(vehicleFilter, v, setVehicleFilter)}>{v}</div>
             ))}
-          {["Responding","Not Responding","Unknown"].map(s => (
+          {["Responding","Cancelled","Not Responding","Unknown"].map(s => (
             <div key={s} className={"chip "+(statusFilter.includes(s)?'active':'')} onClick={()=>toggleInArray(statusFilter, s, setStatusFilter)}>{s}</div>
           ))}
         </div>
@@ -731,7 +732,7 @@ function MainApp() {
             )}
             {!isLoading && sorted.map((entry, index) => {
               const s = statusOf(entry);
-              const pillClass = s==='Responding' ? 'status-responding' : (s==='Not Responding' ? 'status-not' : 'status-unknown');
+              const pillClass = s==='Responding' ? 'status-responding' : (s==='Cancelled' ? 'status-cancelled' : (s==='Not Responding' ? 'status-not' : 'status-unknown'));
               return (
                 <tr key={entry.id || index} className={selected.has(entry.id)?'row-selected':''}>
                   {editMode && (
