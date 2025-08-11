@@ -1,0 +1,38 @@
+2025-08-11 12:25:01,077 - main - ERROR - Failed to connect to Redis: Error 11001 connecting to redis-service:6379. getaddrinfo failed.
+2025-08-11 12:25:01,077 - main - ERROR - Error loading messages from Redis: Error 11001 connecting to redis-service:6379. getaddrinfo failed.
+2025-08-11 12:25:01,077 - main - INFO - Initializing Azure OpenAI client
+2025-08-11 12:25:01,471 - main - INFO - Extracting details from text: SAR-3 eta 8:30...
+2025-08-11 12:25:01,472 - main - INFO - Calling Azure OpenAI with simplified prompt, deployment: gpt-4-1-nano
+2025-08-11 12:25:02,303 - httpx - INFO - HTTP Request: POST https://westus.api.cognitive.microsoft.com/openai/deployments/gpt-4-1-nano/chat/completions?api-version=2024-12-01-preview "HTTP/1.1 200 OK"
+================================================================================
+AI PARSING VALIDATION TEST
+================================================================================
+Using Azure OpenAI endpoint: https://westus.api.cognitive.microsoft.com/
+Using deployment: gpt-4-1-nano
+
+Test 1/35: RESPONDING
+Message: 'SAR-3 eta 8:30'
+Expected: {'vehicle': 'SAR-3', 'eta': '08:30'}
+Actual:   {'vehicle': 'SAR-3', 'eta': '08:30'}
+Traceback (most recent call last):
+  File "C:\wdgit\respondr\test_ai_parsing.py", line 282, in test_ai_parsing
+    print("\u2705 PASS")
+    ~~~~~^^^^^^^^^^^
+  File "C:\Users\atuser28\AppData\Roaming\uv\python\cpython-3.13.5-windows-x86_64-none\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2705' in position 0: character maps to <undefined>
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\wdgit\respondr\test_ai_parsing.py", line 339, in <module>
+    passed, failed, failures = test_ai_parsing()
+                               ~~~~~~~~~~~~~~~^^
+  File "C:\wdgit\respondr\test_ai_parsing.py", line 294, in test_ai_parsing
+    print(f"\u274c ERROR: {str(e)}")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\atuser28\AppData\Roaming\uv\python\cpython-3.13.5-windows-x86_64-none\Lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode character '\u274c' in position 0: character maps to <undefined>
