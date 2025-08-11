@@ -756,23 +756,62 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         # Convert to lowercase for easier matching
         eta_lower = eta_str.lower()
 
-        # Extract numbers from the string
-        numbers = re.findall(r'\d+', eta_str)
+        # Normalize common duration shorthand
+        eta_norm = eta_lower.replace('~', '')
+        eta_norm = re.sub(r'\bmins?\.?(?=\b)', 'min', eta_norm)
+        eta_norm = re.sub(r'\bhrs?\.?(?=\b)', 'hr', eta_norm)
 
-        # Handle duration patterns
-        if any(word in eta_lower for word in ['min', 'minute']):
+        # Compact forms like "30m", "2h" (including decimals)
+        m_compact = re.match(r'^\s*(\d+(?:\.\d+)?)\s*([mh])\s*$', eta_norm)
+        if m_compact:
+            val, unit = m_compact.groups()
+            minutes = float(val) * (60 if unit == 'h' else 1)
+            if minutes > 1440:
+                logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
+                minutes = 1440
+            result_time = current_time + timedelta(minutes=int(minutes))
+            return result_time.strftime('%H:%M')
+
+        # Remove leading 'in '
+        eta_norm = re.sub(r'^\s*in\s+', '', eta_norm)
+
+        # Re-check compact forms after stripping 'in'
+        m_compact = re.match(r'^\s*(\d+(?:\.\d+)?)\s*([mh])\s*$', eta_norm)
+        if m_compact:
+            val, unit = m_compact.groups()
+            minutes = float(val) * (60 if unit == 'h' else 1)
+            if minutes > 1440:
+                logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
+                minutes = 1440
+            result_time = current_time + timedelta(minutes=int(minutes))
+            return result_time.strftime('%H:%M')
+
+        # Extract numbers from the normalized string
+        numbers = re.findall(r'\d+(?:\.\d+)?', eta_norm)
+
+        # Handle bare numbers (e.g., "in 30") as minutes
+        if re.match(r'^\s*\d+(?:\.\d+)?\s*$', eta_norm) and numbers:
+            minutes = float(numbers[0])
+            if minutes > 1440:
+                logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
+                minutes = 1440
+            result_time = current_time + timedelta(minutes=int(minutes))
+            return result_time.strftime('%H:%M')
+
+        # Handle duration patterns with units
+        if any(word in eta_norm for word in ['min', 'minute']):
             if numbers:
-                minutes = int(numbers[0])
+                minutes = float(numbers[0])
                 # Cap at reasonable maximum (24 hours)
                 if minutes > 1440:
                     logger.warning(f"ETA of {minutes} minutes is unrealistic, capping at 24 hours")
                     minutes = 1440
-                result_time = current_time + timedelta(minutes=minutes)
+                result_time = current_time + timedelta(minutes=int(minutes))
                 return result_time.strftime('%H:%M')
 
-        elif any(word in eta_lower for word in ['hour', 'hr']):
+        elif any(word in eta_norm for word in ['hour', 'hr']):
             if numbers:
-                hours = int(numbers[0])
+                hours = float(numbers[0])
                 # Cap at reasonable maximum
                 if hours > 24:
                     logger.warning(f"ETA of {hours} hours is unrealistic, capping at 24 hours")
@@ -780,7 +819,7 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
                 result_time = current_time + timedelta(hours=hours)
                 return result_time.strftime('%H:%M')
 
-        elif 'half' in eta_lower and any(word in eta_lower for word in ['hour', 'hr']):
+        elif 'half' in eta_norm and any(word in eta_norm for word in ['hour', 'hr']):
             result_time = current_time + timedelta(minutes=30)
             return result_time.strftime('%H:%M')
 
@@ -981,15 +1020,20 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         # Apply additional validation to the AI's result
         eta_value = parsed_json.get("eta", "Unknown")
         if eta_value not in ("Unknown", "Not Responding"):
-            # Validate the AI's ETA result
-            validation_result = validate_and_format_time(eta_value)
-            if validation_result.get("valid"):
-                eta_value = validation_result["normalized"]
-                if validation_result.get("warning"):
-                    logger.warning(f"ETA validation warning: {validation_result['warning']}")
+            eta_after_duration = convert_eta_to_timestamp(eta_value, anchor_time)
+            if eta_after_duration != "Unknown":
+                eta_value = eta_after_duration
             else:
-                logger.warning(f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}")
-                eta_value = "Unknown"
+                validation_result = validate_and_format_time(eta_value)
+                if validation_result.get("valid"):
+                    eta_value = validation_result["normalized"]
+                    if validation_result.get("warning"):
+                        logger.warning(f"ETA validation warning: {validation_result['warning']}")
+                else:
+                    logger.warning(
+                        f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}"
+                    )
+                    eta_value = "Unknown"
 
         # Ensure normalized/validated ETA is applied to payload
         parsed_json["eta"] = eta_value
