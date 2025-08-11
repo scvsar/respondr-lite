@@ -85,6 +85,24 @@ git push origin preprod
 
 Then manually deploy using Method 1 or 2 with the built images.
 
+### OIDC Setup for GitHub Actions
+
+To enable GitHub Actions to push images to ACR, configure OIDC authentication:
+
+```powershell
+# This is automatically done when using Method 1 with -SetupGithubOidc
+.\deploy-complete.ps1 -ResourceGroupName respondr -Namespace respondr-preprod -HostPrefix preprod -SetupGithubOidc -GithubRepo "scvsar/respondr"
+
+# Or run OIDC setup separately for both main and preprod branches
+.\setup-github-oidc.ps1 -ResourceGroupName respondr -Repo "scvsar/respondr" -Branch "main,preprod"
+```
+
+This configures:
+- ✅ Azure AD app registration with federated identity credentials
+- ✅ GitHub repository secrets (AZURE_CLIENT_ID, AZURE_TENANT_ID, etc.)
+- ✅ ACR permissions for the service principal
+- ✅ Support for both `main` and `preprod` branch workflows
+
 ## Verification
 
 After deployment, verify everything is working:
