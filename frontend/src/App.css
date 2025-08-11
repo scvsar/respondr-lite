@@ -154,21 +154,21 @@
   font-size: 12px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  position: sticky;
-  top: 156px; /* app bar 56 + toolbar 56 + tabs ~44 */
-  z-index: 800;
+  position: static; /* disable sticky header */
+  top: auto;
+  z-index: auto;
 }
-/* Current Status (no extra header shift needed beyond tabs) */
-.status-tabs-active .current-status-tab .dashboard-table th { top: var(--header-offset); }
-.status-tabs-active .all-messages-tab .dashboard-table th { top: var(--header-offset); }
+/* Header is not sticky anymore; no per-tab top offsets needed */
+/* .status-tabs-active .current-status-tab .dashboard-table th {}
+.status-tabs-active .all-messages-tab .dashboard-table th {} */
 /* Offset the entire table once (margin) instead of large padding that created excessive visual gap */
 .status-tabs-active .current-status-tab .table-wrap,
 .status-tabs-active .all-messages-tab .table-wrap { 
-  margin-top: 0; /* spacer handles vertical offset */
+  margin-top: 0; /* adjacent to summary/cards */
   padding-top: 0;
 }
-/* Spacer element inserted before each table to prevent first row from being obscured by sticky headers */
-.status-tabs-active .table-spacer { height: var(--header-offset); }
+/* Spacer collapsed (was causing huge vertical gap) */
+.status-tabs-active .table-spacer { height: 0; }
 .dashboard-table tbody tr:nth-child(even) { background-color: #171717; }
 .dashboard-table tbody tr:hover { background: var(--hover); }
 /* Sticky first column: header keeps its own bg; cells inherit row bg to preserve striping */

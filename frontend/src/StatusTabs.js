@@ -157,9 +157,7 @@ const StatusTabs = ({
 
   const renderTable = (tableData, loading, error, showAllColumns = false) => {
     return (
-      <div>
-        <div className="table-spacer" aria-hidden="true"></div>
-        <div className="table-wrap">
+  <div className="table-wrap">
         <table className="dashboard-table" role="table">
           <thead>
             <tr>
@@ -251,7 +249,6 @@ const StatusTabs = ({
             })}
           </tbody>
         </table>
-  </div>
       </div>
     );
   };
