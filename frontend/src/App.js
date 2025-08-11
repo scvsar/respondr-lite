@@ -4,6 +4,7 @@ import "./App.css";
 import Logout from './Logout';
 import MobileView from './MobileView';
 import Profile from './Profile';
+import StatusTabs from './StatusTabs';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -641,8 +642,10 @@ function MainApp() {
         </div>
       </div>
 
-      {/* Secondary Toolbar */}
-      <div className="toolbar">
+      {/* Main Content */}
+      <div className="main-content">
+        {/* Secondary Toolbar */}
+        <div className="toolbar">
         <input className="search-input" placeholder="Search name/message/vehicle…" value={query} onChange={e=>setQuery(e.target.value)} />
         <div className="chip-row" aria-label="Quick filters">
           {Array.from(new Set(
@@ -704,60 +707,29 @@ function MainApp() {
         </div>
       </div>
 
-      {/* Table */}
-      <div className="table-wrap">
-        <table className="dashboard-table" role="table">
-          <thead>
-            <tr>
-              {editMode && (
-                <th style={{width:36}}>
-                  <input type="checkbox" aria-label="Select all" checked={selected.size===sorted.length && sorted.length>0} onChange={toggleAll} />
-                </th>
-              )}
-              <th className="col-time">{sortButton('Time','timestamp')}</th>
-              <th>Name</th>
-              <th>Team</th>
-              <th>Message</th>
-              <th>Vehicle</th>
-              <th>{sortButton('ETA','eta')}</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {isLoading && (
-              [...Array(5)].map((_,i)=> (
-                <tr key={i}><td className="col-time"><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton"/></td><td><div className="skeleton" style={{width:'60px'}}/></td><td><div className="skeleton" style={{width:'80px'}}/></td><td><div className="skeleton" style={{width:'100px'}}/></td></tr>
-              ))
-            )}
-            {!isLoading && sorted.length === 0 && (
-              <tr><td colSpan="7" className="empty">No data. <button className="btn" onClick={()=>{ setQuery(''); setVehicleFilter([]); setStatusFilter([]); }}>Clear filters</button></td></tr>
-            )}
-            {!isLoading && sorted.map((entry, index) => {
-              const s = statusOf(entry);
-              const pillClass = s==='Responding' ? 'status-responding' : (s==='Available' ? 'status-available' : (s==='Informational' ? 'status-informational' : (s==='Cancelled' ? 'status-cancelled' : (s==='Not Responding' ? 'status-not' : 'status-unknown'))));
-              return (
-                <tr key={entry.id || index} className={selected.has(entry.id)?'row-selected':''}>
-                  {editMode && (
-                    <td>
-                      <input type="checkbox" aria-label={`Select ${entry.name}`} checked={selected.has(entry.id)} onChange={()=>toggleRow(entry.id)} />
-                    </td>
-                  )}
-                  <td className="col-time" title={formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}>{formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}</td>
-                  <td>{entry.name}</td>
-                  <td>{unitOf(entry)}</td>
-                  <td>
-                    <div className="msg">{entry.text}</div>
-                  </td>
-                  <td>{resolveVehicle(entry)}</td>
-                  <td title={etaDisplay(entry)}>{etaDisplay(entry)}</td>
-                  <td>
-                    <span className={`status-pill ${pillClass}`} aria-label={`Status: ${s}`}>{s}</span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      {/* Status Tabs */}
+      <div className="status-tabs-active">
+      <StatusTabs
+        data={sorted}
+        isLoading={isLoading}
+        error={error}
+        selected={selected}
+        editMode={editMode}
+        isAdmin={isAdmin}
+        sortBy={sortBy}
+        setSortBy={setSortBy}
+        toggleRow={toggleRow}
+        toggleAll={toggleAll}
+        statusOf={statusOf}
+        unitOf={unitOf}
+        resolveVehicle={resolveVehicle}
+        etaDisplay={etaDisplay}
+        formatTimestampDirect={formatTimestampDirect}
+        useUTC={useUTC}
+        statusFilter={statusFilter}
+        vehicleFilter={vehicleFilter}
+        query={query}
+      />
       </div>
 
       {showEditor && (
@@ -805,6 +777,7 @@ function MainApp() {
           </div>
         </div>
       )}
+      </div> {/* End main-content */}
     </div>
   );
 }
