@@ -93,6 +93,17 @@ DNS step: When prompted, add an A record for your host (e.g., respondr.<your-dom
 - Application validates user email domains against allowed list
 - Allowed domains configured in `deployment/values.yaml` under `allowedEmailDomains`
 
+Admin-only editing
+- All mutating actions (Add/Edit/Delete, bulk delete, deleted-items admin) require admin users.
+- Admins are configured via the environment variable `ALLOWED_ADMIN_USERS` (comma‑separated emails), which is populated from `deployment/values.yaml` key `allowedAdminUsers` by the template processor.
+- Non‑admin users are read‑only; the UI hides Edit controls based on `/api/user` → `is_admin`.
+
+To enable admins, add to `deployment/values.yaml`:
+
+allowedAdminUsers:
+  - "first.admin@yourdomain.org"
+  - "second.admin@yourdomain.org"
+
 This yields multi‑tenant sign‑in with app‑level authorization.
 
 ## Template‑based deployment (portable config)

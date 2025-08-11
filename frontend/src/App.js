@@ -76,6 +76,7 @@ function MainApp() {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [user, setUser] = useState(null);
+  const isAdmin = Boolean(user && user.is_admin);
   // popover removed
   const [editMode, setEditMode] = useState(false);
   const [selected, setSelected] = useState(()=>new Set());
@@ -449,11 +450,13 @@ function MainApp() {
     });
   };
   const openAdd = () => {
+    if (!isAdmin) return;
     setEditingId(null);
     resetForm({ timestamp: new Date().toISOString() });
     setShowEditor(true);
   };
   const openEdit = () => {
+    if (!isAdmin) return;
     if (selected.size !== 1) return;
     const id = Array.from(selected)[0];
     const item = data.find(x => String(x.id) === String(id));
@@ -463,6 +466,7 @@ function MainApp() {
     setShowEditor(true);
   };
   const saveForm = async () => {
+    if (!isAdmin) { alert('Only admins can modify entries.'); return; }
     const payload = {
       name: form.name?.trim() || undefined,
       team: form.team?.trim() || undefined,
@@ -488,6 +492,7 @@ function MainApp() {
     await fetchData();
   };
   const deleteSelected = async () => {
+    if (!isAdmin) { alert('Only admins can delete entries.'); return; }
     if (!selected.size) return;
     if (!window.confirm(`Delete ${selected.size} entr${selected.size===1?'y':'ies'}?`)) return;
     let ok = true;
@@ -594,8 +599,10 @@ function MainApp() {
           <a href="/deleted-dashboard" className="btn" target="_blank" rel="noopener noreferrer" title="View deleted messages">Deleted</a>
           {/* Clear-all removed; use Edit Mode delete instead */}
           <span style={{width:12}} />
-          <label className="toggle"><input type="checkbox" checked={editMode} onChange={e=>{ setEditMode(e.target.checked); setSelected(new Set()); }} /> Edit</label>
-          {editMode && (
+          {isAdmin && (
+            <label className="toggle"><input type="checkbox" checked={editMode} onChange={e=>{ setEditMode(e.target.checked); setSelected(new Set()); }} /> Edit</label>
+          )}
+          {isAdmin && editMode && (
             <>
               <button className="btn primary" onClick={openAdd}>Add</button>
               <button className="btn" onClick={openEdit} disabled={selected.size!==1}>Edit</button>

@@ -69,6 +69,8 @@ spec:
           value: "0"
         - name: ALLOWED_EMAIL_DOMAINS
           value: {{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}
+        - name: ALLOWED_ADMIN_USERS
+          value: {{ALLOWED_ADMIN_USERS_PLACEHOLDER}}
         resources:
           requests:
             memory: "256Mi"

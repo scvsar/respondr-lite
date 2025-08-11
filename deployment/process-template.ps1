@@ -52,6 +52,7 @@ $placeholderMap = @{
     '{{OIDC_TENANT_SEGMENT}}' = ''  # computed below
     '{{EMAIL_DOMAIN_ARGS}}' = ''    # computed below
     '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}' = ''  # computed below
+    '{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}' = ''  # computed below
 }
 
 # Apply all basic placeholder replacements
@@ -62,7 +63,7 @@ foreach ($placeholder in $placeholderMap.Keys) {
         Write-Verbose "Replaced: $placeholder -> $value"
     } else {
         # Only warn for placeholders we truly expect to have a value at this stage
-        if ($placeholder -ne '{{OIDC_TENANT_SEGMENT}}' -and $placeholder -ne '{{EMAIL_DOMAIN_ARGS}}' -and $placeholder -ne '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}') {
+    if ($placeholder -ne '{{OIDC_TENANT_SEGMENT}}' -and $placeholder -ne '{{EMAIL_DOMAIN_ARGS}}' -and $placeholder -ne '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}' -and $placeholder -ne '{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}') {
             Write-Warning "No value found for placeholder: $placeholder"
         }
     }
@@ -128,8 +129,27 @@ try {
 }
 $placeholderMap['{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}'] = $allowedDomains
 
+# Build allowed admin users string for application environment variable
+try {
+    $adminList = @()
+    $inAdmins = $false
+    foreach ($line in (Get-Content $ValuesFile)) {
+        if ($line -match '^allowedAdminUsers\s*:') { $inAdmins = $true; continue }
+        if ($inAdmins) {
+            if ($line -match '^\s*-\s*(.+)') {
+                $v = $matches[1].Trim()
+                if ($v.StartsWith('"') -and $v.EndsWith('"')) { $v = $v.Substring(1, $v.Length - 2) }
+                if ($v.StartsWith("'") -and $v.EndsWith("'")) { $v = $v.Substring(1, $v.Length - 2) }
+                $adminList += $v
+            } else { break }
+        }
+    }
+    $allowedAdmins = ($adminList | ForEach-Object { $_.ToLower() }) -join ","
+} catch { $allowedAdmins = "" }
+$placeholderMap['{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}'] = $allowedAdmins
+
 # Apply replacements for computed placeholders
-foreach ($computed in @('{{OIDC_TENANT_SEGMENT}}','{{EMAIL_DOMAIN_ARGS}}','{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}')) {
+foreach ($computed in @('{{OIDC_TENANT_SEGMENT}}','{{EMAIL_DOMAIN_ARGS}}','{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}','{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}')) {
     $val = $placeholderMap[$computed]
     if ($val -ne $null -and $val -ne '') {
     $processedContent = $processedContent -replace [regex]::Escape($computed), $val
