@@ -13,8 +13,63 @@
 
 param (
     [Parameter(Mandatory)][string]$ResourceGroupName,
-    [Parameter()][string]$Location = "westus"
+    [Parameter()][string]$Location = "westus",
+    [switch]$SkipAgwNsgFix
 )
+
+# Wait until the AKS managed cluster provisioningState returns to Succeeded (no active update)
+function Wait-ForAksReady {
+    param(
+        [Parameter(Mandatory)][string]$ResourceGroupName,
+        [Parameter(Mandatory)][string]$AksClusterName,
+        [int]$TimeoutMinutes = 30,
+        [switch]$Quiet
+    )
+
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    do {
+        $state = az aks show --resource-group $ResourceGroupName --name $AksClusterName --query provisioningState -o tsv 2>$null
+        if ($state -eq 'Succeeded') { return $true }
+        if (-not $Quiet) { Write-Host "AKS cluster state: $state (waiting to be Succeeded)..." -ForegroundColor Cyan }
+        Start-Sleep -Seconds 20
+    } while ((Get-Date) -lt $deadline)
+    throw "AKS cluster '$AksClusterName' did not reach Succeeded state within $TimeoutMinutes minutes"
+}
+
+# Invoke an AKS command with automatic wait and retries when an in-progress update blocks the operation
+function Invoke-AksCommandWithRetry {
+    param(
+        [Parameter(Mandatory)][scriptblock]$Action,
+        [Parameter(Mandatory)][string]$ResourceGroupName,
+        [Parameter(Mandatory)][string]$AksClusterName,
+        [int]$MaxAttempts = 15,
+        [int]$BaseDelaySeconds = 15
+    )
+
+    for ($i = 1; $i -le $MaxAttempts; $i++) {
+        # Ensure no active update first
+        Wait-ForAksReady -ResourceGroupName $ResourceGroupName -AksClusterName $AksClusterName -Quiet
+
+        $output = & $Action 2>&1
+        $exit = $LASTEXITCODE
+        if ($exit -eq 0) {
+            if ($output) { Write-Host $output }
+            return $true
+        }
+
+        $text = [string]$output
+        if ($text -match 'OperationNotAllowed' -and $text -match 'in progress update managed cluster') {
+            $delay = [Math]::Min(180, [Math]::Ceiling($BaseDelaySeconds * [Math]::Pow(1.5, ($i - 1))))
+            Write-Host "AKS is busy with an update. Waiting $delay seconds before retry $i/$MaxAttempts..." -ForegroundColor Yellow
+            Start-Sleep -Seconds $delay
+            continue
+        } else {
+            Write-Host $text -ForegroundColor Yellow
+            break
+        }
+    }
+    throw "AKS command failed after $MaxAttempts attempts"
+}
 
 # Function to handle AGIC permission issues and automatic recovery
 function Repair-AGICPermissions {
@@ -81,7 +136,101 @@ function Repair-AGICPermissions {
 function Test-AGICPermissionError {
     param([string]$ErrorMessage)
     
-    return $ErrorMessage -match "InsufficientPermission|permission|join/action|Network/virtualNetworks"
+    # Only match explicit permission errors, not generic wording like "not permitted"
+    return $ErrorMessage -match "InsufficientPermissionOnSubnet|does not have permission|join/action|Microsoft.Network/virtualNetworks/subnets/join/action"
+}
+
+# Ensure the Application Gateway subnet NSG allows required inbound high ports for v2 SKU
+function Ensure-AppGwSubnetNsgRule {
+    param(
+        [Parameter(Mandatory)][string]$ResourceGroupName,
+        [Parameter(Mandatory)][string]$VnetName,
+        [Parameter(Mandatory)][string]$SubnetName
+    )
+
+    Write-Host "Checking NSG for subnet '$SubnetName' in VNet '$VnetName'..." -ForegroundColor Yellow
+    $nsgId = az network vnet subnet show `
+        --resource-group $ResourceGroupName `
+        --vnet-name $VnetName `
+        --name $SubnetName `
+        --query "networkSecurityGroup.id" -o tsv 2>$null
+
+    if (-not $nsgId) {
+        Write-Host "No NSG associated with the Application Gateway subnet—nothing to change." -ForegroundColor Green
+        return $true
+    }
+
+    $nsgParts = $nsgId.Split('/')
+    $nsgName = $nsgParts[-1]
+    $nsgResourceGroup = $nsgParts[4]
+    Write-Host "Subnet NSG detected: $nsgName (RG: $nsgResourceGroup)" -ForegroundColor Cyan
+
+    $ruleName = "Allow-AppGw-HighPorts"
+    $desiredProps = @{ 
+        direction = 'Inbound'; access = 'Allow'; protocol = 'Tcp'; 
+        sourceAddressPrefix = 'Internet'; sourcePortRange = '*'; 
+        destinationAddressPrefix = '*'; destinationPortRanges = @('65200-65535') 
+    }
+
+    $existingRule = az network nsg rule show -g $nsgResourceGroup --nsg-name $nsgName -n $ruleName -o json 2>$null | ConvertFrom-Json
+
+    if (-not $existingRule) {
+        # Pick a safe high-priority (low number) that usually doesn't conflict
+        $priority = 110
+        Write-Host "Creating NSG rule '$ruleName' to allow inbound TCP 65200-65535 from Internet..." -ForegroundColor Yellow
+    $createOut = az network nsg rule create -g $nsgResourceGroup `
+            --nsg-name $nsgName `
+            -n $ruleName `
+            --priority $priority `
+            --direction Inbound `
+            --access Allow `
+            --protocol Tcp `
+            --source-address-prefixes Internet `
+            --source-port-ranges '*' `
+            --destination-address-prefixes '*' `
+            --destination-port-ranges 65200-65535 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to create NSG rule: $createOut" -ForegroundColor Red
+            return $false
+        }
+        Write-Host "✓ NSG rule created" -ForegroundColor Green
+        return $true
+    }
+
+    # Validate existing rule properties; update if needed
+    $needsUpdate = $false
+    if ($existingRule.direction -ne 'Inbound' -or $existingRule.access -ne 'Allow' -or $existingRule.protocol -ne 'Tcp') { $needsUpdate = $true }
+    if ((-not $existingRule.sourceAddressPrefix) -or $existingRule.sourceAddressPrefix -ne 'Internet') { $needsUpdate = $true }
+    if ((-not $existingRule.destinationPortRange) -and (-not $existingRule.destinationPortRanges)) { $needsUpdate = $true }
+    else {
+        $ports = @()
+        if ($existingRule.destinationPortRange) { $ports += $existingRule.destinationPortRange }
+        if ($existingRule.destinationPortRanges) { $ports += $existingRule.destinationPortRanges }
+        if ($ports -notcontains '65200-65535') { $needsUpdate = $true }
+    }
+
+    if ($needsUpdate) {
+        Write-Host "Updating NSG rule '$ruleName' to required settings..." -ForegroundColor Yellow
+    $updateOut = az network nsg rule update -g $nsgResourceGroup `
+            --nsg-name $nsgName `
+            -n $ruleName `
+            --direction Inbound `
+            --access Allow `
+            --protocol Tcp `
+            --source-address-prefixes Internet `
+            --source-port-ranges '*' `
+            --destination-address-prefixes '*' `
+            --destination-port-ranges 65200-65535 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to update NSG rule: $updateOut" -ForegroundColor Red
+            return $false
+        }
+        Write-Host "✓ NSG rule updated" -ForegroundColor Green
+    } else {
+        Write-Host "NSG rule '$ruleName' already allows required traffic." -ForegroundColor Green
+    }
+
+    return $true
 }
 
 Write-Host "Starting post-deployment configuration..." -ForegroundColor Green
@@ -98,7 +247,6 @@ $acrName            = $deploy.properties.outputs.acrName.value
 $openAiAccountName  = $deploy.properties.outputs.openAiAccountName.value
 $podIdentityName    = $deploy.properties.outputs.podIdentityName.value
 $podIdentityClientId= $deploy.properties.outputs.podIdentityClientId.value
-$podIdentityId      = $deploy.properties.outputs.podIdentityResourceId.value
 $vnetName           = $deploy.properties.outputs.vnetName.value
 $appGwSubnetName    = $deploy.properties.outputs.appGwSubnetName.value
 
@@ -128,12 +276,12 @@ Write-Host "`nCreating dedicated namespace for respondr..." -ForegroundColor Yel
 kubectl create namespace respondr --dry-run=client -o yaml | kubectl apply -f -
 
 Write-Host "`nEnsuring user-assigned managed identity and workload identity setup..." -ForegroundColor Yellow
-$identity = az identity show --name $podIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
+    $identity = az identity show --name $podIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
 if (-not $identity) {
     Write-Host "Creating user-assigned identity '$podIdentityName'..." -ForegroundColor Yellow
     $identity = az identity create --name $podIdentityName --resource-group $ResourceGroupName -o json | ConvertFrom-Json
     $podIdentityClientId = $identity.clientId
-    $podIdentityId       = $identity.id
+        # $podIdentityId is not required below; rely on outputs or lookups when needed
 } else {
     Write-Host "User-assigned identity '$podIdentityName' already exists." -ForegroundColor Green
 }
@@ -156,7 +304,11 @@ az role assignment create `
     --scope $openAiAccountId 2>$null
 
 Write-Host "Enabling OIDC and workload identity on AKS cluster..." -ForegroundColor Yellow
-az aks update --name $aksClusterName --resource-group $ResourceGroupName --enable-oidc-issuer --enable-workload-identity
+Invoke-AksCommandWithRetry -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Action {
+    az aks update --name $aksClusterName --resource-group $ResourceGroupName --enable-oidc-issuer --enable-workload-identity
+}
+# Wait for cluster to settle before any subsequent AKS operations
+Wait-ForAksReady -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName
 
 # Check if workload identity webhook is deployed
 Write-Host "Checking workload identity webhook deployment..." -ForegroundColor Yellow
@@ -190,10 +342,12 @@ kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/
 # 4) Attach ACR (if one exists)
 if ($acrName) {
     Write-Host "`nAttaching ACR '$acrName' to AKS cluster..." -ForegroundColor Yellow
-    az aks update `
-        --name $aksClusterName `
-        --resource-group $ResourceGroupName `
-        --attach-acr $acrName
+    Invoke-AksCommandWithRetry -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Action {
+        az aks update `
+            --name $aksClusterName `
+            --resource-group $ResourceGroupName `
+            --attach-acr $acrName
+    }
 } else {
     Write-Host "`nNo ACR name found—skipping attach step." -ForegroundColor Cyan
 }
@@ -238,12 +392,32 @@ Write-Host "Enabling AGIC addon..." -ForegroundColor Yellow
 $subnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName/subnets/$appGwSubnetName"
 Write-Host "Using subnet ID: $subnetId" -ForegroundColor Cyan
 
-$enableResult = az aks enable-addons `
-    --resource-group $ResourceGroupName `
-    --name $aksClusterName `
-    --addons ingress-appgw `
-    --appgw-name $appGwName `
-    --appgw-subnet-id $subnetId 2>&1
+# Proactively ensure NSG on the Application Gateway subnet allows required inbound high ports
+if (-not $SkipAgwNsgFix) {
+    Write-Host "Validating NSG requirements for Application Gateway subnet..." -ForegroundColor Yellow
+    $nsgReady = Ensure-AppGwSubnetNsgRule -ResourceGroupName $ResourceGroupName -VnetName $vnetName -SubnetName $appGwSubnetName
+    if (-not $nsgReady) {
+        Write-Host "Warning: Failed to validate or update NSG for Application Gateway subnet. AGIC deployment may fail until this is fixed." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Skipping NSG validation/changes due to -SkipAgwNsgFix switch." -ForegroundColor Yellow
+}
+
+$enableResult = $null
+try {
+    Invoke-AksCommandWithRetry -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Action {
+        az aks enable-addons `
+            --resource-group $ResourceGroupName `
+            --name $aksClusterName `
+            --addons ingress-appgw `
+            --appgw-name $appGwName `
+            --appgw-subnet-id $subnetId
+    }
+    $LASTEXITCODE = 0
+} catch {
+    $enableResult = $_.Exception.Message
+    $global:LASTEXITCODE = 1
+}
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "AGIC enable failed. Full output:" -ForegroundColor Red
@@ -270,7 +444,7 @@ if ($agicIdentityId) {
     Write-Host "AGIC managed identity object ID: $agicIdentityId" -ForegroundColor Cyan
     
     # Get the VNet resource ID for broader permissions
-    $vnetId = az network vnet show --resource-group $ResourceGroupName --name "$resourcePrefix-vnet" --query "id" -o tsv 2>$null
+    $vnetId = az network vnet show --resource-group $ResourceGroupName --name $vnetName --query "id" -o tsv 2>$null
     $mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
     
     if ($vnetId) {
@@ -401,21 +575,44 @@ do {
             Write-Host $agicLogs -ForegroundColor Cyan
         }
         
-        # Check if this is a permission error and attempt automatic repair
+        # Detect and auto-repair common causes
         $errorText = "$deploymentError $operationErrors $agicLogs"
+
+        # 1) NSG blocks required inbound high ports (65200-65535) for App Gateway v2
+        if ($errorText -match "ApplicationGatewaySubnetInboundTrafficBlockedByNetworkSecurityGroup") {
+            if (-not $SkipAgwNsgFix) {
+                Write-Host "🔍 NSG on the Application Gateway subnet is blocking required ports. Applying fix..." -ForegroundColor Yellow
+                if (Ensure-AppGwSubnetNsgRule -ResourceGroupName $ResourceGroupName -VnetName $vnetName -SubnetName $appGwSubnetName) {
+                    Write-Host "🔧 NSG updated. Restarting AGIC to trigger re-deploy..." -ForegroundColor Green
+                    kubectl rollout restart deployment ingress-appgw-deployment -n kube-system
+                    Start-Sleep 60
+                    # Extend timeout and continue monitoring
+                    $deploymentTimeout = (Get-Date).AddMinutes(10)
+                    continue
+                } else {
+                    Write-Host "❌ Failed to update NSG automatically. Please update the subnet NSG to allow inbound TCP 65200-65535 from Internet." -ForegroundColor Red
+                }
+            } else {
+                Write-Host "NSG indicates blocked inbound high ports, but NSG changes are disabled (-SkipAgwNsgFix). Please ensure the NSG allows TCP 65200-65535 from Internet." -ForegroundColor Yellow
+            }
+        }
+
+        # 2) AGIC attempted a new deployment while previous one is still active
+        if ($errorText -match "DeploymentActive") {
+            Write-Host "ℹ️ An ARM deployment is still active. Waiting 90s before re-checking..." -ForegroundColor Yellow
+            Start-Sleep 90
+            continue
+        }
+
+        # 3) Permission issues (role assignments or subnet join)
         if (Test-AGICPermissionError -ErrorMessage $errorText) {
             Write-Host "🔍 Permission error detected - attempting automatic repair..." -ForegroundColor Yellow
-            
-            # Get resource prefix from deployment outputs
             $resourcePrefix = $ResourceGroupName  # Assuming resource prefix matches resource group name
-            
             if (Repair-AGICPermissions -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Location $Location -ResourcePrefix $resourcePrefix) {
                 Write-Host "🔄 Permission repair completed - monitoring deployment retry..." -ForegroundColor Green
-                
-                # Reset timeout for retry attempt
                 $deploymentTimeout = (Get-Date).AddMinutes(10)
-                Start-Sleep 60  # Give AGIC time to retry
-                continue  # Continue monitoring the deployment
+                Start-Sleep 60
+                continue
             } else {
                 Write-Host "❌ Automatic permission repair failed" -ForegroundColor Red
             }
@@ -567,10 +764,12 @@ if (Test-Path $testPodYaml) {
             
             # Ensure AKS has proper access to ACR (re-verify)
             Write-Host "`nVerifying ACR access for AKS..." -ForegroundColor Yellow
-            az aks update `
-                --name $aksClusterName `
-                --resource-group $ResourceGroupName `
-                --attach-acr $acrName
+            Invoke-AksCommandWithRetry -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Action {
+                az aks update `
+                    --name $aksClusterName `
+                    --resource-group $ResourceGroupName `
+                    --attach-acr $acrName
+            }
             
             # Delete the pod if it already exists
             kubectl delete pod nginx-test --ignore-not-found
@@ -599,8 +798,8 @@ if (Test-Path $testPodYaml) {
                     # Check for image pull issues
                     $events = kubectl get events --field-selector involvedObject.name=nginx-test --sort-by='.lastTimestamp' -o json | 
                               ConvertFrom-Json
-                      foreach ($event in $events.items | Where-Object { $_.type -eq "Warning" }) {
-                        Write-Host "Pod warning: $($event.message)" -ForegroundColor Yellow
+                    foreach ($evt in $events.items | Where-Object { $_.type -eq "Warning" }) {
+                        Write-Host "Pod warning: $($evt.message)" -ForegroundColor Yellow
                     }
                     
                     # Check if we're having image pull issues
@@ -623,7 +822,7 @@ if (Test-Path $testPodYaml) {
                         $repos = az acr repository list --name $acrName -o json | ConvertFrom-Json
                         Write-Host "      Repositories in ACR: $($repos -join ', ')" -ForegroundColor Cyan
                           # Check if our image exists
-                        $imageExists = az acr repository show --name $acrName --image nginx:test 2>&1
+                        az acr repository show --name $acrName --image nginx:test 2>&1 | Out-Null
                         if ($LASTEXITCODE -ne 0) {
                             Write-Host "Image 'nginx:test' not found in ACR - reimporting..." -ForegroundColor Red
                             az acr import --name $acrName --source docker.io/library/nginx:latest --image nginx:test
