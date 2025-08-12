@@ -180,6 +180,78 @@ def calculate_eta_from_duration(current_time: str, duration_minutes: int) -> Dic
     except Exception as e:
         return {"eta": "Unknown", "valid": False, "error": str(e)}
 
+def classify_status_llm(client: Optional[AzureOpenAI], text: str, prev_status: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Lightweight intent classifier. Returns:
+      {"status": "...", "status_evidence": "...", "confidence": float}
+    Falls back to unknown if client unavailable or any error.
+    """
+    try:
+        if client is None:
+            return {"status": "unknown", "status_evidence": "", "confidence": 0.0}
+
+        sys_msg = (
+            "Classify SAR responder messages by intent only (no math) into one of: "
+            "responding, cancelled, available, informational, unknown. "
+            "Be robust to slang, profanity, and shorthand. Return ONLY JSON."
+        )
+
+        fewshots = [
+            {"role": "user", "content": "Message: fuck this I'm out"},
+            {"role": "assistant", "content": '{"status":"cancelled","status_evidence":"fuck this I\'m out","confidence":0.95}'},
+
+            {"role": "user", "content": "Message: sorry can’t make it tonight"},
+            {"role": "assistant", "content": '{"status":"cancelled","status_evidence":"can’t make it","confidence":0.98}'},
+
+            {"role": "user", "content": "Message: rolling now POV"},
+            {"role": "assistant", "content": '{"status":"responding","status_evidence":"rolling now","confidence":0.85}'},
+
+            {"role": "user", "content": "Message: I can respond if needed"},
+            {"role": "assistant", "content": '{"status":"available","status_evidence":"respond if needed","confidence":0.80}'},
+
+            {"role": "user", "content": "Message: key for 74 is in the box"},
+            {"role": "assistant", "content": '{"status":"informational","status_evidence":"key for 74","confidence":0.90}'},
+        ]
+
+        if prev_status:
+            text = f"(Sender previously {prev_status}). " + text
+
+        prompt = (
+            "Message: " + text + "\n"
+            "Return JSON with keys: status, status_evidence, confidence (0..1)."
+        )
+
+        resp = client.chat.completions.create(
+            model=cast(str, azure_openai_deployment),
+            messages=[
+                {"role": "system", "content": sys_msg},
+                *fewshots,
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=60,
+            # If your Azure model supports strict JSON mode, you can enable it:
+            # response_format={"type": "json_object"},
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", raw, flags=re.S)
+        data = json.loads(m.group(0)) if m else {}
+
+        status = str(data.get("status", "unknown")).lower()
+        if status not in {"responding", "cancelled", "available", "informational", "unknown"}:
+            status = "unknown"
+        ev = str(data.get("status_evidence", ""))[:200]
+        try:
+            conf = float(data.get("confidence", 0.0))
+        except Exception:
+            conf = 0.0
+
+        return {"status": status, "status_evidence": ev, "confidence": max(0.0, min(conf, 1.0))}
+    except Exception as e:
+        logger.warning(f"LLM status classify failed: {e}")
+        return {"status": "unknown", "status_evidence": "", "confidence": 0.0}
+
+
 def validate_and_format_time(time_string: str) -> Dict[str, Any]:
     """Validate time and convert to proper 24-hour format. Used by AI function calling."""
     try:
@@ -855,375 +927,161 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         logger.warning(f"Error converting ETA '{eta_str}': {e}")
         return "Unknown"
 
-def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -> Dict[str, str]:
-    """Extract vehicle and ETA from freeform text.
-
-    If base_time is provided, use it as the anchor for duration-based ETA calculations
-    (e.g., "15 minutes", "1 hour"). Otherwise, fall back to the current app time.
-
-    Returns a mapping like {"vehicle": "SAR-7|POV|Unknown|Not Responding", "eta": "HH:MM|Unknown|Not Responding"}
+def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    Extract vehicle, ETA, and infer status (responding/cancelled/etc.).
+    - Deterministic parsing for vehicle and ETA stays in code.
+    - LLM is only used for ambiguous intent classification, never for time math.
     """
     logger.info(f"Extracting details from text: {text[:50]}...")
     anchor_time: datetime = base_time or now_tz()
+    tl = text.lower()
 
-    # Fast-path heuristics for local/dev
-    if FAST_LOCAL_PARSE or client is None:
-        tl = text.lower()
-        # Detect ETA given as HHMM after 'eta' (e.g., 'ETA 1022') before cancellation codes
-        m_eta_compact = re.search(r"\beta\s*:?\s*(\d{3,4})\b", tl)
+    # --- Guard: handle 10-22 style stand-down codes unless we clearly have an ETA like 'ETA 1022'
+    m_eta_compact = re.search(r"\beta\s*:?\s*(\d{3,4})\b", tl)
+    has_10_22_code = bool(re.search(r"\b10\s*-\s*22\b", tl) or re.search(r"\b10\s+22\b", tl) or re.search(r"\b1022\b", tl))
+    if not m_eta_compact and has_10_22_code:
+        return {
+            "vehicle": "Not Responding",
+            "eta": "Cancelled",
+            "raw_status": "Cancelled",
+            "status_source": "Rules",
+            "status_confidence": 1.0,
+        }
 
-        # Cancellation / stand-down signals (treat as 'Cancelled')
-        # Special codes: '10-22', '1022', or '10 22' imply stand down unless clearly 'ETA 10:22' or 'ETA 1022'
-        has_10_22_code = bool(re.search(r"\b10\s*-\s*22\b", tl) or re.search(r"\b10\s+22\b", tl) or re.search(r"\b1022\b", tl))
-        # If compact ETA detected (e.g., 'ETA 1022'), do not treat as cancellation solely due to '1022'
-        if not m_eta_compact and has_10_22_code:
-            return {"vehicle": "Not Responding", "eta": "Cancelled"}
+    # --- Strong cancel phrases (expanded to include slang/profanity)
+    cancel_signals = [
+        "can't make it", "cannot make it", "not coming", "won't make", "wont make",
+        "backing out", "back out", "stand down", "standing down", "cancel", "cancelling",
+        "canceled", "cancelled", "family emergency", "unavailable", "can't respond",
+        "cannot respond", "won't respond", "wont respond", "cant make it",
+        "fuck this", "screw this", "i'm out", "im out", "bailing", "bail", "hard pass"
+    ]
+    if any(k in tl for k in cancel_signals):
+        return {
+            "vehicle": "Not Responding",
+            "eta": "Cancelled",
+            "raw_status": "Cancelled",
+            "status_source": "Rules",
+            "status_confidence": 0.98,
+        }
 
-        # Not responding / off-topic signals -> Cancelled
-        if any(k in tl for k in [
-            "can't make it", "cannot make it", "not coming", "won't make", "won’t make", "backing out", "back out",
-            "stand down", "standing down", "cancel", "cancelling", "canceled", "cancelled",
-            "family emergency", "unavailable", "can't respond", "cannot respond", "won't respond", "cant make it"
-        ]):
-            return {"vehicle": "Not Responding", "eta": "Cancelled"}
+    # --- Vehicle detection (same as your current logic)
+    vehicle = "Unknown"
+    m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
+    if m:
+        vehicle = f"SAR-{m.group(1)}"
+    elif any(k in tl for k in ["pov", "personal vehicle", "own car", "driving myself", "my car"]):
+        vehicle = "POV"
+    elif "sar rig" in tl:
+        vehicle = "SAR Rig"
 
-        vehicle = "Unknown"
-        m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
-        if m:
-            vehicle = f"SAR-{m.group(1)}"
-        elif any(k in tl for k in ["pov", "personal vehicle", "own car", "driving myself", "my car"]):
-            vehicle = "POV"
-        elif "sar rig" in tl:
-            vehicle = "SAR Rig"
+    # --- ETA detection (your existing logic/math)
+    eta = "Unknown"
+    current_time = anchor_time
 
-        # ETA detection
-        eta = "Unknown"
-        m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
-        # Composite durations
-        m_hours_and_minutes = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
-        m_an_hour_and_minutes = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
-        # Also accept forms without the explicit 'minutes' word (e.g., 'an hour and 10')
-        m_hours_and_number = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\b", tl)
-        m_an_hour_and_number = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\b", tl)
-        m_half_hour = ("half" in tl and ("hour" in tl or "hr" in tl)) or re.search(r"\bhalf\s+an?\s+hour\b", tl)
-        m_min = re.search(r"\b(\d{1,3})\s*(min|mins|minutes)\b", tl)
-        m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
-        half_hr = bool(m_half_hour)
+    m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
+    m_hours_and_minutes = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
+    m_an_hour_and_minutes = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
+    m_hours_and_number = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\b", tl)
+    m_an_hour_and_number = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\b", tl)
+    m_half_hour = ("half" in tl and ("hour" in tl or "hr" in tl)) or re.search(r"\bhalf\s+an?\s+hour\b", tl)
+    m_min = re.search(r"\b(\d{1,3})\s*(min|mins|minutes)\b", tl)
+    m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
 
-        # Use the message's timestamp (if provided via base_time) to anchor duration math
-        current_time = anchor_time
-        if m_time:
-            eta = convert_eta_to_timestamp(m_time.group(1), current_time)
-        elif m_hours_and_minutes:
-            hours = int(m_hours_and_minutes.group(1))
-            mins = int(m_hours_and_minutes.group(2))
-            eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
-        elif m_an_hour_and_minutes:
-            mins = int(m_an_hour_and_minutes.group(1))
-            eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
-        elif m_hours_and_number:
-            hours = int(m_hours_and_number.group(1))
-            mins = int(m_hours_and_number.group(2))
-            eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
-        elif m_an_hour_and_number:
-            mins = int(m_an_hour_and_number.group(1))
-            eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
-        elif m_eta_compact:
-            # Interpret HHMM following 'eta' as time (e.g., ETA 1022 -> 10:22)
-            digits = m_eta_compact.group(1)
-            if len(digits) == 3:
-                hour = int(digits[0])
-                minute = int(digits[1:3])
-            else:
-                hour = int(digits[:2])
-                minute = int(digits[2:4])
-            if 0 <= hour <= 24 and 0 <= minute <= 59:
-                if hour == 24:
-                    hour = 0
-                eta = f"{hour:02d}:{minute:02d}"
-        elif m_half_hour:
-            eta = convert_eta_to_timestamp("half hour", current_time)
-        elif m_min:
-            eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
-        elif m_hr:
-            eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
-
-        return {"vehicle": vehicle, "eta": eta}
-
-    # Azure OpenAI with function calling
-    try:
-        current_time = anchor_time
-        current_time_str = current_time.strftime("%Y-%m-%d %H:%M:%S %Z")
-        current_time_short = current_time.strftime("%H:%M")
-
-        # Simplified prompt for direct parsing (no function calling)
-        prompt = (
-    "You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.\n"
-    f"Current time: {current_time_str} (24-hour format: {current_time_short})\n\n"
-    
-    "Return JSON with three fields: status, vehicle, eta\n\n"
-    
-    "STATUS DETECTION:\n"
-    "- 'responding': Actively responding with intention to arrive\n"
-    "  Examples: 'Responding POV ETA 08:45', 'POV ETA 0830', 'Headed to Taylor's Landing'\n"
-    "  IMPORTANT: ETA updates from already responding people stay 'responding'\n"
-    "  'Actually I'll be an hour and 10 min', 'Updated ETA 15:30', 'Make that 20 minutes'\n"
-    "- 'cancelled': Mission cancelled or person can't respond\n"
-    "  Examples: 'can't make it', 'backing out', '10-22', 'Mission canceled', 'Subject found'\n"
-    "- 'available': Can respond but no firm commitment (initial offer only)\n"
-    "  Examples: 'I can respond as IMT', 'I can help with planning'\n"
-    "  NOTE: If someone already responded, ETA updates are 'responding', not 'available'\n"
-    "- 'informational': Providing information, logistics, questions\n"
-    "  Examples: 'Key for 74 is in key box', 'Who can respond?', 'checking with Hayden'\n"
-    "- 'unknown': Cannot determine clear status\n\n"
-    
-    "CANCELLATION DETECTION - Return status 'cancelled':\n"
-    "- Examples of declining/negative responses:\n"
-    "  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'backing out'\n"
-    "  'Ok I can't make it', 'I also can't make it', 'Sorry, backing out'\n"
-    "- Special codes: '10-22' (or '1022') means mission complete/cancelled\n"
-    "  'Copied 10-22', 'Copy 10-22', '10-22', '1022 subj found'\n"
-    "- Mission status: 'Mission canceled', 'Mission cancelled', 'Subject found'\n"
-    "- Logistics/info only: 'Key for 74 is in key box', 'Who can respond?'\n\n"
-    
-    "VEHICLE EXTRACTION:\n"
-    "- SAR units: 'SAR-12', 'SAR 12', 'sar78', 'SAR-60' → format as 'SAR-XX'\n"
-    "- Personal vehicle: 'POV', 'personal vehicle', 'own car' → 'POV'\n"
-    "- Unknown/unclear → 'unknown'\n"
-    "Examples:\n"
-    "  'SAR-3 on the way' → 'SAR-3'\n"
-    "  'Responding sar78' → 'SAR-78'\n"
-    "  'Driving POV' → 'POV'\n"
-    "  'I can respond as IMT' → 'unknown'\n\n"
-    
-    "ETA EXTRACTION:\n"
-    "- Absolute times: '0830' → '08:30', '1150' → '11:50', '15:00' → '15:00'\n"
-    "- Relative times: Return the pattern EXACTLY as found, system will calculate\n"
-    "  * '15 minutes', '15min', '15 mins' → 'RELATIVE:15min'\n"
-    "  * '30min', '30 minutes' → 'RELATIVE:30min'\n"
-    "  * '45 minutes', '45min' → 'RELATIVE:45min'\n"
-    "  * '60min', '60 minutes', '1 hour' → 'RELATIVE:60min'\n"
-    "  * '90min', '90 minutes' → 'RELATIVE:90min'\n"
-    "  * 'hour and 10 min', 'hour and 10 minutes' → 'RELATIVE:70min'\n"
-    "  * 'hour and a half', '1.5 hours' → 'RELATIVE:90min'\n"
-    "  * '2 hours', '120 minutes' → 'RELATIVE:120min'\n"
-    "  * '2 hours', '120 minutes' → 'RELATIVE:120min'\n"
-    "  * 'in 20', 'be there in 20' → 'RELATIVE:20min'\n"
-    "- Unknown/unclear → 'unknown'\n"
-    "- If cancelled status → 'cancelled'\n\n"
-    f"  Current time {current_time_short}: 'ETA 15 minutes' → '{(current_time + timedelta(minutes=15)).strftime('%H:%M')}'\n"
-    "- No time mentioned → 'unknown'\n"
-    "- DON'T interpret 'Xmin' as 'X:00' - calculate relative time!\n"
-    "Examples:\n"
-    "  Current time 14:20, 'ETA 15:00' → '15:00'\n"
-    "  Current time 14:20, '30 min out' → '14:50'\n"
-    "  Current time 12:07, 'ETA 60min' → '13:07' (NOT '01:00'!)\n"
-    "  'POV ETA 0830' → '08:30'\n"
-    "  'Updated eta: arriving 11:30' → '11:30'\n\n"
-    
-    "COMPLETE EXAMPLES:\n"
-    "  'Responding POV ETA 08:45' → {\"status\": \"responding\", \"vehicle\": \"POV\", \"eta\": \"08:45\"}\n"
-    "  'can't make it, sorry' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
-    "  'I can respond as IMT' → {\"status\": \"available\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
-    "  'Key for 74 is in key box' → {\"status\": \"informational\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
-    "  '10-22' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
-    "  'Mission canceled. Subject found' → {\"status\": \"cancelled\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
-    "  'Who can respond to Vesper?' → {\"status\": \"informational\", \"vehicle\": \"unknown\", \"eta\": \"unknown\"}\n"
-    "  'SAR-5 ETA 15:45' → {\"status\": \"responding\", \"vehicle\": \"SAR-5\", \"eta\": \"15:45\"}\n"
-    "  'Responding sar78 1150' → {\"status\": \"responding\", \"vehicle\": \"SAR-78\", \"eta\": \"11:50\"}\n"
-    "  'Responding SAR7 ETA 60min' → {\"status\": \"responding\", \"vehicle\": \"SAR-7\", \"eta\": \"RELATIVE:60min\"}\n"
-    "  'SAR-3 ETA 30min' → {\"status\": \"responding\", \"vehicle\": \"SAR-3\", \"eta\": \"RELATIVE:30min\"}\n"
-    "  'ETA 45 minutes' → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:45min\"}\n"
-    "  'POV ETA 90min' → {\"status\": \"responding\", \"vehicle\": \"POV\", \"eta\": \"RELATIVE:90min\"}\n"
-    "  'Actually I'll be an hour and 10 min' (if already responding) → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:70min\"}\n"
-    "  'Updated ETA 20 minutes' (if already responding) → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:20min\"}\n"
-    "  'Make that 30 min' (if already responding) → {\"status\": \"responding\", \"vehicle\": \"unknown\", \"eta\": \"RELATIVE:30min\"}\n\n"
-    
-    f"MESSAGE: \"{text}\"\n\n"
-    "Return ONLY this JSON format: "
-    '{\"status\": \"responding|cancelled|available|informational|unknown\", \"vehicle\": \"value\", \"eta\": \"HH:MM|unknown\"}'
-)
-
-
-        logger.info(f"Calling Azure OpenAI with simplified prompt, deployment: {azure_openai_deployment}")
-        
-        # Call Azure OpenAI with simplified approach (no function calling)
-        response = cast(Any, client).chat.completions.create(
-            model=cast(str, azure_openai_deployment),
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-            max_tokens=500,
-        )
-        
-        message = response.choices[0].message
-        reply = (message.content or "").strip()
-
-        # Parse JSON from reply
-        parsed_json: Dict[str, str]
-        if reply.startswith("{") and reply.endswith("}"):
-            parsed_json = json.loads(reply)
+    if m_time:
+        eta = convert_eta_to_timestamp(m_time.group(1), current_time)
+    elif m_hours_and_minutes:
+        hours = int(m_hours_and_minutes.group(1)); mins = int(m_hours_and_minutes.group(2))
+        eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
+    elif m_an_hour_and_minutes:
+        mins = int(m_an_hour_and_minutes.group(1))
+        eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
+    elif m_hours_and_number:
+        hours = int(m_hours_and_number.group(1)); mins = int(m_hours_and_number.group(2))
+        eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
+    elif m_an_hour_and_number:
+        mins = int(m_an_hour_and_number.group(1))
+        eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
+    elif m_eta_compact:
+        digits = m_eta_compact.group(1)
+        if len(digits) == 3:
+            hour = int(digits[0]); minute = int(digits[1:3])
         else:
-            json_match = re.search(r"\{[^}]+\}", reply)
-            if json_match:
-                parsed_json = json.loads(json_match.group())
-            else:
-                logger.warning(f"No valid JSON found in response: '{reply}'")
-                return {"vehicle": "Unknown", "eta": "Unknown"}
+            hour = int(digits[:2]); minute = int(digits[2:4])
+        if 0 <= hour <= 24 and 0 <= minute <= 59:
+            if hour == 24: hour = 0
+            eta = f"{hour:02d}:{minute:02d}"
+    elif m_half_hour:
+        eta = convert_eta_to_timestamp("half hour", current_time)
+    elif m_min:
+        eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
+    elif m_hr:
+        eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
 
-        # Handle new status-based format
-        raw_status = None  # Preserve raw status for frontend
-        if "status" in parsed_json:
-            status = parsed_json.get("status", "unknown").lower()
-            vehicle = parsed_json.get("vehicle", "unknown")
-            eta = parsed_json.get("eta", "unknown")
-            
-            # Preserve the raw status for the frontend
-            raw_status = status.capitalize()
-            
-            # Convert status to legacy format for backward compatibility
-            if status == "cancelled":
-                return {"vehicle": "Not Responding", "eta": "Cancelled", "raw_status": raw_status}
-            elif status == "informational" and vehicle == "unknown" and eta == "unknown":
-                return {"vehicle": "Not Responding", "eta": "Cancelled", "raw_status": raw_status}
-            else:
-                # For responding, available, or unknown status, use the vehicle and eta as provided
-                if vehicle == "unknown":
-                    vehicle = "Unknown"
-                if eta == "unknown":
-                    eta = "Unknown"
-                parsed_json = {"vehicle": vehicle, "eta": eta, "raw_status": raw_status}
-        
-        # Legacy format validation (for old format responses)
-        if "vehicle" not in parsed_json or "eta" not in parsed_json:
-            logger.warning(f"Missing required fields in response: {parsed_json}")
-            return {"vehicle": "Unknown", "eta": "Unknown"}
+    # --- Rule-based status guess (lightweight + conservative)
+    raw_status = "Unknown"
+    responding_signals = [
+        "responding", "on my way", "omw", "en route", "enroute", "headed", "rolling", "leaving", "departing", "otw",
+        "arriving", "be there"
+    ]
+    available_signals = ["i can respond", "i can help", "available", "if needed"]
+    informational_signals = ["key for", "who can respond", "checking with", "need someone"]
 
-        # Apply additional validation to the AI's result
-        eta_value = parsed_json.get("eta", "Unknown")
-        # Normalize stand down to Cancelled
-        if isinstance(eta_value, str) and eta_value.strip().lower() in {"cancelled", "canceled", "stand down", "stand-down"}:
-            eta_value = "Cancelled"
-            
-        # Handle relative time calculations - detect patterns and calculate ourselves
-        if isinstance(eta_value, str):
-            # Check if this looks like an AI-miscalculated relative time
-            # Look for patterns in the original message that suggest relative time
-            original_text = text.lower()
-            
-            # Extract relative time patterns from the original message
-            import re
-            relative_patterns = [
-                # Composite first so we don't prematurely match just the minutes
-                (r'(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\s*min(?:ute)?s?', 'hours_plus_minutes'),
-                (r'(?:an|a)\s+hour\s*and\s*(\d+)\s*min(?:ute)?s?', 'hour_plus_minutes'),
-                # Ensure half-hour is captured before generic 'an hour'
-                (r'half\s+an?\s+hour', 'half_hour'),
-                # Match 'an hour' but not when preceded by 'half '
-                (r'(?<!half\s)(?:an|a)\s+hour\b', 'one_hour'),
-                (r'(\d+(?:\.\d+)?)\s*hour?s?(?:\s|$)', 'hours'),
-                (r'(\d+)\s*min(?:ute)?s?(?:\s|$)', 'minutes'),
-                (r'eta\s+(\d+)(?:\s|$)', 'minutes'),  # "ETA 90" pattern
-            ]
-            
-            for pattern, unit in relative_patterns:
-                match = re.search(pattern, original_text)
-                if match:
-                    if unit == 'hour_plus_minutes':
-                        # "hour and X min" = 60 + X minutes
-                        additional_minutes = int(match.group(1))
-                        total_minutes = 60 + additional_minutes
-                    elif unit == 'hours_plus_minutes':
-                        # "X hours and Y min" = (X * 60) + Y minutes
-                        hours = int(match.group(1))
-                        minutes = int(match.group(2))
-                        total_minutes = (hours * 60) + minutes
-                    elif unit == 'one_hour':
-                        total_minutes = 60
-                    elif unit == 'half_hour':
-                        total_minutes = 30
-                    else:
-                        number = int(match.group(1))
-                        # Convert to minutes
-                        if unit == 'hours':
-                            # Allow fractional hours too
-                            try:
-                                total_minutes = int(float(match.group(1)) * 60)
-                            except Exception:
-                                total_minutes = number * 60
-                        else:
-                            total_minutes = number
-                    
-                    # Only apply if it's a reasonable relative time (5min to 8 hours)
-                    if 5 <= total_minutes <= 480:
-                        # Calculate the new time using proper datetime arithmetic
-                        new_time = anchor_time + timedelta(minutes=total_minutes)
-                        calculated_eta = new_time.strftime("%H:%M")
-                        
-                        logger.info(f"Detected relative time pattern: {match.group(0)} ({total_minutes}min)")
-                        logger.info(f"Original AI eta: {eta_value}, Calculated eta: {calculated_eta}")
-                        
-                        # Replace the AI's calculation with our calculation
-                        eta_value = calculated_eta
-                        break
-            
-            # Also handle the RELATIVE: format if AI ever starts using it
-            if eta_value.startswith("RELATIVE:"):
-                relative_part = eta_value[9:]  # Remove "RELATIVE:" prefix
-                try:
-                    # Extract minutes from the relative time pattern
-                    minutes_match = re.search(r'(\d+)min', relative_part)
-                    hours_match = re.search(r'(\d+)\s*hour', relative_part)
-                    
-                    total_minutes = 0
-                    if minutes_match:
-                        total_minutes = int(minutes_match.group(1))
-                    elif hours_match:
-                        total_minutes = int(hours_match.group(1)) * 60
-                    
-                    if total_minutes > 0:
-                        # Calculate the new time using proper datetime arithmetic
-                        new_time = anchor_time + timedelta(minutes=total_minutes)
-                        eta_value = new_time.strftime("%H:%M")
-                        logger.info(f"Calculated relative time: {relative_part} + {total_minutes}min = {eta_value}")
-                    else:
-                        logger.warning(f"Could not parse relative time: {relative_part}")
-                        eta_value = "Unknown"
-                except Exception as e:
-                    logger.error(f"Error calculating relative time {eta_value}: {e}")
-                    eta_value = "Unknown"
-                
-        if eta_value not in ("Unknown", "Not Responding", "Cancelled"):
-            eta_after_duration = convert_eta_to_timestamp(eta_value, anchor_time)
-            if eta_after_duration != "Unknown":
-                eta_value = eta_after_duration
-            else:
-                validation_result = validate_and_format_time(eta_value)
-                if validation_result.get("valid"):
-                    eta_value = validation_result["normalized"]
-                    if validation_result.get("warning"):
-                        logger.warning(f"ETA validation warning: {validation_result['warning']}")
-                else:
-                    logger.warning(
-                        f"AI returned invalid ETA format '{eta_value}': {validation_result.get('error')}"
-                    )
-                    eta_value = "Unknown"
+    if eta != "Unknown":
+        raw_status = "Responding"
+        rule_conf = 0.99
+    elif any(s in tl for s in responding_signals):
+        raw_status = "Responding"; rule_conf = 0.8
+    elif any(s in tl for s in available_signals):
+        raw_status = "Available"; rule_conf = 0.7
+    elif any(s in tl for s in informational_signals):
+        raw_status = "Informational"; rule_conf = 0.7
+    else:
+        rule_conf = 0.0
 
-        # Ensure normalized/validated ETA is applied to payload
-        parsed_json["eta"] = eta_value
-        
-        # Include raw_status if it was captured
-        if "raw_status" in parsed_json:
-            parsed_json["raw_status"] = parsed_json["raw_status"]
-        
-        return parsed_json
-        
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e}")
-        return {"vehicle": "Unknown", "eta": "Unknown"}
-    except Exception as e:
-        logger.error(f"Azure OpenAI simplified parsing error: {e}", exc_info=True)
-        # Fallback to basic extraction without function calling
-        return {"vehicle": "Unknown", "eta": "Unknown"}
+    # --- Decide if we need semantic help
+    ambiguous_or_spicy = bool(re.search(r"\b(bail|bailing|i'm out|im out|fuck this|screw this|nope|hard pass)\b", tl))
+    need_llm = (
+        (raw_status == "Unknown") or
+        (ambiguous_or_spicy and raw_status not in {"Cancelled"})
+    )
+
+    # Only call LLM if enabled and available
+    if need_llm and (not FAST_LOCAL_PARSE) and client is not None:
+        # Optional: pass previous status context (you already compute it outside)
+        prev_hint = "responding" if "already responding" in tl else None
+        llm = classify_status_llm(client, text, prev_status=prev_hint)
+        llm_status = llm.get("status", "unknown")
+        if llm_status == "cancelled":
+            return {
+                "vehicle": "Not Responding",
+                "eta": "Cancelled",
+                "raw_status": "Cancelled",
+                "status_source": "LLM",
+                "status_confidence": llm.get("confidence", 0.85),
+                "status_evidence": llm.get("status_evidence", ""),
+            }
+        elif llm_status in {"responding", "available", "informational"}:
+            return {
+                "vehicle": vehicle,
+                "eta": eta,
+                "raw_status": llm_status.capitalize(),
+                "status_source": "LLM",
+                "status_confidence": llm.get("confidence", 0.75),
+                "status_evidence": llm.get("status_evidence", ""),
+            }
+        # else fall back to rules
+
+    # Default: return rules result
+    return {
+        "vehicle": vehicle,
+        "eta": eta,
+        "raw_status": raw_status,
+        "status_source": "Rules",
+        "status_confidence": rule_conf,
+    }
+
 
 def _normalize_display_name(raw_name: str) -> str:
     """Strip trailing parenthetical tags (e.g., '(OSU-4)') and trim whitespace."""
@@ -1306,6 +1164,10 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     
     # Use raw_status from AI parsing if available, otherwise fall back to eta_info status
     arrival_status = parsed.get("raw_status") or eta_info.get("status")
+    status_source = parsed.get("status_source")
+    status_confidence = parsed.get("status_confidence")
+    status_evidence = parsed.get("status_evidence")
+
 
     message_record: Dict[str, Any] = {
         "name": display_name,
@@ -1457,6 +1319,11 @@ def get_current_status(request: Request) -> JSONResponse:
             priority = 60   # Medium - active response without ETA
         elif eta != 'Unknown':
             priority = 70   # Medium-high - ETA provided
+        elif arrival_status == 'Available':
+            priority = 40
+        elif arrival_status == 'Informational':
+            priority = 15
+
         else:
             priority = 20   # Low-medium - generic message
             
