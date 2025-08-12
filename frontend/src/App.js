@@ -712,15 +712,15 @@ function MainApp() {
 
       {/* Stats Row */}
       <div className="stats-row">
-        <div className="stat-card">
-          <div className="stat-title">Messages</div>
-          <div className="stat-value">{totalMessages}</div>
-          <div className="stat-sub">Total messages</div>
-        </div>
         <div className="stat-card-Responders">
           <div className="stat-title">Responders</div>
           <div className="stat-value">{filteredUniqueResponders}/{totalUniqueResponders}</div>
           <div className="stat-sub">Unique users</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-title">Messages</div>
+          <div className="stat-value">{totalMessages}</div>
+          <div className="stat-sub">Total messages</div>
         </div>
         <div className="stat-card">
           <div className="stat-title">Avg ETA</div>
