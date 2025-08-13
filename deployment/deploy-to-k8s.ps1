@@ -23,7 +23,7 @@ param(
     [string]$ResourceGroupName = "respondr",
     
     [Parameter(Mandatory=$false)]
-    [string]$OpenAIDeploymentName = "gpt-5-nano",
+    [string]$OpenAIDeploymentName = "gpt-4.1-nano",
     
     [Parameter(Mandatory=$false)]
     [string]$ApiVersion = "2024-12-01-preview",
