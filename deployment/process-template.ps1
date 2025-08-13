@@ -49,33 +49,23 @@ $placeholderMap = @{
     '{{NAMESPACE_PLACEHOLDER}}' = $values['namespace']
     '{{DOMAIN_PLACEHOLDER}}' = $values['domain']
     '{{REPLICAS_PLACEHOLDER}}' = $values['replicas']
-    '{{OIDC_TENANT_SEGMENT}}' = ''  # computed below
-    '{{EMAIL_DOMAIN_ARGS}}' = ''    # computed below
-    '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}' = ''  # computed below
-    '{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}' = ''  # computed below
+    # Computed placeholders handled later; do NOT include them in the first pass
 }
 
-# Apply all basic placeholder replacements
+# Apply all basic placeholder replacements (always replace, even if empty)
 foreach ($placeholder in $placeholderMap.Keys) {
     $value = $placeholderMap[$placeholder]
+    $processedContent = $processedContent -replace [regex]::Escape($placeholder), ($value -ne $null ? $value : '')
     if ($value -ne $null -and $value -ne '') {
-        $processedContent = $processedContent -replace [regex]::Escape($placeholder), $value
         Write-Verbose "Replaced: $placeholder -> $value"
     } else {
-        # Only warn for placeholders we truly expect to have a value at this stage
-    if ($placeholder -ne '{{OIDC_TENANT_SEGMENT}}' -and $placeholder -ne '{{EMAIL_DOMAIN_ARGS}}' -and $placeholder -ne '{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}' -and $placeholder -ne '{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}') {
-            Write-Warning "No value found for placeholder: $placeholder"
-        }
+        Write-Verbose "No value for placeholder: $placeholder (left empty)"
     }
 }
 
 # Compute multi-tenant issuer segment and email domain args
 $multiTenant = ($values['multiTenantAuth'] -eq 'true' -or $values['multiTenantAuth'] -eq 'True' -or $values['multiTenantAuth'] -eq '1')
-if ($multiTenant) {
-    $placeholderMap['{{OIDC_TENANT_SEGMENT}}'] = 'common'
-} else {
-    $placeholderMap['{{OIDC_TENANT_SEGMENT}}'] = $values['azureTenantId']
-}
+$oidcTenantSegment = if ($multiTenant) { 'common' } else { $values['azureTenantId'] }
 
 # Build allowed email domains args for oauth2-proxy
 $emailArgs = ''
@@ -106,7 +96,7 @@ if ($multiTenant) {
     $emailArgs = $emailArgs.TrimEnd("`n")
     } catch { $emailArgs = "        - --email-domain=*" }
 }
-$placeholderMap['{{EMAIL_DOMAIN_ARGS}}'] = $emailArgs
+
 
 # Build allowed email domains string for application environment variable
 try {
@@ -127,7 +117,7 @@ try {
 } catch { 
     $allowedDomains = "scvsar.org,rtreit.com" 
 }
-$placeholderMap['{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}'] = $allowedDomains
+
 
 # Build allowed admin users string for application environment variable
 try {
@@ -146,18 +136,18 @@ try {
     }
     $allowedAdmins = ($adminList | ForEach-Object { $_.ToLower() }) -join ","
 } catch { $allowedAdmins = "" }
-$placeholderMap['{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}'] = $allowedAdmins
 
-# Apply replacements for computed placeholders
-foreach ($computed in @('{{OIDC_TENANT_SEGMENT}}','{{EMAIL_DOMAIN_ARGS}}','{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}','{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}')) {
-    $val = $placeholderMap[$computed]
-    if ($val -ne $null -and $val -ne '') {
-    $processedContent = $processedContent -replace [regex]::Escape($computed), $val
-        Write-Verbose "Replaced computed: $computed -> $val"
-    } else {
-        Write-Warning "Computed placeholder had no value: $computed"
-    }
-}
+
+# Ensure env var placeholders render as valid YAML even when empty
+$ALLOWED_EMAIL_DOMAINS_PLACEHOLDER = if ($allowedDomains -and $allowedDomains.Trim()) { $allowedDomains } else { '""' }
+$ALLOWED_ADMIN_USERS_PLACEHOLDER   = if ($allowedAdmins -and $allowedAdmins.Trim()) { $allowedAdmins } else { '""' }
+
+# Apply replacements for computed placeholders (always replace)
+# Now replace computed placeholders
+$processedContent = $processedContent -replace [regex]::Escape('{{OIDC_TENANT_SEGMENT}}'), ($null -ne $oidcTenantSegment ? $oidcTenantSegment : '')
+$processedContent = $processedContent -replace [regex]::Escape('{{EMAIL_DOMAIN_ARGS}}'),   ($null -ne $emailArgs ? $emailArgs : '')
+$processedContent = $processedContent -replace [regex]::Escape('{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}'), ($null -ne $ALLOWED_EMAIL_DOMAINS_PLACEHOLDER ? $ALLOWED_EMAIL_DOMAINS_PLACEHOLDER : '')
+$processedContent = $processedContent -replace [regex]::Escape('{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}'),   ($null -ne $ALLOWED_ADMIN_USERS_PLACEHOLDER ? $ALLOWED_ADMIN_USERS_PLACEHOLDER : '')
 
 # Handle OAuth2 conditional sections
 $useOAuth2 = $values['useOAuth2'] -eq 'true'

@@ -11,7 +11,9 @@ param(
     [switch]$SkipInfrastructure,
     [switch]$SkipImageBuild,
     [bool]$UseOAuth2 = $true,
-    [switch]$SetupAcrWebhook
+    [switch]$SetupAcrWebhook,
+    [string[]]$AllowedEmailDomains,
+    [string[]]$AllowedAdminUsers
 )
 
 Write-Host "🚀 Template-Based Respondr Deployment" -ForegroundColor Cyan
@@ -26,7 +28,15 @@ Write-Host ""
 
 # Step 1: Generate values from current environment
 Write-Host "📋 Step 1: Generating configuration from current Azure environment..." -ForegroundColor Green
-& ".\generate-values.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain -Namespace $Namespace -HostPrefix $HostPrefix
+$genArgs = @{
+    ResourceGroupName   = $ResourceGroupName
+    Domain              = $Domain
+    Namespace           = $Namespace
+    HostPrefix          = $HostPrefix
+}
+if ($AllowedEmailDomains) { $genArgs.AllowedEmailDomains = $AllowedEmailDomains }
+if ($AllowedAdminUsers)   { $genArgs.AllowedAdminUsers   = $AllowedAdminUsers }
+& ".\generate-values.ps1" @genArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Failed to generate values from environment"
     exit 1

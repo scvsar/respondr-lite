@@ -70,6 +70,10 @@ param(
     [Parameter(Mandatory=$false)]
     [switch]$DryRun,
 
+    # Optional: Pass Service Tree ID for app registration attribution (SFI tenants)
+    [Parameter(Mandatory=$false)]
+    [string]$ServiceTreeId,
+
     [Parameter(Mandatory=$false)]
     [switch]$SetupAcrWebhook,
 
@@ -79,6 +83,12 @@ param(
     [string]$GithubRepo,
     [Parameter(Mandatory=$false)]
     [string]$GithubBranch = "main"
+    ,
+    # Optional: Auth policy inputs for values generation
+    [Parameter(Mandatory=$false)]
+    [string[]]$AllowedEmailDomains,
+    [Parameter(Mandatory=$false)]
+    [string[]]$AllowedAdminUsers
 )
 
 $hostname = "$HostPrefix.$Domain"
@@ -222,7 +232,14 @@ if ($UseOAuth2) {
     Write-Host "===============================================" -ForegroundColor Yellow
 
     if (-not $DryRun) {
-    & (Join-Path $PSScriptRoot 'setup-oauth2.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain -Namespace $Namespace -HostPrefix $HostPrefix
+        $oauth2Args = @{
+            ResourceGroupName = $ResourceGroupName
+            Domain            = $Domain
+            Namespace         = $Namespace
+            HostPrefix        = $HostPrefix
+        }
+        if ($ServiceTreeId) { $oauth2Args.ServiceTreeId = $ServiceTreeId }
+        & (Join-Path $PSScriptRoot 'setup-oauth2.ps1') @oauth2Args
         Test-LastCommand "OAuth2 authentication setup failed"
         Write-Host "OAuth2 authentication configured successfully" -ForegroundColor Green
     } else {
@@ -356,10 +373,43 @@ Write-Host "=================================================================" -
 if (-not $DryRun) {
     # Generate values.yaml from current Azure environment
     Write-Host "Generating values.yaml from current Azure environment..." -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot 'generate-values.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain -Namespace $Namespace -HostPrefix $HostPrefix -ImageTag $ImageTag
+    $genArgs = @{
+        ResourceGroupName = $ResourceGroupName
+        Domain            = $Domain
+        Namespace         = $Namespace
+        HostPrefix        = $HostPrefix
+        ImageTag          = $ImageTag
+    }
+    if ($AllowedEmailDomains) { $genArgs.AllowedEmailDomains = $AllowedEmailDomains }
+    if ($AllowedAdminUsers)   { $genArgs.AllowedAdminUsers   = $AllowedAdminUsers }
+    & (Join-Path $PSScriptRoot 'generate-values.ps1') @genArgs
     Test-LastCommand "Failed to generate values from environment"
     Write-Host "Values generated successfully" -ForegroundColor Green
     
+    # If OAuth2 is disabled, force useOAuth2: "false" in values.yaml so template removes oauth2-proxy
+    if (-not $UseOAuth2) {
+        try {
+            $valuesPath = Join-Path $PSScriptRoot 'values.yaml'
+            if (Test-Path $valuesPath) {
+                $raw = Get-Content $valuesPath -Raw
+                if ($raw -match '(?m)^\s*useOAuth2\s*:') {
+                    $raw = [regex]::Replace($raw, '(?m)^\s*useOAuth2\s*:\s*"?[^"\r\n]*"?', 'useOAuth2: "false"')
+                } else {
+                    $raw += "`nuseOAuth2: `"false`"`n"
+                }
+                    if ($raw -match '(?m)^\s*useOAuth2\s*:') {
+                        $raw = [regex]::Replace($raw, '(?m)^\s*useOAuth2\s*:\s*"?[^"\r\n]*"?', 'useOAuth2: "false"')
+                    } else {
+                        $raw += "`nuseOAuth2: `"false`"`n"
+                    }
+                $raw | Out-File -FilePath $valuesPath -Encoding UTF8
+                Write-Host "Set useOAuth2=false in values.yaml (DisableOAuth2 requested)" -ForegroundColor Yellow
+            }
+        } catch {
+            Write-Warning "Could not update useOAuth2 in values.yaml: $_"
+        }
+    }
+
     # Process template to generate deployment file
     Write-Host "Processing deployment template..." -ForegroundColor Yellow
     $templateFile = "respondr-k8s-unified-template.yaml"
@@ -422,6 +472,25 @@ if (-not $DryRun) {
             Write-Host "Docker image built and pushed successfully" -ForegroundColor Green
         } finally {
             Set-Location $originalLocation
+        }
+    }
+    else {
+        # Even if skipping build, ensure AKS has pull permissions to ACR
+        try {
+            $valuesContent = Get-Content "values.yaml" -Raw
+            $acrName = ($valuesContent | Select-String 'acrName: "([^"]+)"').Matches[0].Groups[1].Value
+            Write-Host "Ensuring AKS cluster can pull from ACR (skip build path)..." -ForegroundColor Yellow
+            $aksCluster = az aks list -g $ResourceGroupName --query "[0].name" -o tsv
+            if ($aksCluster) {
+                az aks update -g $ResourceGroupName -n $aksCluster --attach-acr $acrName | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    Write-Host "✅ ACR attached to AKS cluster" -ForegroundColor Green
+                } else {
+                    Write-Warning "Failed to attach ACR to AKS (may already be attached)"
+                }
+            }
+        } catch {
+            Write-Warning "Could not ensure AKS has pull permission to ACR: $_"
         }
     }
     
@@ -529,10 +598,15 @@ Write-Host "=====================" -ForegroundColor Green
 
 if (-not $DryRun) {
     Write-Host "Infrastructure: Deployed" -ForegroundColor Green
-    Write-Host "AGIC & Authentication: Configured" -ForegroundColor Green
+    Write-Host "AGIC: Configured" -ForegroundColor Green
     Write-Host "Let's Encrypt Setup: Configured via cert-manager" -ForegroundColor Green
-    Write-Host "OAuth2 Authentication: Configured with Azure AD" -ForegroundColor Green
-    Write-Host "Application: Deployed to Kubernetes with OAuth2 proxy" -ForegroundColor Green
+    if ($UseOAuth2) {
+        Write-Host "OAuth2 Authentication: Configured with Azure AD" -ForegroundColor Green
+        Write-Host "Application: Deployed with oauth2-proxy" -ForegroundColor Green
+    } else {
+        Write-Host "OAuth2 Authentication: Disabled (using direct backend access)" -ForegroundColor Yellow
+        Write-Host "Application: Deployed without oauth2-proxy (service targets port 8000)" -ForegroundColor Green
+    }
     Write-Host ""
     Write-Host "🌐 Access Information:" -ForegroundColor Cyan
     Write-Host "  HTTP:  http://$hostname (redirects to HTTPS)" -ForegroundColor White

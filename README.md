@@ -74,6 +74,11 @@ cd deployment
 
 # Include ACR webhook setup for automatic redeployments
 ./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
+
+# OPTIONAL: Set auth policy up front (no manual edits to values.yaml)
+./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
+  -AllowedEmailDomains "contoso.org","fabrikam.org" `
+  -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
 ```
 
 What this does:
@@ -106,6 +111,15 @@ allowedAdminUsers:
 
 This yields multi‑tenant sign‑in with app‑level authorization.
 
+Auth policy quick‑set (generate up front)
+
+```powershell
+cd deployment
+./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
+  -AllowedEmailDomains "contoso.org","fabrikam.org" `
+  -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
+```
+
 ## Template‑based deployment (portable config)
 
 Generated at deploy time (not committed):
@@ -120,7 +134,9 @@ Source templates you can read and version:
 Manual template flow (optional):
 ```powershell
 cd deployment
-./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
+./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
+  -AllowedEmailDomains "your-org.org","partners.org" `
+  -AllowedAdminUsers "first.admin@your-org.org","second.admin@partners.org"
 ./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
 
 # Include ACR webhook setup for automatic redeployments

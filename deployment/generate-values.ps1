@@ -11,7 +11,11 @@ param(
     [string]$HostPrefix = "respondr",
 
     [Parameter(Mandatory = $false)]
-    [string]$ImageTag = "latest"
+    [string]$ImageTag = "latest",
+
+    # Optional overrides
+    [string[]]$AllowedEmailDomains,
+    [string[]]$AllowedAdminUsers
 )
 
 Write-Host "🔧 Generating deployment configuration from current Azure environment..." -ForegroundColor Cyan
@@ -81,6 +85,20 @@ $oauth2RedirectUrl = "https://$hostname/oauth2/callback"
 
 # Generate values.yaml
 Write-Host "📝 Generating values.yaml..." -ForegroundColor Green
+
+# Prepare YAML for allowed email domains
+$allowedEmailDomainsLines = if ($AllowedEmailDomains -and $AllowedEmailDomains.Count -gt 0) {
+    ($AllowedEmailDomains | ForEach-Object { '    - "' + ($_ -replace '"', '""') + '"' }) -join "`n"
+} else {
+    '    - "scvsar.org"' + "`n" + '    - "rtreit.com"'
+}
+
+# Prepare YAML for allowed admin users (commented examples if none provided)
+$allowedAdminUsersBlock = if ($AllowedAdminUsers -and $AllowedAdminUsers.Count -gt 0) {
+    ($AllowedAdminUsers | ForEach-Object { '    - "' + ($_ -replace '"', '""') + '"' }) -join "`n"
+} else {
+    '    # - "alice@example.com"' + "`n" + '    # - "bob@contoso.com"'
+}
 $valuesContent = @"
 # Environment Configuration Values
 # Generated on: $(Get-Date -Format "yyyy-MM-dd HH:mm:ss")
@@ -108,8 +126,9 @@ oauth2TenantId: "$azureTenantId"
 oauth2RedirectUrl: "$oauth2RedirectUrl"
 multiTenantAuth: "true"
 allowedEmailDomains:
-    - "scvsar.org"
-    - "rtreit.com"
+$allowedEmailDomainsLines
+allowedAdminUsers:
+$allowedAdminUsersBlock
 
 # Domain Configuration
 domain: "$Domain"

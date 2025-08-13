@@ -16,6 +16,11 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$HostPrefix = "respondr"
+,
+    # Optional: In certain Microsoft-owned tenants (SFI), app creation requires a Service Tree ID
+    # Do NOT hardcode this value; pass it via -ServiceTreeId when running the script
+    [Parameter(Mandatory=$false)]
+    [string]$ServiceTreeId
 )
 
 Write-Host "Setting up OAuth2 Proxy with Azure AD integration..." -ForegroundColor Green
@@ -36,50 +41,124 @@ $hostname = "$HostPrefix.$Domain"
 Write-Host "Tenant ID: $tenantId" -ForegroundColor Cyan
 Write-Host "Redirect URI: $redirectUri" -ForegroundColor Cyan
 
-# Check if app registration already exists
-Write-Host "Checking for existing app registration..." -ForegroundColor Yellow
-$existingApp = az ad app list --display-name $AppName --query "[0]" -o json 2>$null | ConvertFrom-Json
+# Helper: Invoke Microsoft Graph via az rest and return JSON
+function Invoke-Graph {
+    param(
+        [Parameter(Mandatory=$true)][string]$Method,
+        [Parameter(Mandatory=$true)][string]$Url,
+        [Parameter(Mandatory=$false)]$Body
+    )
+    $tempFile = $null
+    try {
+        # Acquire MS Graph token (cache per session)
+        if (-not $script:GraphAccessToken) {
+            $token = az account get-access-token --resource-type ms-graph --query accessToken -o tsv 2>$null
+            if (-not $token) {
+                $token = az account get-access-token --resource https://graph.microsoft.com/ --query accessToken -o tsv 2>$null
+            }
+            if (-not $token) { throw "Failed to acquire Microsoft Graph access token via Azure CLI" }
+            $script:GraphAccessToken = $token
+        }
+
+    $headersJson = @{ Authorization = ("Bearer {0}" -f $script:GraphAccessToken); 'Content-Type' = 'application/json'; Accept = 'application/json' } | ConvertTo-Json -Compress
+    $args = @('--method', $Method, '--url', $Url, '--headers', $headersJson)
+        if ($null -ne $Body) {
+            if ($Body -is [string]) {
+                $jsonBody = $Body
+                $args += @('--body', $jsonBody)
+            } else {
+                $jsonBody = ($Body | ConvertTo-Json -Depth 20 -Compress)
+                $tempFile = Join-Path $env:TEMP ("graph_body_{0}.json" -f ([guid]::NewGuid()))
+                Set-Content -Path $tempFile -Value $jsonBody -Encoding UTF8 -NoNewline
+                $args += @('--body', '@' + $tempFile)
+            }
+        }
+        $raw = az rest @args -o json 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning ("Microsoft Graph call failed ({0} {1}): {2}" -f $Method, $Url, ($raw -join "`n"))
+            return $null
+        }
+        if ($raw) {
+            try { return ($raw | ConvertFrom-Json) } catch { return $null }
+        } else { return $null }
+    } finally {
+        if ($tempFile -and (Test-Path $tempFile)) { Remove-Item -Path $tempFile -ErrorAction SilentlyContinue }
+    }
+}
+
+# Use Microsoft Graph for app discovery/creation to support Service Tree enforcement (MSIT/SFI tenants)
+Write-Host "Checking for existing app registration (Microsoft Graph)..." -ForegroundColor Yellow
+$filterExpr = "displayName eq '$AppName'"
+$listUrl = "https://graph.microsoft.com/v1.0/applications?`$filter=" + ([uri]::EscapeDataString($filterExpr))
+$listResult = Invoke-Graph -Method GET -Url $listUrl
+$existingApp = $null
+if ($listResult -and $listResult.value -and $listResult.value.Count -gt 0) {
+    $existingApp = $listResult.value[0]
+} elseif (-not $listResult) {
+    # Try beta as a fallback
+    $listUrlBeta = "https://graph.microsoft.com/beta/applications?`$filter=" + ([uri]::EscapeDataString($filterExpr))
+    $listResult = Invoke-Graph -Method GET -Url $listUrlBeta
+    if ($listResult -and $listResult.value -and $listResult.value.Count -gt 0) {
+        $existingApp = $listResult.value[0]
+    }
+}
 
 if ($existingApp) {
     Write-Host "Found existing app registration: $($existingApp.displayName)" -ForegroundColor Green
+    $graphAppId = $existingApp.id
     $appId = $existingApp.appId
-    
-    # Update to multi-tenant and ensure redirect URI is included (append if missing)
+
+    # Merge redirect URIs and set multi-tenant; optionally update Service Tree ref
     Write-Host "Updating app to multi-tenant and ensuring redirect URI exists..." -ForegroundColor Yellow
-    $current = az ad app show --id $appId -o json | ConvertFrom-Json
     $existingUris = @()
-    try { $existingUris = @($current.web.redirectUris) } catch { $existingUris = @() }
+    try { $existingUris = @($existingApp.web.redirectUris) } catch { $existingUris = @() }
     if (-not ($existingUris -contains $redirectUri)) {
-        $newUris = @($existingUris + @($redirectUri) | Where-Object { $_ })
+        $newUris = @($existingUris + @($redirectUri) | Where-Object { $_ } | Select-Object -Unique)
     } else {
         $newUris = $existingUris
     }
-    if ($newUris.Count -gt 0) {
-        az ad app update --id $appId --sign-in-audience "AzureADMultipleOrgs" --web-redirect-uris $newUris 2>$null
-    } else {
-        az ad app update --id $appId --sign-in-audience "AzureADMultipleOrgs" --web-redirect-uris $redirectUri 2>$null
+    $patchBody = @{ signInAudience = 'AzureADMultipleOrgs'; web = @{ redirectUris = @($newUris) } }
+    if ($ServiceTreeId) { $patchBody.serviceManagementReference = $ServiceTreeId }
+    $patch = Invoke-Graph -Method PATCH -Url "https://graph.microsoft.com/v1.0/applications/$graphAppId" -Body $patchBody
+    if ($null -eq $patch) {
+        # Fallback to beta endpoint if v1.0 rejects fields
+        $patch = Invoke-Graph -Method PATCH -Url "https://graph.microsoft.com/beta/applications/$graphAppId" -Body $patchBody
+        if ($null -eq $patch) { Write-Host "Patch request completed (no content returned) or failed; proceeding idempotently" -ForegroundColor Yellow }
     }
 } else {
-    # Create new app registration
-    Write-Host "Creating new Azure AD app registration..." -ForegroundColor Yellow
-    $app = az ad app create `
-        --display-name $AppName `
-        --web-redirect-uris $redirectUri `
-        --sign-in-audience "AzureADMultipleOrgs" `
-        -o json | ConvertFrom-Json
-    
-    if (-not $app) {
-        Write-Error "Failed to create app registration"
-        exit 1
+    # Create new app registration via Microsoft Graph to include Service Tree ID when provided
+    Write-Host "Creating new Azure AD app registration (Microsoft Graph)..." -ForegroundColor Yellow
+    $createBody = @{ displayName = $AppName; signInAudience = 'AzureADMultipleOrgs'; web = @{ redirectUris = @($redirectUri) } }
+    if ($ServiceTreeId) { $createBody.serviceManagementReference = $ServiceTreeId }
+    $created = Invoke-Graph -Method POST -Url 'https://graph.microsoft.com/v1.0/applications' -Body $createBody
+    if (-not $created) {
+        # Fallback to beta endpoint if v1.0 rejects fields (e.g., serviceManagementReference)
+        $created = Invoke-Graph -Method POST -Url 'https://graph.microsoft.com/beta/applications' -Body $createBody
+        if (-not $created) {
+            Write-Error "Failed to create app registration"
+            exit 1
+        }
     }
-    
-    $appId = $app.appId
+    $graphAppId = $created.id
+    $appId = $created.appId
     Write-Host "Created app registration with ID: $appId" -ForegroundColor Green
 }
 
 # Create/reset client secret
 Write-Host "Creating client secret..." -ForegroundColor Yellow
-$clientSecret = az ad app credential reset --id $appId --append --query password -o tsv
+$clientSecret = az ad app credential reset --id $appId --append --query password -o tsv 2>$null
+if (-not $clientSecret -or $LASTEXITCODE -ne 0) {
+    Write-Warning "az ad app credential reset failed or returned empty. Falling back to Microsoft Graph addPassword API."
+    $end = (Get-Date).AddYears(2).ToUniversalTime().ToString('o')
+    $pwdBody = @{ passwordCredential = @{ displayName = "$AppName-secret"; endDateTime = $end } }
+    $pwdResp = Invoke-Graph -Method POST -Url ("https://graph.microsoft.com/v1.0/applications/{0}/addPassword" -f $graphAppId) -Body $pwdBody
+    if ($pwdResp -and $pwdResp.secretText) {
+        $clientSecret = $pwdResp.secretText
+    } else {
+        Write-Error "Failed to create client secret via Microsoft Graph"
+        exit 1
+    }
+}
 
 if (-not $clientSecret) {
     Write-Error "Failed to create client secret"
