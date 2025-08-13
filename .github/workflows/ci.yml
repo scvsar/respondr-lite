@@ -49,11 +49,31 @@ jobs:
           WEBHOOK_API_KEY: test-key
         run: |
           source .venv/bin/activate
-          pytest -q backend --ignore=backend/test_system.py
+          pytest -q backend/tests --ignore=backend/tests/test_system.py
+
+  test-frontend:
+    name: Frontend tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Run tests
+        working-directory: frontend
+        run: npm test -- --watchAll=false --ci
 
   build-and-push:
     name: Build and push Docker image to ACR
-    needs: test-backend
+    needs: [test-backend, test-frontend]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:

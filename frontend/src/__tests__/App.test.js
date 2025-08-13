@@ -18,7 +18,7 @@ jest.mock('react-router-dom', () => {
   return Mocked;
 });
 import { render, screen, waitFor, act } from '@testing-library/react';
-import App from './App';
+import App from '../App';
 
 // Mock fetch API for all tests
 beforeEach(() => {

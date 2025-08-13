@@ -2,6 +2,8 @@
 
 This repo supports deploying a separate pre-production environment into its own Kubernetes namespace and DNS host on the same Application Gateway/Public IP.
 
+Use `deploy-complete.ps1` with pre-production parameters for the simplest end-to-end flow. Helper scripts that previously duplicated this logic have been archived under `_attic/`.
+
 ## Overview
 
 **Key Features:**

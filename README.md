@@ -2,6 +2,14 @@
 
 A web app to track responses to Search and Rescue call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder details (vehicle and ETA), normalizes data, and shows it on a secure, real‑time dashboard.
 
+## Quick start
+
+- **Run tests**: `./run-tests.ps1`
+- **Start local dev**: `./dev-local.ps1 -Full` for backend+frontend or `./dev-local.ps1` for backend only
+- **Deploy**: `./deployment/deploy-complete.ps1 -ResourceGroupName <rg> -Domain <domain>`
+
+Archived scripts and experimental tests live under `_attic/` (see `_attic/WHY.md`).
+
 ## Highlights
 
 - Multi‑tenant Azure AD auth via OAuth2 Proxy sidecar (domain‑based allow list)
@@ -286,9 +294,9 @@ Key URLs (replace hosts for your setup)
 - Production: https://respondr.<your-domain> (webhook: `/webhook`, API: `/api/responders`)
 
 Common test flows (from `backend/`)
-- Webhook, local default: `python test_webhook.py`
-- Webhook, production: `python test_webhook.py --production`
-- Preprod smoke and custom message: `python test_preprod.py [--name "Your Name" --message "Your test message"]`
+ - Webhook, local default: `python tests/test_webhook.py`
+ - Webhook, production: `python tests/test_webhook.py --production`
+ - Preprod smoke and custom message: `python tests/test_preprod.py [--name "Your Name" --message "Your test message"]`
 - ACR webhook unit tests: `pytest test_acr_webhook.py -v`
 
 Manual verification (preprod/prod)
