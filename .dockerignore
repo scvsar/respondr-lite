@@ -32,7 +32,7 @@ Thumbs.db
 *.log
 
 # Test files
-backend/test_*.py
+backend/tests/
 
 # Deployment files
 deployment/

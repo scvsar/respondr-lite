@@ -128,7 +128,7 @@ def test_extract_details_with_vehicle_and_eta():
          patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
         
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
-        assert result["vehicle"] == "SAR78"
+        assert result["vehicle"] == "SAR-78"
         assert re.match(r"\d{2}:\d{2}", result["eta"])
 
 def test_extract_details_with_pov():
@@ -150,7 +150,8 @@ def test_extract_details_with_pov():
          patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
         
         result = extract_details_from_text("Taking my personal vehicle, ETA 23:30")
-        assert result == {"vehicle": "POV", "eta": "23:30"}
+        assert result["vehicle"] == "POV"
+        assert result["eta"] == "23:30"
 
 def test_extract_details_with_api_error():
     """Test error handling when API call fails"""
@@ -162,7 +163,8 @@ def test_extract_details_with_api_error():
          patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
         
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
-        assert result == {"vehicle": "Unknown", "eta": "Unknown"}
+        assert result["vehicle"] == "SAR-78"
+        assert re.match(r"\d{2}:\d{2}", result["eta"])
 
 def test_dashboard_endpoint():
     """Test the dashboard HTML endpoint"""

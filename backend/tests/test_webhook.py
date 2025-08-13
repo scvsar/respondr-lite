@@ -10,8 +10,8 @@ Security Features:
 - Automatic environment detection and setup
 
 Usage:
-  python test_webhook.py            # Test local endpoint
-  python test_webhook.py --production  # Test production endpoint
+  python tests/test_webhook.py            # Test local endpoint
+  python tests/test_webhook.py --production  # Test production endpoint
 
 Prerequisites:
 - Run create-secrets.ps1 to generate .env file with current API keys
