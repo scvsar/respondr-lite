@@ -35,7 +35,6 @@
     .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro"
     
 .EXAMPLE
-    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro" -UseOAuth2:$false
     .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro" -DisableOAuth2
 #>
 
@@ -397,11 +396,6 @@ if (-not $DryRun) {
                 } else {
                     $raw += "`nuseOAuth2: `"false`"`n"
                 }
-                    if ($raw -match '(?m)^\s*useOAuth2\s*:') {
-                        $raw = [regex]::Replace($raw, '(?m)^\s*useOAuth2\s*:\s*"?[^"\r\n]*"?', 'useOAuth2: "false"')
-                    } else {
-                        $raw += "`nuseOAuth2: `"false`"`n"
-                    }
                 $raw | Out-File -FilePath $valuesPath -Encoding UTF8
                 Write-Host "Set useOAuth2=false in values.yaml (DisableOAuth2 requested)" -ForegroundColor Yellow
             }
@@ -618,11 +612,15 @@ if (-not $DryRun) {
     Write-Host "  Header: X-ACR-Token with the value from deployment/secrets.yaml (ACR_WEBHOOK_TOKEN)" -ForegroundColor White
     Write-Host "  Action: Push; Repo: respondr" -ForegroundColor White
     Write-Host "" 
-    Write-Host "🔐 Authentication:" -ForegroundColor Cyan
-    Write-Host "  - OAuth2 Proxy with Azure AD authentication is ENABLED" -ForegroundColor White
-    Write-Host "  - Users WILL be challenged to sign in with Entra/Azure AD" -ForegroundColor White
-    Write-Host "  - Authentication is handled by oauth2-proxy sidecar container" -ForegroundColor White
-    Write-Host "  - No application code changes required" -ForegroundColor White
+    if ($UseOAuth2) {
+        Write-Host "🔐 Authentication:" -ForegroundColor Cyan
+        Write-Host "  - OAuth2 Proxy with Azure AD authentication is ENABLED" -ForegroundColor White
+        Write-Host "  - Users WILL be challenged to sign in with Entra/Azure AD" -ForegroundColor White
+        Write-Host "  - Authentication is handled by oauth2-proxy sidecar container" -ForegroundColor White
+        Write-Host "  - No application code changes required" -ForegroundColor White
+    } else {
+        Write-Host "🔐 Authentication: DISABLED (direct access)" -ForegroundColor Yellow
+    }
     Write-Host ""
     Write-Host "🔒 SSL Certificates:" -ForegroundColor Cyan
     Write-Host "  - Let's Encrypt certificates will be automatically provisioned" -ForegroundColor White
