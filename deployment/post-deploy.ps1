@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Post-deployment configuration for the respondr app.
+    Post-deployment configuration for the excalibur app.
 
 .DESCRIPTION
     - Fetches deployment outputs (AKS cluster name, ACR name, OpenAI account name)
@@ -272,8 +272,8 @@ az aks get-credentials `
     --overwrite-existing
 
 # 3.5) Create dedicated namespace and configure workload identity
-Write-Host "`nCreating dedicated namespace for respondr..." -ForegroundColor Yellow
-kubectl create namespace respondr --dry-run=client -o yaml | kubectl apply -f -
+Write-Host "`nCreating dedicated namespace for excalibur..." -ForegroundColor Yellow
+kubectl create namespace excalibur --dry-run=client -o yaml | kubectl apply -f -
 
 Write-Host "`nEnsuring user-assigned managed identity and workload identity setup..." -ForegroundColor Yellow
     $identity = az identity show --name $podIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
@@ -320,7 +320,7 @@ if ($webhookPods.items.Count -gt 0) {
 }
 
 $issuer = az aks show --name $aksClusterName --resource-group $ResourceGroupName --query "oidcIssuerProfile.issuerUrl" -o tsv
-$ficName = "respondr-fic"
+$ficName = "excalibur-fic"
 
 # Create federated credential with templated namespace
 az identity federated-credential create `
@@ -328,16 +328,16 @@ az identity federated-credential create `
     --identity-name $podIdentityName `
     --resource-group $ResourceGroupName `
     --issuer $issuer `
-    --subject "system:serviceaccount:respondr:respondr-sa" `
+    --subject "system:serviceaccount:excalibur:excalibur-sa" `
     --audience "api://AzureADTokenExchange" 2>$null
 
-# Create service account in the respondr namespace
-kubectl create serviceaccount respondr-sa -n respondr --dry-run=client -o yaml | kubectl apply -f -
-kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/client-id=$podIdentityClientId --overwrite
+# Create service account in the excalibur namespace
+kubectl create serviceaccount excalibur-sa -n excalibur --dry-run=client -o yaml | kubectl apply -f -
+kubectl annotate serviceaccount excalibur-sa -n excalibur azure.workload.identity/client-id=$podIdentityClientId --overwrite
 
 # Get tenant ID for optional annotation
 $tenantId = az account show --query tenantId -o tsv
-kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/tenant-id=$tenantId --overwrite
+kubectl annotate serviceaccount excalibur-sa -n excalibur azure.workload.identity/tenant-id=$tenantId --overwrite
 
 # 4) Attach ACR (if one exists)
 if ($acrName) {
@@ -891,7 +891,7 @@ if (Test-Path $testPodYaml) {
 
 # 7) Validate AGIC ingress and Azure DNS
 Write-Host "`nValidating Application Gateway ingress and DNS..." -ForegroundColor Yellow
-$ingressIp = kubectl get ingress respondr-ingress -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+$ingressIp = kubectl get ingress excalibur-ingress -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
 if ($ingressIp) {
     Write-Host "Ingress IP: $ingressIp" -ForegroundColor Green
     try {
@@ -906,8 +906,8 @@ if ($ingressIp) {
 
 $dnsZone = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv
 if ($dnsZone) {
-    $fqdn = "respondr.$dnsZone"
-    $dnsIp = az network dns record-set a show --resource-group $ResourceGroupName --zone-name $dnsZone --name respondr --query "arecords[0].ipv4Address" -o tsv 2>$null
+    $fqdn = "excalibur.$dnsZone"
+    $dnsIp = az network dns record-set a show --resource-group $ResourceGroupName --zone-name $dnsZone --name excalibur --query "arecords[0].ipv4Address" -o tsv 2>$null
     if ($dnsIp) { Write-Host "DNS A record for $fqdn -> $dnsIp" -ForegroundColor Green }
     try {
         Invoke-WebRequest -Uri "https://$fqdn" -UseBasicParsing -TimeoutSec 5 | Out-Null
@@ -944,7 +944,7 @@ if ($openAiState -eq "Succeeded") {
             --resource-group $ResourceGroupName `
             --deployment-name "gpt-5-nano" `
             --model-name "gpt-5-nano" `
-            --model-version "2025-04-14" `
+            --model-version "2025-08-07" `
             --model-format "OpenAI" `
             --sku-name "GlobalStandard" `
             --sku-capacity 200 2>&1
@@ -980,3 +980,4 @@ if ($storageAccountName) {
 }
 
 Write-Host "`nPost-deployment configuration completed successfully!" -ForegroundColor Green
+
