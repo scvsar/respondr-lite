@@ -102,7 +102,7 @@ function Test-GitAvailable {
 function Get-CaseMap {
     param([string]$Old,[string]$New,[string[]]$AlsoTokens)
 
-    $map = [ordered]@{}
+    $map = @{}
     function title([string]$s){ if([string]::IsNullOrWhiteSpace($s)){return $s}; return $s.Substring(0,1).ToUpper() + $s.Substring(1).ToLower() }
 
     # core name variants
@@ -144,7 +144,7 @@ function Test-BinaryFile {
     } catch { return $true }
 }
 
-function Replace-In-Content {
+function Update-InContent {
     param([string]$File,[hashtable]$CaseMap)
     try {
         $original = Get-Content -LiteralPath $File -Raw -ErrorAction Stop
@@ -154,9 +154,7 @@ function Replace-In-Content {
     }
 
     $updated = $original
-    $order = $CaseMap.Keys |
-      Where-Object { $_ -and $_.Length -gt 0 } |
-      Sort-Object { $_.Length } -Descending
+    $order = $CaseMap.Keys | Where-Object { $_ -and $_.Length -gt 0 } | Sort-Object { $_.Length } -Descending
     foreach ($old in $order) {
         $new = $CaseMap[$old]
         # case-sensitive replacement for explicit variants
@@ -175,7 +173,7 @@ function Replace-In-Content {
     return $false
 }
 
-function Apply-Name-Replacements {
+function Get-NameReplacements {
     param([string]$Name,[hashtable]$CaseMap)
     $result = $Name
     $order = $CaseMap.Keys |
@@ -193,7 +191,7 @@ function Rename-PathIfNeeded {
     $parent = [System.IO.Path]::GetDirectoryName($Path)
     if (-not $parent) { $parent = [System.IO.Path]::GetPathRoot($Path) }
     $leaf   = [System.IO.Path]::GetFileName($Path)
-    $newLeaf = Apply-Name-Replacements -Name $leaf -CaseMap $CaseMap
+    $newLeaf = Get-NameReplacements -Name $leaf -CaseMap $CaseMap
     if ($newLeaf -eq $leaf) { return $Path }
     $newPath = Join-Path -Path $parent -ChildPath $newLeaf
     if ($DryRun) {
@@ -330,7 +328,7 @@ foreach ($it in $renameTargets) {
 # Optionally rename root folder last
 if ($RenameRootDirectory) {
     $rootLeaf = Split-Path -Leaf $root
-    $newRootLeaf = Apply-Name-Replacements -Name $rootLeaf -CaseMap $caseMap
+    $newRootLeaf = Get-NameReplacements -Name $rootLeaf -CaseMap $caseMap
     if ($newRootLeaf -ne $rootLeaf) {
         $parent = Split-Path -LiteralPath $root
         $newRootPath = Join-Path $parent $newRootLeaf
@@ -365,7 +363,7 @@ foreach ($f in $allFilesAfterRename) {
     if (Test-BinaryFile -Path $f.FullName -BinaryExtensions $BinaryExtensions) { continue }
     $filesProcessed++
     try {
-        if (Replace-In-Content -File $f.FullName -CaseMap $caseMap) { $contentChanged++ }
+        if (Update-InContent -File $f.FullName -CaseMap $caseMap) { $contentChanged++ }
     } catch {
         Write-Skip "Skipping file due to error: $fFull :: $($_.Exception.Message)"
     }
