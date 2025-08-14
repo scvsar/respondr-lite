@@ -120,7 +120,7 @@ try {
                 }
             } else {
                 # No deployment specified, try to find a reasonable default by model or name prefix
-                $preferredModels = @("gpt-4.1-nano", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-35-turbo")
+                $preferredModels = @("gpt-5-nano", "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-35-turbo")
                 $found = $null
 
                 foreach ($preferred in $preferredModels) {

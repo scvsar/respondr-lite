@@ -36,7 +36,6 @@ def test_azure_openai_connection():
         response = client.chat.completions.create(
             model=deployment,
             messages=[{"role": "user", "content": "Hello! Can you confirm this connection is working?"}],
-            temperature=0,
         )
         elapsed = time.time() - start_time
         print(f"\nAPI call took {elapsed:.2f} seconds.")

@@ -12,18 +12,18 @@
     4. Verifies data processing and dashboard functionality
 
 .PARAMETER Domain
-    The domain to test (default: paincave.pro)
+    The domain to test (default: rtreit.com)
 
 .PARAMETER Namespace
     The Kubernetes namespace (default: respondr)
 
 .EXAMPLE
-    .\test-end-to-end.ps1 -Domain "paincave.pro"
+    .\test-end-to-end.ps1 -Domain "rtreit.com"
 #>
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Domain = "paincave.pro",
+    [string]$Domain = "rtreit.com",
     
     [Parameter(Mandatory=$false)]
     [string]$Namespace = "respondr"

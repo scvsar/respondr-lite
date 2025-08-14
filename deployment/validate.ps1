@@ -3,7 +3,7 @@ param(
     [string]$ResourceGroupName,
 
     [Parameter(Mandatory=$false)]
-    [string]$Domain = "paincave.pro",
+    [string]$Domain = "rtreit.com",
 
     [Parameter(Mandatory=$false)]
     [string]$Namespace = "respondr",
