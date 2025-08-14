@@ -2,10 +2,10 @@
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $true)]
-    [string]$NewName,
-    
-    [Parameter()]
     [string]$OldName,
+    
+    [Parameter(Mandatory = $true)]
+    [string]$NewName,
     
     [Parameter()]
     [string[]]$IncludePaths,
@@ -47,14 +47,17 @@ function Get-FullPath {
 $ScriptSelfFull = Get-FullPath -Path $ScriptSelf
 
 # Initialize default values for optional parameters
-if (-not $OldName) { $OldName = "" }
 if (-not $IncludePaths) { $IncludePaths = @() }
 if (-not $AdditionalTokens) { $AdditionalTokens = @() }
 if (-not $ExcludePaths) { $ExcludePaths = @() }
 if (-not $ExcludeExtensions) { $ExcludeExtensions = @() }
 if (-not $IncludeExtensions) { $IncludeExtensions = @() }
 
-# Validate required parameter
+# Validate required parameters
+if ([string]::IsNullOrWhiteSpace($OldName)) {
+    throw "OldName parameter cannot be null or empty."
+}
+
 if ([string]::IsNullOrWhiteSpace($NewName)) {
     throw "NewName parameter cannot be null or empty."
 }
@@ -246,10 +249,6 @@ try {
     $root = Resolve-Root
     Set-Location -LiteralPath $root
 
-    if (-not $OldName -or [string]::IsNullOrWhiteSpace($OldName)) {
-        $OldName = [System.IO.Path]::GetFileName($root)
-    }
-
     if ($OldName -ieq $NewName) {
         throw "OldName and NewName are the same. Nothing to do."
     }
@@ -389,9 +388,9 @@ if ($DryRun) {
 }
 
 # Usage examples:
-#   pwsh ./renameProject.ps1 -NewName excalibur             # OldName inferred from repo folder
-#   pwsh ./renameProject.ps1 -OldName excalibur -NewName excalibur -DryRun
-#   pwsh ./renameProject.ps1 -NewName excalibur -UseGit      # use git mv if available
-#   pwsh ./renameProject.ps1 -NewName excalibur -IncludePaths ./deployment,./backend -ExcludePaths node_modules,.venv
+#   pwsh ./renameProject.ps1 -OldName respondr -NewName excalibur
+#   pwsh ./renameProject.ps1 -OldName excalibur -NewName respondr -DryRun
+#   pwsh ./renameProject.ps1 -OldName respondr -NewName excalibur -UseGit      # use git mv if available
+#   pwsh ./renameProject.ps1 -OldName respondr -NewName excalibur -IncludePaths ./deployment,./backend -ExcludePaths node_modules,.venv
 
 
