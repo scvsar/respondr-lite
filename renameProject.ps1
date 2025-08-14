@@ -35,6 +35,17 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$ScriptSelf = $PSCommandPath
+if (-not $ScriptSelf) { $ScriptSelf = $MyInvocation.MyCommand.Path }
+
+function Get-FullPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    [System.IO.Path]::GetFullPath($Path)
+}
+
+$ScriptSelfFull = Get-FullPath -Path $ScriptSelf
+
 # Initialize default values for optional parameters
 if (-not $OldName) { $OldName = "" }
 if (-not $IncludePaths) { $IncludePaths = @() }
@@ -96,6 +107,7 @@ function Get-CaseMap {
     if ($AlsoTokens) { $variants += $AlsoTokens }
 
     foreach ($token in $variants | Sort-Object -Unique) {
+        if ([string]::IsNullOrWhiteSpace($token)) { continue }
         $lower = $token.ToLower()
         $upper = $token.ToUpper()
         $title = title $token
@@ -114,7 +126,8 @@ function Get-CaseMap {
 function Test-BinaryFile {
     param([string]$Path,[string[]]$BinaryExtensions)
     $ext = [IO.Path]::GetExtension($Path)
-    if ($BinaryExtensions -contains $ext.ToLower()) { return $true }
+    $ext = if ($ext) { $ext.ToLowerInvariant() } else { "" }
+    if ($BinaryExtensions -contains $ext) { return $true }
     try {
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         try {
@@ -138,7 +151,9 @@ function Replace-In-Content {
     }
 
     $updated = $original
-    $order = $CaseMap.Keys | Sort-Object { $_.Length } -Descending
+    $order = $CaseMap.Keys |
+      Where-Object { $_ -and $_.Length -gt 0 } |
+      Sort-Object { $_.Length } -Descending
     foreach ($old in $order) {
         $new = $CaseMap[$old]
         # case-sensitive replacement for explicit variants
@@ -160,7 +175,9 @@ function Replace-In-Content {
 function Apply-Name-Replacements {
     param([string]$Name,[hashtable]$CaseMap)
     $result = $Name
-    $order = $CaseMap.Keys | Sort-Object { $_.Length } -Descending
+    $order = $CaseMap.Keys |
+      Where-Object { $_ -and $_.Length -gt 0 } |
+      Sort-Object { $_.Length } -Descending
     foreach ($old in $order) {
         $new = $CaseMap[$old]
         $result = $result.Replace($old, $new)
@@ -171,6 +188,7 @@ function Apply-Name-Replacements {
 function Rename-PathIfNeeded {
     param([string]$Path,[hashtable]$CaseMap,[bool]$PreferGit,$Root)
     $parent = [System.IO.Path]::GetDirectoryName($Path)
+    if (-not $parent) { $parent = [System.IO.Path]::GetPathRoot($Path) }
     $leaf   = [System.IO.Path]::GetFileName($Path)
     $newLeaf = Apply-Name-Replacements -Name $leaf -CaseMap $CaseMap
     if ($newLeaf -eq $leaf) { return $Path }
@@ -180,16 +198,28 @@ function Rename-PathIfNeeded {
         return $newPath
     }
     if ($PSCmdlet.ShouldProcess($Path, "Rename to $newPath")) {
-        if ($PreferGit -and (Test-Path -LiteralPath (Join-Path $Root '.git'))) {
-            if (Test-GitAvailable) {
-                & git mv -- "$Path" "$newPath" | Out-Null
+        try {
+            if ($PreferGit -and (Test-Path -LiteralPath (Join-Path $Root '.git'))) {
+                if (Test-GitAvailable) {
+                    $relPath = Resolve-Path -LiteralPath $Path -Relative
+                    & git ls-files --error-unmatch -- $relPath 2>$null >$null
+                    if ($LASTEXITCODE -eq 0) {
+                        & git mv -- "$Path" "$newPath"
+                        if ($LASTEXITCODE -ne 0) { throw "git mv failed for '$Path'" }
+                    } else {
+                        Rename-Item -LiteralPath $Path -NewName $newLeaf -Force
+                    }
+                } else {
+                    Rename-Item -LiteralPath $Path -NewName $newLeaf -Force
+                }
             } else {
                 Rename-Item -LiteralPath $Path -NewName $newLeaf -Force
             }
-        } else {
-            Rename-Item -LiteralPath $Path -NewName $newLeaf -Force
+            Write-Change "Renamed: $Path -> $newPath"
+        } catch {
+            Write-Warn "Could not rename '$Path'. It may be in use or a permissions issue. Skipping. Error: $_"
+            return $Path # Return original path on failure
         }
-        Write-Change "Renamed: $Path -> $newPath"
     }
     return $newPath
 }
@@ -202,13 +232,22 @@ function Should-ExcludePath {
     return $false
 }
 
+function Contains-AnyToken {
+    param([string]$Name,[hashtable]$CaseMap)
+    foreach ($k in $CaseMap.Keys) {
+        if ([string]::IsNullOrEmpty($k)) { continue }
+        if ($Name -like "*$k*") { return $true }
+    }
+    return $false
+}
+
 # --- Main ---
 try {
     $root = Resolve-Root
     Set-Location -LiteralPath $root
 
     if (-not $OldName -or [string]::IsNullOrWhiteSpace($OldName)) {
-        $OldName = Split-Path -Leaf $root
+        $OldName = [System.IO.Path]::GetFileName($root)
     }
 
     if ($OldName -ieq $NewName) {
@@ -279,12 +318,6 @@ foreach ($r in $includeRoots) {
     $renameTargets += @($dirs) + @($files)
 }
 
-function Contains-AnyToken {
-    param([string]$Name,[hashtable]$CaseMap)
-    foreach ($k in $CaseMap.Keys) { if ($Name -like "*${k}*") { return $true } }
-    return $false
-}
-
 # sort by depth (deepest first) to avoid path conflicts
 $renameTargets = $renameTargets | Where-Object { Contains-AnyToken -Name $_.Name -CaseMap $caseMap } |
     Sort-Object { ($_.FullName -split '[\\/]').Count } -Descending
@@ -310,6 +343,7 @@ if ($RenameRootDirectory) {
             } else {
                 Rename-Item -LiteralPath $root -NewName $newRootLeaf -Force
                 Write-Change "Renamed root directory: $root -> $newRootPath"
+                $root = $newRootPath
             }
         }
     }
@@ -318,37 +352,46 @@ if ($RenameRootDirectory) {
 # 2) Replace text in files
 $contentChanged = 0
 $filesProcessed = 0
-foreach ($r in $includeRoots) {
-    $files = Get-ChildItem -LiteralPath $r -Recurse -File -Force | Where-Object { -not (Should-ExcludePath -FullPath $_.FullName -ExcludeRegexes $excludeRegexes) }
-    foreach ($f in $files) {
-        # filter extensions
-        $ext = [IO.Path]::GetExtension($f.Name).ToLower()
-        if ($IncludeExtensions -and ($IncludeExtensions | ForEach-Object { if($_ -and $_[0] -ne '.') {'.'+$_} else {$_} } | Where-Object { $_ -eq $ext } | Measure-Object).Count -eq 0) { continue }
-        if (Test-BinaryFile -Path $f.FullName -BinaryExtensions $BinaryExtensions) { continue }
-        $filesProcessed++
+
+Write-Info "Replacing content in all relevant files..."
+$allFilesAfterRename = Get-ChildItem -LiteralPath $root -Recurse -File -Force | Where-Object { -not (Should-ExcludePath -FullPath $_.FullName -ExcludeRegexes $excludeRegexes) }
+
+foreach ($f in $allFilesAfterRename) {
+    $fFull = Get-FullPath -Path $f.FullName
+    if ($ScriptSelfFull -and $fFull -and ($fFull -ieq $ScriptSelfFull)) { continue }
+    # filter extensions
+    $ext = [IO.Path]::GetExtension($f.Name)
+    $ext = if ($ext) { $ext.ToLowerInvariant() } else { "" }
+    if ($IncludeExtensions -and ($IncludeExtensions | ForEach-Object { if($_ -and $_[0] -ne '.') {'.'+$_} else {$_} } | Where-Object { $_ -eq $ext } | Measure-Object).Count -eq 0) { continue }
+    if (Test-BinaryFile -Path $f.FullName -BinaryExtensions $BinaryExtensions) { continue }
+    $filesProcessed++
+    try {
         if (Replace-In-Content -File $f.FullName -CaseMap $caseMap) { $contentChanged++ }
+    } catch {
+        Write-Skip "Skipping file due to error: $fFull :: $($_.Exception.Message)"
     }
 }
 
 Write-Host "" 
 Write-Info "Summary:"
-Write-Host "  Renamed items: $renamedCount"
-Write-Host "  Files processed for content: $filesProcessed"
-Write-Host "  Files changed for content: $contentChanged"
+Write-Host " Renamed items: $renamedCount"
+Write-Host " Processed files: $filesProcessed"
+Write-Host " Content changes: $contentChanged"
 
-    if ($DryRun) {
-        Write-Info "Dry run complete. Re-run without -DryRun to apply changes."
-    } else {
-        Write-Info "Done. Review changes and run your deployment scripts."
-    }
+if ($DryRun) {
+    Write-Warn "Dry run complete. No changes were made."
+} else {
+    Write-Host "Rename and replace operations completed."
+}
 } catch {
-    Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "At line $($_.InvocationInfo.ScriptLineNumber): $($_.InvocationInfo.Line.Trim())" -ForegroundColor Yellow
+    Write-Error "An error occurred: $_"
     exit 1
 }
 
 # Usage examples:
 #   pwsh ./renameProject.ps1 -NewName excalibur             # OldName inferred from repo folder
-#   pwsh ./renameProject.ps1 -OldName respondr -NewName excalibur -DryRun
+#   pwsh ./renameProject.ps1 -OldName excalibur -NewName excalibur -DryRun
 #   pwsh ./renameProject.ps1 -NewName excalibur -UseGit      # use git mv if available
 #   pwsh ./renameProject.ps1 -NewName excalibur -IncludePaths ./deployment,./backend -ExcludePaths node_modules,.venv
+
+
