@@ -141,8 +141,7 @@ def generate_test_messages_via_ai(count: int = 15) -> List[Dict[str, Any]]:
         resp = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.7,
-            max_tokens=1200,
+            max_completion_tokens=1200,
         )
         raw_content = resp.choices[0].message.content
         content = (raw_content or "").strip()

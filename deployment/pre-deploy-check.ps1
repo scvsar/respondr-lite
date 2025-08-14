@@ -12,7 +12,7 @@
 
 param (
     [Parameter(Mandatory)][string]$ResourceGroupName,
-    [Parameter()][string]$Location = "westus"
+    [Parameter()][string]$Location = "eastus2"
 )
 
 Write-Host "Starting pre-deployment validation..." -ForegroundColor Green

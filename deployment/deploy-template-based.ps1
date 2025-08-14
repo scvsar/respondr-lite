@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Domain,
     
-    [string]$Location = "westus",
+    [string]$Location = "eastus2",
     [string]$Namespace = "respondr",
     [string]$HostPrefix = "respondr",
     [switch]$SkipInfrastructure,

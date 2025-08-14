@@ -17,10 +17,10 @@
     The Azure resource group name to deploy to.
 
 .PARAMETER Location
-    The Azure region to deploy to (default: westus).
+    The Azure region to deploy to (default: eastus2).
 
 .PARAMETER Domain
-    The domain to use for the application (default: paincave.pro).
+    The domain to use for the application (default: rtreit.com).
 
 .PARAMETER SkipInfrastructure
     Skip the infrastructure deployment step.
@@ -32,10 +32,10 @@
     Disable OAuth2 proxy (default behavior is OAuth2 enabled). When specified, uses Application Gateway auth path.
 
 .EXAMPLE
-    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro"
+    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "rtreit.com"
     
 .EXAMPLE
-    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "paincave.pro" -DisableOAuth2
+    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "rtreit.com" -DisableOAuth2
 #>
 
 param(
@@ -43,10 +43,10 @@ param(
     [string]$ResourceGroupName,
     
     [Parameter(Mandatory=$false)]
-    [string]$Location = "westus",
+    [string]$Location = "eastus2",
     
     [Parameter(Mandatory=$false)]
-    [string]$Domain = "paincave.pro",
+    [string]$Domain = "rtreit.com",
 
     [Parameter(Mandatory=$false)]
     [string]$Namespace = "respondr",
@@ -406,8 +406,8 @@ if (-not $DryRun) {
 
     # Process template to generate deployment file
     Write-Host "Processing deployment template..." -ForegroundColor Yellow
-    $templateFile = "respondr-k8s-unified-template.yaml"
-    $outputFile = "respondr-k8s-generated.yaml"
+    $templateFile = Join-Path $PSScriptRoot "respondr-k8s-unified-template.yaml"
+    $outputFile = Join-Path $PSScriptRoot "respondr-k8s-generated.yaml"
     
     & (Join-Path $PSScriptRoot 'process-template.ps1') -TemplateFile $templateFile -OutputFile $outputFile
     Test-LastCommand "Failed to process deployment template"

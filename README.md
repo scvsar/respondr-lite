@@ -89,6 +89,28 @@ cd deployment
   -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
 ```
 
+Note this script has some additional parameters:
+```powershell
+./deploy-complete.ps1 `
+  -ResourceGroupName "respondr" `
+  -Location "westus" `
+  -Domain "rtreit.com" `
+  -Namespace "respondr" `
+  -HostPrefix "respondr" `
+  -ImageTag "latest" `
+  -SkipInfrastructure `
+  -SkipImageBuild `
+  -DisableOAuth2 `
+  -DryRun `
+  -ServiceTreeId "12345678-abcd-1234-5678-123456789abc" `
+  -SetupAcrWebhook `
+  -SetupGithubOidc `
+  -GithubRepo "scvsar/respondr" `
+  -GithubBranch "main" `
+  -AllowedEmailDomains "contoso.org","fabrikam.org" `
+  -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
+```
+
 What this does:
 - Creates/uses the resource group; deploys AKS, ACR, OpenAI, networking
 - Enables AGIC and cert‑manager; waits for Application Gateway

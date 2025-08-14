@@ -221,3 +221,11 @@ respondr-k8s-generated.yaml
 respondr-k8s-*.yaml
 !respondr-k8s-*-template.yaml
 preprod_messages.json
+
+# Runtime deployment state (contains sensitive data)
+deployment/current-working-deployment.yaml
+
+# Test results and logs (may contain sensitive data)
+_attic/test_results.txt
+_attic/*_results.txt
+_attic/test_*.txt

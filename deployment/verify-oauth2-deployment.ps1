@@ -12,18 +12,18 @@
     4. Validates certificate status
 
 .PARAMETER Domain
-    The domain to test (default: paincave.pro)
+    The domain to test (default: rtreit.com)
 
 .PARAMETER Namespace
     The Kubernetes namespace (default: respondr)
 
 .EXAMPLE
-    .\verify-oauth2-deployment.ps1 -Domain "paincave.pro"
+    .\verify-oauth2-deployment.ps1 -Domain "rtreit.com"
 #>
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Domain = "paincave.pro",
+    [string]$Domain = "rtreit.com",
     
     [Parameter(Mandatory=$false)]
     [string]$Namespace = "respondr"
