@@ -11,7 +11,7 @@
 
 param(
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "excalibur",
+    [string]$Namespace = "respondr",
     
     [Parameter(Mandatory=$false)]
     [string]$ImageTag = "latest",
@@ -20,7 +20,7 @@ param(
     [string]$AzureOpenAIApiKey,
     
     [Parameter(Mandatory=$false)]
-    [string]$ResourceGroupName = "excalibur",
+    [string]$ResourceGroupName = "respondr",
     
     [Parameter(Mandatory=$false)]
     [string]$OpenAIDeploymentName = "gpt-5-nano",
@@ -49,7 +49,7 @@ try {
         if ($hnMatch) { $hostname = $hnMatch.Matches[0].Groups[1].Value }
     }
 } catch {}
-$hostname = $hostname -or "excalibur.$ResourceGroupName"
+$hostname = $hostname -or "respondr.$ResourceGroupName"
 
 Write-Host "⚠️ DEPRECATION WARNING ⚠️" -ForegroundColor Red
 Write-Host "This deploy-to-k8s.ps1 script is deprecated and will be removed in a future version." -ForegroundColor Yellow
@@ -192,7 +192,7 @@ if (-not $acrName) {
 }
 
 $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
-$fullImageName = "$acrLoginServer/excalibur:$ImageTag"
+$fullImageName = "$acrLoginServer/respondr:$ImageTag"
 
 Write-Host "ACR Name: $acrName" -ForegroundColor Cyan
 Write-Host "ACR Login Server: $acrLoginServer" -ForegroundColor Cyan
@@ -223,7 +223,7 @@ if (-not $SkipImageBuild) {
         # Build Docker image
         Write-Host "Building Docker image..." -ForegroundColor Yellow
         if (-not $DryRun) {
-            docker build -t excalibur:$ImageTag -t $fullImageName .
+            docker build -t respondr:$ImageTag -t $fullImageName .
             if ($LASTEXITCODE -ne 0) {
                 Write-Error "Docker build failed"
                 exit 1
@@ -250,7 +250,7 @@ if (-not $SkipImageBuild) {
         if (-not $DryRun) {
             Write-Host "Verifying image in ACR..." -ForegroundColor Yellow
             $repositories = az acr repository list --name $acrName -o json | ConvertFrom-Json
-            if ($repositories -contains "excalibur") {
+            if ($repositories -contains "respondr") {
                 Write-Host "Image verified in ACR" -ForegroundColor Green
             } else {
                 Write-Error "Image not found in ACR after push"
@@ -268,8 +268,8 @@ if (-not $SkipImageBuild) {
     if (-not $DryRun) {
         Write-Host "Verifying existing image in ACR..." -ForegroundColor Yellow
         $repositories = az acr repository list --name $acrName -o json | ConvertFrom-Json
-        if ($repositories -notcontains "excalibur") {
-            Write-Error "Image 'excalibur' not found in ACR. Please build the image first or remove -SkipImageBuild flag."
+        if ($repositories -notcontains "respondr") {
+            Write-Error "Image 'respondr' not found in ACR. Please build the image first or remove -SkipImageBuild flag."
             exit 1
         }
         Write-Host "Existing image verified in ACR" -ForegroundColor Green
@@ -281,8 +281,8 @@ if (-not $SkipImageBuild) {
 if ($UseOAuth2) {
     # Try multiple possible deployment files for OAuth2
     $possibleFiles = @(
-        "excalibur-k8s-generated.yaml",
-        "excalibur-k8s-current.yaml"
+        "respondr-k8s-generated.yaml",
+        "respondr-k8s-current.yaml"
     )
     
     $deploymentFile = $null
@@ -297,7 +297,7 @@ if ($UseOAuth2) {
         Write-Error @"
 No generated deployment file found.
 
-Expected: excalibur-k8s-generated.yaml (created by process-template.ps1)
+Expected: respondr-k8s-generated.yaml (created by process-template.ps1)
 
 RECOMMENDED: Run deploy-complete.ps1 or deploy-template-based.ps1 first to generate it.
 "@
@@ -320,11 +320,11 @@ Write-Host "  Authentication: OAuth2 Proxy with Azure AD" -ForegroundColor Cyan
 Write-Host "  Storage: Redis for shared data" -ForegroundColor Cyan
 
 # Set temp file name first
-$tempFile = "excalibur-k8s-current.yaml"
+$tempFile = "respondr-k8s-current.yaml"
 
 # Update the image in the deployment file
 Write-Host "Updating image in deployment configuration..." -ForegroundColor Yellow
-(Get-Content $deploymentFile) -replace 'excaliburbt774d4d55kswacr\.azurecr\.io/excalibur:[^"]*', $fullImageName | Set-Content $tempFile
+(Get-Content $deploymentFile) -replace 'respondrbt774d4d55kswacr\.azurecr\.io/respondr:[^"]*', $fullImageName | Set-Content $tempFile
 
 # Deploy secrets first
 Write-Host "Deploying secrets..." -ForegroundColor Yellow
@@ -335,11 +335,12 @@ if (-not $DryRun) {
         exit 1
     }
     # Verify secret exists (defensive)
-    if (-not (kubectl get secret excalibur-secrets -n $Namespace -o name 2>$null)) {
-        Write-Error "Secret 'excalibur-secrets' not found in namespace '$Namespace' after apply"
+    $null = kubectl get secret respondr-secrets -n $Namespace -o name
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Secret 'respondr-secrets' not found in namespace '$Namespace' after apply"
         exit 1
     }
-    Write-Host "✅ Secret 'excalibur-secrets' confirmed in namespace '$Namespace'" -ForegroundColor Green
+    Write-Host "✅ Secret 'respondr-secrets' confirmed in namespace '$Namespace'" -ForegroundColor Green
 }
 
 # Deploy Redis (required for shared storage)
@@ -365,8 +366,9 @@ if (-not $DryRun) {
 Write-Host "Deploying application..." -ForegroundColor Yellow
 if (-not $DryRun) {
     # Preflight: ensure secret still exists before deploying
-    if (-not (kubectl get secret excalibur-secrets -n $Namespace -o name 2>$null)) {
-        Write-Error "Blocking deployment: required secret 'excalibur-secrets' missing in namespace '$Namespace'"
+    $null = kubectl get secret respondr-secrets -n $Namespace -o name
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Blocking deployment: required secret 'respondr-secrets' missing in namespace '$Namespace'"
         exit 1
     }
     kubectl apply -f $tempFile -n $Namespace
@@ -375,13 +377,13 @@ if (-not $DryRun) {
         
         # Wait for deployment to be ready
         Write-Host "Waiting for deployment to be ready..." -ForegroundColor Yellow
-        kubectl wait --for=condition=available --timeout=300s deployment/excalibur-deployment -n $Namespace
+        kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment -n $Namespace
         
         # Show deployment status
         Write-Host "Deployment Status:" -ForegroundColor Green
-        kubectl get pods -l app=excalibur -n $Namespace
-        kubectl get services -l app=excalibur -n $Namespace
-        kubectl get ingress excalibur-ingress -n $Namespace
+        kubectl get pods -l app=respondr -n $Namespace
+        kubectl get services -l app=respondr -n $Namespace
+        kubectl get ingress respondr-ingress -n $Namespace
         
         # Wait for and monitor Let's Encrypt certificate
         Write-Host "`nWaiting for Let's Encrypt certificate to be issued..." -ForegroundColor Yellow
@@ -392,7 +394,7 @@ if (-not $DryRun) {
         
         do {
             Start-Sleep -Seconds 30
-            $certStatus = kubectl get certificate excalibur-tls-letsencrypt -n $Namespace -o jsonpath="{.status.conditions[?(@.type=='Ready')].status}" 2>$null
+            $certStatus = kubectl get certificate respondr-tls-letsencrypt -n $Namespace -o jsonpath="{.status.conditions[?(@.type=='Ready')].status}" 2>$null
             
             if ($certStatus -eq "True") {
                 $certificateReady = $true
@@ -400,7 +402,7 @@ if (-not $DryRun) {
                 break
             } else {
                 # Show current certificate status
-                $certInfo = kubectl get certificate excalibur-tls-letsencrypt -n $Namespace -o json 2>$null | ConvertFrom-Json
+                $certInfo = kubectl get certificate respondr-tls-letsencrypt -n $Namespace -o json 2>$null | ConvertFrom-Json
                 if ($certInfo) {
                     $conditions = $certInfo.status.conditions
                     $readyCondition = $conditions | Where-Object { $_.type -eq "Ready" }
@@ -417,14 +419,14 @@ if (-not $DryRun) {
         
         if (-not $certificateReady) {
             Write-Host "⚠️  Certificate not ready within timeout. Check status manually:" -ForegroundColor Yellow
-            Write-Host "  kubectl get certificate excalibur-tls-letsencrypt -n $Namespace" -ForegroundColor White
-            Write-Host "  kubectl describe certificate excalibur-tls-letsencrypt -n $Namespace" -ForegroundColor White
+            Write-Host "  kubectl get certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+            Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
             Write-Host "  kubectl get certificaterequests -n $Namespace" -ForegroundColor White
         }
         
         Write-Host ""
         Write-Host "Access Information:" -ForegroundColor Green
-        Write-Host "- Internal Service: excalibur-service.$Namespace.svc.cluster.local" -ForegroundColor Cyan
+        Write-Host "- Internal Service: respondr-service.$Namespace.svc.cluster.local" -ForegroundColor Cyan
         Write-Host "- Ingress Host: $hostname" -ForegroundColor Cyan
         Write-Host "- API Endpoint: https://$hostname/api/responders" -ForegroundColor Cyan
         Write-Host "- Webhook Endpoint: https://$hostname/webhook" -ForegroundColor Cyan
@@ -465,7 +467,7 @@ Write-Host "Deployment script completed!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Summary of actions performed:" -ForegroundColor Yellow
 if (-not $SkipImageBuild) {
-    Write-Host "✅ Built Docker image: excalibur:$ImageTag" -ForegroundColor Green
+    Write-Host "✅ Built Docker image: respondr:$ImageTag" -ForegroundColor Green
     Write-Host "✅ Pushed image to ACR: $fullImageName" -ForegroundColor Green
 } else {
     Write-Host "Skipped Docker image build (used existing)" -ForegroundColor Yellow
@@ -483,8 +485,8 @@ Write-Host "4. Test API endpoint: https://$hostname/api/responders (after authen
 Write-Host "5. Send test webhook: Use authenticated endpoint for webhook testing" -ForegroundColor White
 Write-Host ""
 Write-Host "Certificate Status Commands:" -ForegroundColor Yellow
-Write-Host "kubectl get certificate excalibur-tls-letsencrypt -n $Namespace" -ForegroundColor White
-Write-Host "kubectl describe certificate excalibur-tls-letsencrypt -n $Namespace" -ForegroundColor White
+Write-Host "kubectl get certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+Write-Host "kubectl describe certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
 Write-Host "kubectl get certificaterequests -n $Namespace" -ForegroundColor White
 Write-Host ""
 Write-Host "Security Features Enabled:" -ForegroundColor Green
@@ -498,4 +500,8 @@ if ($UseOAuth2) {
 }
 Write-Host "✅ Let's Encrypt SSL/TLS certificates with automatic renewal" -ForegroundColor Green
 Write-Host "✅ Dedicated namespace isolation" -ForegroundColor Green
+
+
+
+
 
