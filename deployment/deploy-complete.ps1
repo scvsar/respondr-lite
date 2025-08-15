@@ -32,10 +32,10 @@
     Disable OAuth2 proxy (default behavior is OAuth2 enabled). When specified, uses Application Gateway auth path.
 
 .EXAMPLE
-    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "rtreit.com"
+    .\deploy-complete.ps1 -ResourceGroupName "excalibur" -Domain "rtreit.com"
     
 .EXAMPLE
-    .\deploy-complete.ps1 -ResourceGroupName "respondr" -Domain "rtreit.com" -DisableOAuth2
+    .\deploy-complete.ps1 -ResourceGroupName "excalibur" -Domain "rtreit.com" -DisableOAuth2
 #>
 
 param(
@@ -49,10 +49,10 @@ param(
     [string]$Domain = "rtreit.com",
 
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "respondr",
+    [string]$Namespace = "excalibur",
 
     [Parameter(Mandatory=$false)]
-    [string]$HostPrefix = "respondr",
+    [string]$HostPrefix = "excalibur",
 
     [Parameter(Mandatory=$false)]
     [string]$ImageTag = "latest",
@@ -334,26 +334,26 @@ if (-not $DryRun) {
         kubectl apply -f $secretsPath -n $Namespace | Out-Null
         Test-LastCommand "Failed to apply secrets.yaml to cluster"
         # Verify secret exists
-        if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
-            Write-Error "Secret respondr-secrets not found in namespace '$Namespace' after apply"
+        if (-not (kubectl get secret excalibur-secrets -n $Namespace -o name 2>$null)) {
+            Write-Error "Secret excalibur-secrets not found in namespace '$Namespace' after apply"
             exit 1
         }
-        Write-Host "✅ Kubernetes secret 'respondr-secrets' present in namespace '$Namespace'" -ForegroundColor Green
+        Write-Host "✅ Kubernetes secret 'excalibur-secrets' present in namespace '$Namespace'" -ForegroundColor Green
     } else {
         Write-Warning "secrets.yaml not found at $secretsPath"
         
         # For non-main namespaces (e.g., preprod), try copying secrets from main namespace
-        if ($Namespace -ne "respondr") {
-            Write-Host "Attempting to copy secrets from main namespace 'respondr' to '$Namespace'..." -ForegroundColor Yellow
-            $mainSecret = kubectl get secret respondr-secrets -n respondr -o yaml 2>$null
+        if ($Namespace -ne "excalibur") {
+            Write-Host "Attempting to copy secrets from main namespace 'excalibur' to '$Namespace'..." -ForegroundColor Yellow
+            $mainSecret = kubectl get secret excalibur-secrets -n excalibur -o yaml 2>$null
             if ($mainSecret) {
                 # Replace namespace and apply to target namespace
-                $preprodSecret = $mainSecret -replace 'namespace: respondr', "namespace: $Namespace"
+                $preprodSecret = $mainSecret -replace 'namespace: excalibur', "namespace: $Namespace"
                 $preprodSecret | kubectl apply -f - | Out-Null
                 Test-LastCommand "Failed to copy secret from main namespace"
                 Write-Host "✅ Secret copied from main namespace to '$Namespace'" -ForegroundColor Green
             } else {
-                Write-Error "No secrets found in main namespace 'respondr' to copy from"
+                Write-Error "No secrets found in main namespace 'excalibur' to copy from"
                 exit 1
             }
         } else {
@@ -406,8 +406,8 @@ if (-not $DryRun) {
 
     # Process template to generate deployment file
     Write-Host "Processing deployment template..." -ForegroundColor Yellow
-    $templateFile = Join-Path $PSScriptRoot "respondr-k8s-unified-template.yaml"
-    $outputFile = Join-Path $PSScriptRoot "respondr-k8s-generated.yaml"
+    $templateFile = Join-Path $PSScriptRoot "excalibur-k8s-unified-template.yaml"
+    $outputFile = Join-Path $PSScriptRoot "excalibur-k8s-generated.yaml"
     
     & (Join-Path $PSScriptRoot 'process-template.ps1') -TemplateFile $templateFile -OutputFile $outputFile
     Test-LastCommand "Failed to process deployment template"
@@ -430,7 +430,7 @@ if (-not $DryRun) {
         $acrName = ($valuesContent | Select-String "acrName: `"([^`"]+)`"").Matches[0].Groups[1].Value
         $acrLoginServer = ($valuesContent | Select-String "acrLoginServer: `"([^`"]+)`"").Matches[0].Groups[1].Value
         $imageTag = ($valuesContent | Select-String "imageTag: `"([^`"]+)`"").Matches[0].Groups[1].Value
-        $fullImageName = "$acrLoginServer/respondr:$imageTag"
+        $fullImageName = "$acrLoginServer/excalibur:$imageTag"
         
         # Navigate to project root
         $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -457,7 +457,7 @@ if (-not $DryRun) {
             }
             
             # Build and push Docker image with correct tag
-            docker build -t "respondr:$imageTag" -t $fullImageName .
+            docker build -t "excalibur:$imageTag" -t $fullImageName .
             Test-LastCommand "Docker build failed"
             
             docker push $fullImageName
@@ -504,15 +504,15 @@ if (-not $DryRun) {
     # Deploy the generated application configuration
     Write-Host "Deploying application..." -ForegroundColor Yellow
     # Preflight: ensure required secret exists (defensive check)
-    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
-        Write-Error "Blocking deployment: required secret 'respondr-secrets' missing in namespace '$Namespace'"
+    if (-not (kubectl get secret excalibur-secrets -n $Namespace -o name 2>$null)) {
+        Write-Error "Blocking deployment: required secret 'excalibur-secrets' missing in namespace '$Namespace'"
         exit 1
     }
-    kubectl apply -f (Join-Path $PSScriptRoot 'respondr-k8s-generated.yaml') -n $Namespace
+    kubectl apply -f (Join-Path $PSScriptRoot 'excalibur-k8s-generated.yaml') -n $Namespace
     Test-LastCommand "Application deployment failed"
     
     # Wait for deployment to be ready
-    kubectl wait --for=condition=available --timeout=300s deployment/respondr-deployment -n $Namespace
+    kubectl wait --for=condition=available --timeout=300s deployment/excalibur-deployment -n $Namespace
     Test-LastCommand "Deployment did not become ready in time"
     
     Write-Host "Application deployed successfully" -ForegroundColor Green
@@ -532,7 +532,7 @@ Write-Host "=================================================" -ForegroundColor 
 if (-not $DryRun) {
     # Get ingress IP
     Start-Sleep -Seconds 10  # Wait for ingress to be ready
-    $ingressIp = kubectl get ingress respondr-ingress -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+    $ingressIp = kubectl get ingress excalibur-ingress -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
     
     if ($ingressIp) {
         Write-Host "Application Gateway IP: $ingressIp" -ForegroundColor Green
@@ -610,7 +610,7 @@ if (-not $DryRun) {
     Write-Host ""
     Write-Host "🪝 ACR Webhook: Configure ACR to POST to https://$hostname/internal/acr-webhook on push" -ForegroundColor Cyan
     Write-Host "  Header: X-ACR-Token with the value from deployment/secrets.yaml (ACR_WEBHOOK_TOKEN)" -ForegroundColor White
-    Write-Host "  Action: Push; Repo: respondr" -ForegroundColor White
+    Write-Host "  Action: Push; Repo: excalibur" -ForegroundColor White
     Write-Host "" 
     if ($UseOAuth2) {
         Write-Host "🔐 Authentication:" -ForegroundColor Cyan
@@ -636,7 +636,7 @@ if (-not $DryRun) {
     Write-Host ""
     Write-Host "Certificate Status Commands:" -ForegroundColor Cyan
     Write-Host "  kubectl get certificate -n $Namespace" -ForegroundColor White
-    Write-Host "  kubectl describe certificate respondr-tls-letsencrypt -n $Namespace" -ForegroundColor White
+    Write-Host "  kubectl describe certificate excalibur-tls-letsencrypt -n $Namespace" -ForegroundColor White
     Write-Host "  kubectl get certificaterequests -n $Namespace" -ForegroundColor White
 } else {
     Write-Host "DRY RUN completed - no changes made" -ForegroundColor Cyan
@@ -649,7 +649,7 @@ if ($SetupAcrWebhook -and -not $DryRun) {
     Write-Host "\n🪝 Configuring ACR webhook..." -ForegroundColor Yellow
     
     # Determine environment from HostPrefix
-    $Environment = if ($HostPrefix -eq "respondr-preprod") { "preprod" } else { "main" }
+    $Environment = if ($HostPrefix -eq "excalibur-preprod") { "preprod" } else { "main" }
     
     & (Join-Path $PSScriptRoot 'configure-acr-webhook.ps1') -ResourceGroupName $ResourceGroupName -Domain $Domain -Environment $Environment -HostPrefix $HostPrefix
 }
@@ -676,3 +676,4 @@ if ($SetupGithubOidc -and -not $DryRun) {
         }
     }
 }
+
