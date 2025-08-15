@@ -1,76 +1,65 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: respondr-deployment
+  name: {{APP_NAME}}-deployment
   namespace: {{NAMESPACE_PLACEHOLDER}}
   labels:
-    app: respondr
+    app: {{APP_NAME}}
 spec:
-  replicas: {{REPLICAS_PLACEHOLDER}}
+  replicas: 2
   selector:
     matchLabels:
-      app: respondr
+      app: {{APP_NAME}}
   template:
     metadata:
       labels:
-        app: respondr
+        app: {{APP_NAME}}
         azure.workload.identity/use: "true"  # Required for workload identity
     spec:
-      serviceAccountName: respondr-sa
+      serviceAccountName: {{APP_NAME}}-sa
       containers:
       # Main application container
-      - name: respondr
+      - name: {{APP_NAME}}
         image: {{ACR_IMAGE_PLACEHOLDER}}
-        imagePullPolicy: Always
         ports:
         - containerPort: 8000
         env:
         - name: ACR_WEBHOOK_TOKEN
           valueFrom:
             secretKeyRef:
-              name: respondr-secrets
+              name: {{APP_NAME}}-secrets
               key: ACR_WEBHOOK_TOKEN
         - name: K8S_NAMESPACE
           value: {{NAMESPACE_PLACEHOLDER}}
         - name: K8S_DEPLOYMENT
-          value: respondr-deployment
+          value: {{APP_NAME}}-deployment
         - name: ACR_REPOSITORY
-          value: respondr
+          value: {{APP_NAME}}
         - name: AZURE_OPENAI_API_KEY
           valueFrom:
             secretKeyRef:
-              name: respondr-secrets
+              name: {{APP_NAME}}-secrets
               key: AZURE_OPENAI_API_KEY
         - name: AZURE_OPENAI_ENDPOINT
           valueFrom:
             secretKeyRef:
-              name: respondr-secrets
+              name: {{APP_NAME}}-secrets
               key: AZURE_OPENAI_ENDPOINT
         - name: AZURE_OPENAI_DEPLOYMENT
           valueFrom:
             secretKeyRef:
-              name: respondr-secrets
+              name: {{APP_NAME}}-secrets
               key: AZURE_OPENAI_DEPLOYMENT
         - name: AZURE_OPENAI_API_VERSION
           valueFrom:
             secretKeyRef:
-              name: respondr-secrets
+              name: {{APP_NAME}}-secrets
               key: AZURE_OPENAI_API_VERSION
         - name: WEBHOOK_API_KEY
           valueFrom:
             secretKeyRef:
-              name: respondr-secrets
+              name: {{APP_NAME}}-secrets
               key: WEBHOOK_API_KEY
-        - name: REDIS_HOST
-          value: redis-service
-        - name: REDIS_PORT
-          value: "6379"
-        - name: REDIS_DB
-          value: "0"
-        - name: ALLOWED_EMAIL_DOMAINS
-          value: {{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}
-        - name: ALLOWED_ADMIN_USERS
-          value: {{ALLOWED_ADMIN_USERS_PLACEHOLDER}}
         resources:
           requests:
             memory: "256Mi"
@@ -90,7 +79,7 @@ spec:
             port: 8000
           initialDelaySeconds: 5
           periodSeconds: 5
-  # (imagePullPolicy set per-container above)
+  imagePullPolicy: Always
 
       # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
       {{OAUTH2_CONTAINER_START}}- name: oauth2-proxy
@@ -101,8 +90,7 @@ spec:
         - --provider=oidc
         - --provider-display-name="Microsoft Entra"
         - --oidc-issuer-url=https://login.microsoftonline.com/{{OIDC_TENANT_SEGMENT}}/v2.0
-        - --redirect-url={{REDIRECT_URL_PLACEHOLDER}}
-        - --insecure-oidc-skip-issuer-verification=true
+        - --redirect-url=https://{{HOSTNAME_PLACEHOLDER}}/oauth2/callback
 {{EMAIL_DOMAIN_ARGS}}
         - --upstream=http://localhost:8000
         - --http-address=0.0.0.0:4180
@@ -115,10 +103,9 @@ spec:
         - --pass-user-headers=true
         - --set-xauthrequest=true
         - --silence-ping-logging=true
-        - --skip-auth-regex=^/webhook$
-        - --skip-auth-regex=^/health$
-        - --skip-auth-regex=^/internal/acr-webhook$
-        - --whitelist-domain={{HOSTNAME_PLACEHOLDER}}
+  - --skip-auth-regex=^/webhook$
+  - --skip-auth-regex=^/health$
+  - --skip-auth-regex=^/internal/acr-webhook$
         env:
         - name: OAUTH2_PROXY_CLIENT_ID
           valueFrom:
@@ -155,13 +142,12 @@ spec:
           initialDelaySeconds: 5
           periodSeconds: 5
         imagePullPolicy: IfNotPresent
-      {{OAUTH2_CONTAINER_END}}
-
+{{OAUTH2_CONTAINER_END}}
 ---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: respondr-sa
+  name: {{APP_NAME}}-sa
   namespace: {{NAMESPACE_PLACEHOLDER}}
   annotations:
     azure.workload.identity/client-id: {{CLIENT_ID_PLACEHOLDER}}
@@ -171,10 +157,10 @@ metadata:
 apiVersion: v1
 kind: Service
 metadata:
-  name: respondr-service
+  name: {{APP_NAME}}-service
   namespace: {{NAMESPACE_PLACEHOLDER}}
   labels:
-    app: respondr
+    app: {{APP_NAME}}
 spec:
   type: ClusterIP
   sessionAffinity: ClientIP
@@ -185,13 +171,13 @@ spec:
   # Port configuration changes based on OAuth2 mode
   {{SERVICE_PORT_CONFIG}}
   selector:
-    app: respondr
+  app: {{APP_NAME}}
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: respondr-deployment-manager
+  name: {{APP_NAME}}-deployment-manager
   namespace: {{NAMESPACE_PLACEHOLDER}}
 rules:
 - apiGroups: ["apps"]
@@ -202,28 +188,29 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: respondr-deployment-manager-binding
+  name: {{APP_NAME}}-deployment-manager-binding
   namespace: {{NAMESPACE_PLACEHOLDER}}
 subjects:
 - kind: ServiceAccount
-  name: respondr-sa
+  name: {{APP_NAME}}-sa
   namespace: {{NAMESPACE_PLACEHOLDER}}
 roleRef:
   kind: Role
-  name: respondr-deployment-manager
+  name: {{APP_NAME}}-deployment-manager
   apiGroup: rbac.authorization.k8s.io
 
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: respondr-ingress
+  name: {{APP_NAME}}-ingress
   namespace: {{NAMESPACE_PLACEHOLDER}}
   annotations:
     kubernetes.io/ingress.class: azure/application-gateway
     appgw.ingress.kubernetes.io/ssl-redirect: "true"
     appgw.ingress.kubernetes.io/use-private-ip: "false"
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    acme.cert-manager.io/http01-edit-in-place: "true"
     # Session affinity for Application Gateway
     appgw.ingress.kubernetes.io/cookie-based-affinity: "true"
     appgw.ingress.kubernetes.io/backend-protocol: "http"
@@ -231,7 +218,7 @@ spec:
   tls:
   - hosts:
     - {{HOSTNAME_PLACEHOLDER}}
-    secretName: respondr-tls-letsencrypt
+  secretName: {{APP_NAME}}-tls-letsencrypt
   rules:
   - host: {{HOSTNAME_PLACEHOLDER}}
     http:
@@ -240,6 +227,6 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: respondr-service
+      name: {{APP_NAME}}-service
             port:
               number: 80
