@@ -3,6 +3,7 @@ import sys
 import json
 import logging
 import re
+import html
 from typing import Any, Dict, Optional, cast, List
 # Test ACR webhook auto-deployment - v3
 
@@ -36,6 +37,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from openai import AzureOpenAI
+from openai import APIStatusError
 import uuid
 
 # Configure logging
@@ -47,6 +49,13 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Safe HTML escape helper
+def _esc(v: Any) -> str:
+    try:
+        return html.escape("" if v is None else str(v))
+    except Exception:
+        return ""
 
 # Redis configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "redis-service")
@@ -77,16 +86,27 @@ allowed_admin_users = [u.strip().lower() for u in allowed_admin_users if u.strip
 
 # Local dev bypass: allow running without OAuth2 proxy
 ALLOW_LOCAL_AUTH_BYPASS = os.getenv("ALLOW_LOCAL_AUTH_BYPASS", "false").lower() == "true"
+# Optional: whether local bypass should imply admin
+LOCAL_BYPASS_IS_ADMIN = os.getenv("LOCAL_BYPASS_IS_ADMIN", "false").lower() == "true"
 
 # Check if we're running in test mode
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
 
-# temporarily disable api-key check in test mode
-disable_api_key_check = True
+# API key check: allow disabling via env (and always in tests)
+disable_api_key_check = os.getenv("DISABLE_API_KEY_CHECK", "false").lower() == "true" or is_testing
 
 # Timezone configuration: default to PST approximation; allow override via TIMEZONE env
 TIMEZONE = os.getenv("TIMEZONE", "America/Los_Angeles")
 APP_TZ = get_timezone(TIMEZONE)
+
+# Warn loudly if DST-aware zoneinfo is unavailable and non-UTC TZ requested
+if not 'zoneinfo_available' in globals():
+    pass
+else:
+    if not zoneinfo_available and TIMEZONE.upper() != "UTC":
+        logger.warning(
+            "zoneinfo not available; using fixed UTC-8 fallback. Set TIMEZONE=UTC or install zoneinfo for correct DST."
+        )
 
 def now_tz() -> datetime:
     return datetime.now(APP_TZ)
@@ -111,7 +131,10 @@ def validate_webhook_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
 
     In tests or when disabled, always allow. Otherwise require header to match WEBHOOK_API_KEY.
     """
-    if disable_api_key_check or is_testing:
+    if is_testing:
+        return True
+    if disable_api_key_check:
+        logger.warning("API key check disabled by configuration")
         return True
     if not webhook_api_key:
         raise HTTPException(status_code=500, detail="Webhook API key not configured")
@@ -179,6 +202,493 @@ def calculate_eta_from_duration(current_time: str, duration_minutes: int) -> Dic
         }
     except Exception as e:
         return {"eta": "Unknown", "valid": False, "error": str(e)}
+
+# =============================================================================
+# Assisted-mode extraction utilities (ported from benchmark)
+# =============================================================================
+
+def _fix_common_typos(s: str) -> str:
+    replacements = {
+        r"\bmninute?s?\b": "minutes",
+        r"\bminitue?s?\b": "minutes",
+        r"\bminites?\b": "minutes",
+        r"\bmintes?\b": "minutes",
+        r"\bminuets?\b": "minutes",
+        r"\bhoures?\b": "hours",
+        r"\bhors?\b": "hours",
+    }
+    out = s
+    for pat, repl in replacements.items():
+        out = re.sub(pat, repl, out, flags=re.IGNORECASE)
+    return out
+
+def normalize_vehicle(text: str) -> str:
+    t = (text or "").lower()
+    if not t:
+        return "Unknown"
+    # POV
+    if any(k in t for k in ["pov","p.v.","pv","personal vehicle","own car","driving myself","my car","personal"]) and "sar" not in t:
+        return "POV"
+    # SAR Rig
+    if re.search(r"\bsar\s*rig\b", t):
+        return "SAR Rig"
+    # Special: "coming in <int>" vehicle unless time unit follows
+    m = re.search(r"\bcoming\s+in\s+(\d{1,3})(?!\s*(?:m|min|mins?|minutes?)\b)", t)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 999:
+            return f"SAR-{n}"
+    # Negative/positive cues
+    NEG = r"\b(?:key|box|code|channel|ch\b|freq|mhz|alpha|bravo|charlie|copy\b|subject|subj\b|grid|mile)\b"
+    POS = r"(?:\bsar\b|\bunit\b|\brig\b|\btruck\b|\brespond(?:ing)?\b|\brolling\b|\btaking\b|\bcoming\b|\barriving\b|\bwith\b|\bdriving\b|\bin\b)"
+    neg = bool(re.search(NEG, t))
+    # Explicit SAR-### wins
+    m = re.search(r"\bsar[\s-]*0*(\d{1,3})\b", t)
+    if m:
+        return f"SAR-{int(m.group(1))}"
+    # Contexted numeric vehicle
+    if not neg and re.search(POS, t):
+        m = re.search(r"\b0*(\d{1,3})\b", t)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 999:
+                return f"SAR-{n}"
+    return "Unknown"
+
+_SMALL = {
+    "zero":0,"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,
+    "ten":10,"eleven":11,"twelve":12,"thirteen":13,"fourteen":14,"fifteen":15,"sixteen":16,
+    "seventeen":17,"eighteen":18,"nineteen":19,
+}
+_TENS = {"twenty":20,"thirty":30,"forty":40,"fifty":50,"sixty":60,"seventy":70,"eighty":80,"ninety":90}
+
+def _words_to_int(phrase: str) -> Optional[int]:
+    if not phrase:
+        return None
+    phrase = phrase.replace("-", " ")
+    toks = re.findall(r"[a-z]+", phrase.lower())
+    if not toks:
+        return None
+    total, current = 0, 0
+    for w in toks:
+        if w in ("a", "an"):
+            current += 1
+        elif w in _SMALL:
+            current += _SMALL[w]
+        elif w in _TENS:
+            current += _TENS[w]
+        elif w == "hundred":
+            current = (current or 1) * 100
+        elif w in ("and", "about", "around", "approximately", "roughly"):
+            continue
+        elif w in ("half", "quarter"):
+            return None
+        else:
+            return None
+    total += current
+    return total if total >= 0 else None
+
+def _shift_hhmm(hhmm: str, delta_min: int) -> Optional[str]:
+    try:
+        h, m = map(int, hhmm.split(":"))
+        tot = (h * 60 + m + delta_min) % (24 * 60)
+        return f"{tot // 60:02d}:{tot % 60:02d}"
+    except Exception:
+        return None
+
+def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: Optional[str] = None) -> str:
+    try:
+        if not eta_text or not eta_text.strip():
+            return "Unknown"
+        raw = eta_text.strip()
+        low = _fix_common_typos(raw.lower()).replace("~", "").strip()
+        # Treat ETD like ETA
+        low = re.sub(r"^\s*etd\b", "eta", low)
+        # Exact HH:MM with optional am/pm
+        m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*(am|pm)?\s*$", low)
+        if m:
+            hour, minute, ap = int(m.group(1)), int(m.group(2)), m.group(3)
+            if minute > 59:
+                return "Unknown"
+            if ap:
+                if ap == "pm" and hour != 12:
+                    hour += 12
+                if ap == "am" and hour == 12:
+                    hour = 0
+            if hour == 24:
+                hour = 0
+            if hour > 23:
+                return "Unknown"
+            return f"{hour:02d}:{minute:02d}"
+        # Compact 3/4 digit times
+        if re.match(r"^\s*\d{3,4}\s*$", low):
+            digits = re.findall(r"\d+", low)[0]
+            if len(digits) == 3:
+                hour, minute = int(digits[0]), int(digits[1:3])
+            else:
+                hour, minute = int(digits[:2]), int(digits[2:])
+            if hour == 24:
+                hour = 0
+            if hour > 23 or minute > 59:
+                return "Unknown"
+            return f"{hour:02d}:{minute:02d}"
+        # "8 pm"
+        m = re.match(r"^\s*(\d{1,2})\s*(am|pm)\s*$", low)
+        if m:
+            hour, ap = int(m.group(1)), m.group(2)
+            if ap == "pm" and hour != 12:
+                hour += 12
+            if ap == "am" and hour == 12:
+                hour = 0
+            return f"{hour:02d}:00"
+        # Relative updates vs prev ETA
+        def _amt_to_minutes(txt: str) -> Optional[int]:
+            txt = txt.strip()
+            if re.match(r"^\d+(?:\.\d+)?$", txt):
+                return int(round(float(txt)))
+            w = _words_to_int(txt)
+            return w
+        if prev_eta_hhmm:
+            if any(k in low for k in ["unchanged", "same as before", "same as prior", "no change"]):
+                return prev_eta_hhmm
+            m = re.search(r"(?:\beta\s*)?([+-])\s*(\d+)\b", low)
+            if m:
+                sign = 1 if m.group(1) == "+" else -1
+                mins = int(m.group(2))
+                shifted = _shift_hhmm(prev_eta_hhmm, sign * mins)
+                return shifted or "Unknown"
+            m = re.search(r"\b((?:\d+(?:\.\d+)?)|(?:[a-z\- ]+))\s*(?:mins?|minutes?)\s*(early|earlier|ahead)\b", low)
+            if m:
+                val = _amt_to_minutes(m.group(1))
+                if val is not None:
+                    shifted = _shift_hhmm(prev_eta_hhmm, -val)
+                    return shifted or "Unknown"
+            m = re.search(r"\b((?:\d+(?:\.\d+)?)|(?:[a-z\- ]+))\s*(?:mins?|minutes?)\s*(late|later|behind)\b", low)
+            if m:
+                val = _amt_to_minutes(m.group(1))
+                if val is not None:
+                    shifted = _shift_hhmm(prev_eta_hhmm, +val)
+                    return shifted or "Unknown"
+            # allow optional unit for phrases like "pushed back by fifteen"
+            m = re.search(r"\b(?:pushed(?:\s*back)?|push(?:ed)?\s*back)\s*(?:by\s*)?((?:\d+|[a-z\- ]+))(?:\s*(?:mins?|minutes?))?\b", low)
+            if m:
+                val = _amt_to_minutes(m.group(1))
+                if val is not None:
+                    shifted = _shift_hhmm(prev_eta_hhmm, +val)
+                    return shifted or "Unknown"
+            m = re.search(r"\b(?:moved|bumped)\s*up\s*(?:by\s*)?((?:\d+|[a-z\- ]+))\s*(?:mins?|minutes?)\b", low)
+            if m:
+                val = _amt_to_minutes(m.group(1))
+                if val is not None:
+                    shifted = _shift_hhmm(prev_eta_hhmm, -val)
+                    return shifted or "Unknown"
+            m = re.search(r"\bslipped\s*((?:\d+|[a-z\- ]+))\s*(?:mins?|minutes?)\b", low)
+            if m:
+                val = _amt_to_minutes(m.group(1))
+                if val is not None:
+                    shifted = _shift_hhmm(prev_eta_hhmm, +val)
+                    return shifted or "Unknown"
+        m = re.search(r"\b(?:arrive|arrival|be there|there|by)\s*(?:at\s*)?(\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:am|pm))\b", low)
+        if m:
+            return convert_eta_text_to_hhmm(m.group(1), base_time, prev_eta_hhmm)
+        # NEW: "arrive/be there/eta in <N> [minutes]" but NOT "coming in <N>" (vehicle number)
+        m = re.search(
+            r"\b(?:arriv(?:e|ing)|be\s*there|eta)\s+in\s+((?:\d+(?:\.\d+)?)|(?:[a-z\- ]+))\s*(?:mins?|minutes?)?\b",
+            low,
+        )
+        if m and not re.search(r"\bcoming\s+in\s+\d{1,3}\b", low):
+            amt = m.group(1).strip()
+            if re.match(r"^\d+(?:\.\d+)?$", amt):
+                mins = int(round(float(amt)))
+            else:
+                mins_opt = _words_to_int(amt)
+                mins = mins_opt if mins_opt is not None else None  # type: ignore
+            if mins is not None:
+                eta_dt = base_time + timedelta(minutes=int(mins))
+                return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:mins?|minutes?)\s*out\b", low)
+        if m:
+            mins = float(m.group(1))
+            eta_dt = base_time + timedelta(minutes=int(round(mins)))
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b(\d+)\s*min\b", low)
+        if m:
+            mins = int(m.group(1))
+            eta_dt = base_time + timedelta(minutes=mins)
+            return eta_dt.strftime("%H:%M")
+        if "an hour and a half" in low or "a hour and a half" in low or re.search(r"\b1\s*hour\s*and\s*a\s*half\b", low):
+            eta_dt = base_time + timedelta(minutes=90)
+            return eta_dt.strftime("%H:%M")
+        if "half an hour" in low:
+            eta_dt = base_time + timedelta(minutes=30)
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", low)
+        if m:
+            total = int(m.group(1)) * 60 + int(m.group(2))
+            eta_dt = base_time + timedelta(minutes=total)
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", low)
+        if m:
+            total = 60 + int(m.group(1))
+            eta_dt = base_time + timedelta(minutes=total)
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:hours?|hrs?)\b", low)
+        if m:
+            hours = float(m.group(1))
+            eta_dt = base_time + timedelta(minutes=int(round(hours * 60)))
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b(\d+)\s*(?:mins?|minutes?)\b", low)
+        if m:
+            mins = int(m.group(1))
+            eta_dt = base_time + timedelta(minutes=mins)
+            return eta_dt.strftime("%H:%M")
+        m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*([mh])\s*$", low)
+        if m:
+            val = float(m.group(1)); unit = m.group(2)
+            mins = int(round(val * (60 if unit == "h" else 1)))
+            eta_dt = base_time + timedelta(minutes=mins)
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\b([a-z\- ]+?)\s*(?:mins?|minutes?)\b", low)
+        if m:
+            w = _words_to_int(m.group(1))
+            if w is not None:
+                eta_dt = base_time + timedelta(minutes=w)
+                return eta_dt.strftime("%H:%M")
+        if re.match(r"^\s*\d+(?:\.\d+)?\s*$", low):
+            mins = float(re.findall(r"\d+(?:\.\d+)?", low)[0])
+            eta_dt = base_time + timedelta(minutes=int(round(mins)))
+            return eta_dt.strftime("%H:%M")
+        m = re.search(r"\betaa?\s*[:\-]?\s*(\d{1,2}:\d{2}|\d{3,4})\b", low)
+        if m:
+            return convert_eta_text_to_hhmm(m.group(1), base_time, prev_eta_hhmm)
+        return "Unknown"
+    except Exception:
+        return "Unknown"
+
+def to_iso(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+def from_iso(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+def parse_eta_text_to_dt(eta_text: str, current_dt: datetime, prev_eta_dt: Optional[datetime]) -> Optional[datetime]:
+    try:
+        prev_hhmm = None
+        if prev_eta_dt is not None:
+            prev_hhmm = prev_eta_dt.strftime("%H:%M")
+        hhmm = convert_eta_text_to_hhmm(eta_text, current_dt, prev_hhmm)
+        if not re.match(r"^\d{1,2}:\d{2}$", hhmm):
+            return None
+        h, m = map(int, hhmm.split(":"))
+        candidate = current_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+        if candidate < current_dt:
+            candidate += timedelta(days=1)
+        return candidate.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+def classify_status_from_text(msg: str) -> str:
+    t = (msg or "").strip().lower()
+    if not t:
+        return "Unknown"
+    timeish = (
+        re.search(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", t) or
+        re.search(r"\b\d{3,4}\b", t) or
+        re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", t) or
+        re.search(r"\b(?:an|a)\s+hour\b", t) or
+        ("half an hour" in t)
+    )
+    if re.search(r"\b(?:10-?22|1022)\b", t):
+        timeish = False
+    if (
+        re.search(r"\b(?:10-?22|1022)\s*(?:subj(?:ect)?\s*found|subject\s*found)\b", t)
+        or re.search(r"\bmission\s*(?:over|complete)\b", t)
+        or re.search(r"\bper\s*ic\b", t)
+        or re.search(r"\bcopy\s+that\s*(?:10-?22|1022)\b", t)
+    ):
+        return "Informational"
+    if re.fullmatch(r"\s*(?:10-?22|1022)\s*\.?\s*", t) or \
+       re.search(r"\b(?:copy|ack(?:nowledged)?)\s*(?:10-?22|1022)\b", t):
+        return "Not Responding"
+    if re.search(r"(can't\s+make\s+it|won't\s+make|unavailable|i.?m\s+out|working\s+late|bail(?:ing)?|tap\s+out)", t):
+        return "Cancelled"
+    if re.search(r"\?\s*$", t):
+        return "Informational"
+    if re.search(r"\b(available|can\s+respond\s+if\s+needed|able\s+to\s+respond)\b", t):
+        return "Available"
+    if re.search(r"\b(respond(?:ing)?|en\s?route|enrt|on\s*it|rolling|leaving\s+now|\beta\b|be\s+there|headed|arrive|arriving|coming|etd)\b", t):
+        return "Responding"
+    if timeish and not re.search(r"\b(channel|ch\b|freq|mhz)\b", t):
+        return "Responding"
+    if re.search(r"\b(key|channel|freq|mhz)\b", t):
+        return "Informational"
+    return "Unknown"
+
+# Assisted-mode prompt and JSON schema
+ASSISTED_SCHEMA: Dict[str, Any] = {
+    "name": "sar_extraction_assisted",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "vehicle": {"type": "string", "pattern": "^(POV|SAR Rig|SAR-[1-9][0-9]{0,2}|Unknown)$"},
+            "vehicle_text": {"type": "string"},
+            "eta_text": {"type": "string"},
+            "status": {"type": "string", "enum": ["Responding","Cancelled","Available","Informational","Not Responding","Unknown"]},
+            "evidence": {"type": "string"},
+            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+        },
+        "required": ["vehicle","vehicle_text","eta_text","status","evidence","confidence"]
+    }
+}
+
+SYSTEM_PROMPT_ASSISTED = (
+    "You are a SAR message extractor. Return ONLY a compact JSON object. Do NOT compute times.\n\n"
+    "Goal: act as a span extractor. Copy short spans from the message for vehicle and ETA text; do not paraphrase.\n\n"
+    "Context:\n"
+    "- Messages are from Search & Rescue responders coordinating by chat.\n"
+    "- Vehicles are usually either a personal vehicle (POV/PV/own car) or a numbered SAR rig: '78', 'SAR 78', 'SAR-078', 'in 78', 'coming in 78'.\n"
+    "- The local shorthand '10-22' or '1022' means stand down/cancel (NOT a time).\n"
+    "- Questions and logistics (keys/channels) are informational, not a response.\n"
+    "- Current time is given only for context—you must NOT do math.\n\n"
+    "Output JSON (no extra keys, no trailing text):\n"
+    "{\n"
+    "    \"vehicle\": \"POV\" | \"SAR-<number>\" | \"SAR Rig\" | \"Unknown\",\n"
+    "    \"vehicle_text\": \"<exact substring for the vehicle mention, else ''>\",\n"
+    "    \"eta_text\": \"<exact substring for time/duration as written, else 'Unknown'>\",\n"
+    "    \"status\": \"Responding\" | \"Cancelled\" | \"Available\" | \"Informational\" | \"Not Responding\" | \"Unknown\",\n"
+    "    \"evidence\": \"<very short phrase from the message>\",\n"
+    "    \"confidence\": <float between 0 and 1>\n"
+    "}\n\n"
+    "Rules:\n"
+    "- VEHICLE: If 'in 78', 'responding 78', 'sar 78' appears, normalize to 'SAR-78' and set vehicle_text to that substring.\n"
+    "    'coming in <integer>' implies the SAR unit unless followed by a time unit; copy that phrase into vehicle_text.\n"
+    "    Personal vehicle mentions → vehicle=\"POV\" and vehicle_text to the matching words.\n"
+    "    If unclear, set vehicle=\"Unknown\" and vehicle_text=\"\".\n"
+    "- ETA: DO NOT calculate. Copy the literal time span: e.g., '2330', '08:45', '45 minutes', '1 hr', '7:05 pm'. If none, use 'Unknown'.\n"
+    "  If the message says 'be there in 20' (no unit), set eta_text to the exact substring 'in 20'.\n"
+    "  Never take 'coming in <number>' as an ETA; that is a vehicle number here.\n"
+    "- STATUS: Provide your best guess from the message only. The evaluator may override it for scoring.\n"
+)
+
+def _call_assisted_llm(text: str, current_iso_utc: str, prev_eta_iso_utc: Optional[str]) -> Dict[str, Any]:
+    """Call Azure OpenAI in assisted mode and return spans. Robust to model capability differences."""
+    if client is None:
+        return {}
+    model = cast(str, azure_openai_deployment)
+    # Build messages
+    user_content = (
+        f"Current time (UTC, do NOT calculate): {current_iso_utc}\n"
+        f"Previous ETA (if any): {prev_eta_iso_utc or 'None'}\n"
+        f"Message: {text}"
+    )
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT_ASSISTED},
+        {"role": "user", "content": user_content},
+    ]
+    # Extra params with optional verbosity/reasoning
+    extra: Dict[str, Any] = {}
+    # Low verbosity/reasoning defaults for production if provided
+    v = os.getenv("MODEL_VERBOSITY") or os.getenv("AZURE_OPENAI_VERBOSITY")
+    r = os.getenv("MODEL_REASONING_EFFORT") or os.getenv("AZURE_OPENAI_REASONING")
+    if v:
+        extra["verbosity"] = v
+    if r:
+        extra["reasoning_effort"] = r
+    # token caps
+    try:
+        max_tok = int(os.getenv("MAX_COMPLETION_TOKENS", "160") or 160)
+    except Exception:
+        max_tok = 160
+    hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "768") or 768)
+    # Common decode params
+    common = {
+        "max_completion_tokens": max_tok,
+        "temperature": 0,
+        "top_p": 1,
+        "presence_penalty": 0,
+        "frequency_penalty": 0,
+    }
+    # Attempt with graceful fallback
+    attempt_err: Optional[Exception] = None
+    for _ in range(4):
+        try:
+            return_json = client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_schema", "json_schema": ASSISTED_SCHEMA},
+                messages=messages,
+                **common,
+                **extra,
+            )
+            content = (return_json.choices[0].message.content or "").strip()
+            try:
+                return json.loads(content)
+            except Exception:
+                m = re.search(r"\{.*\}", content, re.S)
+                return json.loads(m.group(0)) if m else {}
+        except APIStatusError as e:
+            etxt = str(e).lower()
+            attempt_err = e
+            # prune unsupported params
+            for key, needle in (("temperature","temperature"),("top_p","top_p"),("presence_penalty","presence"),("frequency_penalty","frequency")):
+                if key in common and needle in etxt and "unsupported" in etxt:
+                    common.pop(key, None)
+            for key in ("verbosity","reasoning_effort"):
+                if key in extra and key.replace("_"," ") in etxt and ("unsupported" in etxt or "invalid" in etxt):
+                    extra.pop(key, None)
+            # output limit → bump tokens
+            if ("output limit" in etxt) or ("max_tokens" in etxt) or ("max tokens" in etxt):
+                cur = int(common.get("max_completion_tokens", max_tok) or max_tok)
+                new_val = min(hard_cap, max(cur * 2, cur + 128))
+                if new_val > cur:
+                    common["max_completion_tokens"] = new_val
+                    continue
+            # response_format not supported → try json_object
+            if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
+                try:
+                    alt = client.chat.completions.create(
+                        model=model,
+                        response_format={"type": "json_object"},
+                        messages=messages,
+                        **common,
+                        **extra,
+                    )
+                    content = (alt.choices[0].message.content or "").strip()
+                    try:
+                        return json.loads(content)
+                    except Exception:
+                        m = re.search(r"\{.*\}", content, re.S)
+                        return json.loads(m.group(0)) if m else {}
+                except APIStatusError as e2:
+                    etxt2 = str(e2).lower()
+                    # prune decode params further
+                    for key, needle in (("temperature","temperature"),("top_p","top_p"),("presence_penalty","presence"),("frequency_penalty","frequency")):
+                        if key in common and needle in etxt2 and "unsupported" in etxt2:
+                            common.pop(key, None)
+                    if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
+                        raw = client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            stop=["\n\n"],
+                            **common,
+                            **extra,
+                        )
+                        content = (raw.choices[0].message.content or "").strip()
+                        m = re.search(r"\{.*\}", content, re.S)
+                        return json.loads(m.group(0)) if m else {}
+                    else:
+                        continue
+        except Exception as e:
+            attempt_err = e
+            break
+    logger.warning(f"Assisted LLM call failed; using deterministic fallback: {attempt_err}")
+    return {}
 
 def classify_status_llm(client: Optional[AzureOpenAI], text: str, prev_status: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -406,7 +916,9 @@ def is_admin(email: Optional[str]) -> bool:
 
     In testing or when local auth bypass is enabled, treat as admin to avoid breaking tests/dev.
     """
-    if is_testing or ALLOW_LOCAL_AUTH_BYPASS:
+    if is_testing:
+        return True
+    if ALLOW_LOCAL_AUTH_BYPASS and LOCAL_BYPASS_IS_ADMIN:
         return True
     if not email:
         return False
@@ -415,15 +927,18 @@ def is_admin(email: Optional[str]) -> bool:
     except Exception:
         return False
 
+DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").lower() == "true"
+
 @app.get("/api/user")
 def get_user_info(request: Request) -> JSONResponse:
     """Get authenticated user information from OAuth2 Proxy headers"""
     # Debug: log all headers to see what OAuth2 proxy is sending
-    print("=== DEBUG: All headers received ===")
-    for header_name, header_value in request.headers.items():
-        if header_name.lower().startswith('x-'):
-            print(f"Header: {header_name} = {header_value}")
-    print("=== END DEBUG ===")
+    if DEBUG_LOG_HEADERS:
+        print("=== DEBUG: All headers received ===")
+        for header_name, header_value in request.headers.items():
+            if header_name.lower().startswith('x-'):
+                print(f"Header: {header_name} = {header_value}")
+        print("=== END DEBUG ===")
 
     # Check for the correct OAuth2 Proxy headers, including forwarded headers
     user_email = (
@@ -927,7 +1442,7 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         logger.warning(f"Error converting ETA '{eta_str}': {e}")
         return "Unknown"
 
-def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -> Dict[str, Any]:
+def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None) -> Dict[str, Any]:
     """
     Extract vehicle, ETA, and infer status (responding/cancelled/etc.).
     - Deterministic parsing for vehicle and ETA stays in code.
@@ -942,7 +1457,7 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     has_10_22_code = bool(re.search(r"\b10\s*-\s*22\b", tl) or re.search(r"\b10\s+22\b", tl) or re.search(r"\b1022\b", tl))
     if not m_eta_compact and has_10_22_code:
         return {
-            "vehicle": "Not Responding",
+            "vehicle": "Unknown",
             "eta": "Cancelled",
             "raw_status": "Cancelled",
             "status_source": "Rules",
@@ -959,65 +1474,99 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
     ]
     if any(k in tl for k in cancel_signals):
         return {
-            "vehicle": "Not Responding",
+            "vehicle": "Unknown",
             "eta": "Cancelled",
             "raw_status": "Cancelled",
             "status_source": "Rules",
             "status_confidence": 0.98,
         }
 
-    # --- Vehicle detection (same as your current logic)
+    # Assisted LLM span extraction first (if enabled)
     vehicle = "Unknown"
-    m = re.search(r"\bsar\s*-?\s*(\d{1,3})\b", tl)
-    if m:
-        vehicle = f"SAR-{m.group(1)}"
-    elif any(k in tl for k in ["pov", "personal vehicle", "own car", "driving myself", "my car"]):
-        vehicle = "POV"
-    elif "sar rig" in tl:
-        vehicle = "SAR Rig"
-
-    # --- ETA detection (your existing logic/math)
     eta = "Unknown"
-    current_time = anchor_time
+    try:
+        if not FAST_LOCAL_PARSE and client is not None and azure_openai_deployment:
+            cur_iso = anchor_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            spans = _call_assisted_llm(text, cur_iso, prev_eta_iso)
+            if spans:
+                # Vehicle normalization
+                v_guess = str(spans.get("vehicle", "Unknown"))
+                if v_guess.startswith("SAR-") or v_guess.startswith("SAR "):
+                    try:
+                        num = int(re.findall(r"\d+", v_guess)[0]); v_guess = f"SAR-{num}"
+                    except Exception:
+                        pass
+                if v_guess not in ("POV", "SAR Rig") and not v_guess.startswith("SAR-"):
+                    v_guess = normalize_vehicle(text)
+                if v_guess == "Unknown":
+                    v_guess = normalize_vehicle(spans.get("vehicle_text", "") or text)
+                vehicle = v_guess
+                # ETA normalization from eta_text (fallback to legacy 'eta' key)
+                eta_text = (spans.get("eta_text") or spans.get("eta") or "Unknown").strip()
+                # If the model provided a plain HH:MM, keep it literal for display (no TZ math)
+                if re.fullmatch(r"\d{1,2}:\d{2}", eta_text):
+                    norm = validate_and_format_time(eta_text)
+                    if norm.get("valid"):
+                        eta = str(norm.get("normalized"))
+                elif eta_text != "Unknown":
+                    prev_dt = from_iso(prev_eta_iso) if prev_eta_iso else None
+                    dt = parse_eta_text_to_dt(eta_text, anchor_time.astimezone(timezone.utc), prev_dt)
+                    if dt:
+                        # Store as HH:MM local display for our UI pipeline
+                        local_dt = dt.astimezone(APP_TZ)
+                        eta = local_dt.strftime("%H:%M")
+                # If still unknown, attempt conservative fallback extraction on message text
+                if eta == "Unknown":
+                    filtered = re.sub(r"\b(?:10-?22|1022)\b", " ", text, flags=re.IGNORECASE)
+                    prev_dt = from_iso(prev_eta_iso) if prev_eta_iso else None
+                    dt2 = parse_eta_text_to_dt(filtered, anchor_time.astimezone(timezone.utc), prev_dt)
+                    if dt2:
+                        eta = dt2.astimezone(APP_TZ).strftime("%H:%M")
+    except Exception as e:
+        logger.warning(f"Assisted extraction failed, falling back to rules: {e}")
 
-    m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
-    m_hours_and_minutes = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
-    m_an_hour_and_minutes = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
-    m_hours_and_number = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\b", tl)
-    m_an_hour_and_number = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\b", tl)
-    m_half_hour = ("half" in tl and ("hour" in tl or "hr" in tl)) or re.search(r"\bhalf\s+an?\s+hour\b", tl)
-    m_min = re.search(r"\b(\d{1,3})\s*(min|mins|minutes)\b", tl)
-    m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
-
-    if m_time:
-        eta = convert_eta_to_timestamp(m_time.group(1), current_time)
-    elif m_hours_and_minutes:
-        hours = int(m_hours_and_minutes.group(1)); mins = int(m_hours_and_minutes.group(2))
-        eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
-    elif m_an_hour_and_minutes:
-        mins = int(m_an_hour_and_minutes.group(1))
-        eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
-    elif m_hours_and_number:
-        hours = int(m_hours_and_number.group(1)); mins = int(m_hours_and_number.group(2))
-        eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
-    elif m_an_hour_and_number:
-        mins = int(m_an_hour_and_number.group(1))
-        eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
-    elif m_eta_compact:
-        digits = m_eta_compact.group(1)
-        if len(digits) == 3:
-            hour = int(digits[0]); minute = int(digits[1:3])
-        else:
-            hour = int(digits[:2]); minute = int(digits[2:4])
-        if 0 <= hour <= 24 and 0 <= minute <= 59:
-            if hour == 24: hour = 0
-            eta = f"{hour:02d}:{minute:02d}"
-    elif m_half_hour:
-        eta = convert_eta_to_timestamp("half hour", current_time)
-    elif m_min:
-        eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
-    elif m_hr:
-        eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
+    # Deterministic fallback when assisted path yields Unknowns
+    if vehicle == "Unknown":
+        vehicle = normalize_vehicle(text)
+    if eta == "Unknown":
+        current_time = anchor_time
+        m_time = re.search(r"\b(\d{1,2}:\d{2}\s*(am|pm)?)\b", tl)
+        m_hours_and_minutes = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
+        m_an_hour_and_minutes = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\s*(?:mins?|minutes?)\b", tl)
+        m_hours_and_number = re.search(r"\b(\d+)\s*(?:hours?|hrs?)\s*and\s*(\d+)\b", tl)
+        m_an_hour_and_number = re.search(r"\b(?:an|a)\s+hour\s*and\s*(\d+)\b", tl)
+        m_half_hour = ("half" in tl and ("hour" in tl or "hr" in tl)) or re.search(r"\bhalf\s+an?\s+hour\b", tl)
+        m_min = re.search(r"\b(\d{1,3})\s*(min|mins|minutes)\b", tl)
+        m_hr = re.search(r"\b(\d{1,2})\s*(hour|hr|hours|hrs)\b", tl)
+        if m_time:
+            eta = convert_eta_to_timestamp(m_time.group(1), current_time)
+        elif m_hours_and_minutes:
+            hours = int(m_hours_and_minutes.group(1)); mins = int(m_hours_and_minutes.group(2))
+            eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
+        elif m_an_hour_and_minutes:
+            mins = int(m_an_hour_and_minutes.group(1))
+            eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
+        elif m_hours_and_number:
+            hours = int(m_hours_and_number.group(1)); mins = int(m_hours_and_number.group(2))
+            eta = convert_eta_to_timestamp(f"{hours} hours and {mins} minutes", current_time)
+        elif m_an_hour_and_number:
+            mins = int(m_an_hour_and_number.group(1))
+            eta = convert_eta_to_timestamp(f"an hour and {mins} minutes", current_time)
+        elif m_eta_compact:
+            digits = m_eta_compact.group(1)
+            if len(digits) == 3:
+                hour = int(digits[0]); minute = int(digits[1:3])
+            else:
+                hour = int(digits[:2]); minute = int(digits[2:4])
+            if 0 <= hour <= 24 and 0 <= minute <= 59:
+                if hour == 24: hour = 0
+                eta = f"{hour:02d}:{minute:02d}"
+        elif m_half_hour:
+            eta = convert_eta_to_timestamp("half hour", current_time)
+        elif m_min:
+            eta = convert_eta_to_timestamp(f"{m_min.group(1)} minutes", current_time)
+        elif m_hr:
+            eta = convert_eta_to_timestamp(f"{m_hr.group(1)} hour", current_time)
 
     # --- Rule-based status guess (lightweight + conservative)
     raw_status = "Unknown"
@@ -1047,39 +1596,16 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None) -
         (ambiguous_or_spicy and raw_status not in {"Cancelled"})
     )
 
-    # Only call LLM if enabled and available
-    if need_llm and (not FAST_LOCAL_PARSE) and client is not None:
-        # Optional: pass previous status context (you already compute it outside)
-        prev_hint = "responding" if "already responding" in tl else None
-        llm = classify_status_llm(client, text, prev_status=prev_hint)
-        llm_status = llm.get("status", "unknown")
-        if llm_status == "cancelled":
-            return {
-                "vehicle": "Not Responding",
-                "eta": "Cancelled",
-                "raw_status": "Cancelled",
-                "status_source": "LLM",
-                "status_confidence": llm.get("confidence", 0.85),
-                "status_evidence": llm.get("status_evidence", ""),
-            }
-        elif llm_status in {"responding", "available", "informational"}:
-            return {
-                "vehicle": vehicle,
-                "eta": eta,
-                "raw_status": llm_status.capitalize(),
-                "status_source": "LLM",
-                "status_confidence": llm.get("confidence", 0.75),
-                "status_evidence": llm.get("status_evidence", ""),
-            }
-        # else fall back to rules
+    # Determine status deterministically aligned with benchmark
+    raw_status = classify_status_from_text(text)
 
     # Default: return rules result
     return {
         "vehicle": vehicle,
         "eta": eta,
-        "raw_status": raw_status,
+    "raw_status": raw_status,
         "status_source": "Rules",
-        "status_confidence": rule_conf,
+        "status_confidence": 1.0 if raw_status != "Unknown" else 0.0,
     }
 
 
@@ -1155,8 +1681,18 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     context_message = f"Sender: {display_name}. Message: {text}"
     if user_previous_status == "responding":
         context_message += f" (Note: This user is already responding and may be updating their ETA)"
-    
-    parsed = extract_details_from_text(context_message, base_time=message_dt)
+
+    # If the user previously provided an ETA, pass it for relative updates
+    prev_eta_iso: Optional[str] = None
+    try:
+        for msg in reversed(messages):
+            if msg.get("name") == display_name and msg.get("eta_timestamp_utc"):
+                prev_eta_iso = msg.get("eta_timestamp_utc")  # already ISO with Z offset
+                break
+    except Exception:
+        prev_eta_iso = None
+
+    parsed = extract_details_from_text(context_message, base_time=message_dt, prev_eta_iso=prev_eta_iso)
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}, raw_status={parsed.get('raw_status')}")
 
     # Calculate additional fields for better display
@@ -1164,6 +1700,8 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     
     # Use raw_status from AI parsing if available, otherwise fall back to eta_info status
     arrival_status = parsed.get("raw_status") or eta_info.get("status")
+    if arrival_status == "On Route":
+        arrival_status = "Responding"
     status_source = parsed.get("status_source")
     status_confidence = parsed.get("status_confidence")
     status_evidence = parsed.get("status_evidence")
@@ -1231,7 +1769,7 @@ def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) ->
                 ),
                 "eta_timestamp_utc": eta_datetime.astimezone(timezone.utc).isoformat(),
                 "minutes_until_arrival": minutes_until,
-                "status": "On Route" if minutes_until > 0 else "Arrived"
+                "status": "Responding" if minutes_until > 0 else "Arrived"
             }
         else:
             # Fallback for non-standard formats
@@ -1295,7 +1833,10 @@ def get_current_status(request: Request) -> JSONResponse:
     latest_by_person: Dict[str, Dict[str, Any]] = {}
     
     # Process messages chronologically to build latest status per person
-    sorted_messages = sorted(messages, key=lambda x: x.get('timestamp', ''))
+    sorted_messages = sorted(
+        messages,
+        key=lambda x: x.get('timestamp_utc', x.get('timestamp', '')),
+    )
     
     for msg in sorted_messages:
         name = msg.get('name', '').strip()
@@ -1354,7 +1895,7 @@ def get_current_status(request: Request) -> JSONResponse:
         result.append(person_data)
     
     # Sort by latest activity (most recent first) for mission control relevance
-    result.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+    result.sort(key=lambda x: x.get('timestamp_utc', x.get('timestamp', '')), reverse=True)
     
     return JSONResponse(content=result)
 
@@ -1677,9 +2218,9 @@ def display_dashboard() -> str:
         eta_display = msg.get('eta_timestamp') or msg.get('eta', 'Unknown')
         minutes_out = msg.get('minutes_until_arrival')
         status = msg.get('arrival_status', 'Unknown')
-        
+
         # Row color based on response type
-        if vehicle == 'Not Responding':
+        if status == 'Not Responding':
             row_color = '#ffcccc'  # Light red
         elif vehicle == 'Unknown':
             row_color = '#ffffcc'  # Light yellow
@@ -1689,19 +2230,19 @@ def display_dashboard() -> str:
             row_color = '#cceeff'  # Light blue - arriving medium term
         else:
             row_color = '#ffffff'  # White - normal
-        
+
         minutes_display = f"{minutes_out} min" if minutes_out is not None else "—"
-        
+
         html += f"""
         <tr style='background-color: {row_color};'>
-            <td>{msg['timestamp']}</td>
-            <td><strong>{msg['name']}</strong></td>
-            <td>{team}</td>
-            <td>{vehicle}</td>
-            <td>{eta_display}</td>
-            <td>{minutes_display}</td>
-            <td>{status}</td>
-            <td style='max-width: 300px; word-wrap: break-word;'>{msg['text']}</td>
+            <td>{_esc(msg.get('timestamp', ''))}</td>
+            <td><strong>{_esc(msg.get('name', ''))}</strong></td>
+            <td>{_esc(team)}</td>
+            <td>{_esc(vehicle)}</td>
+            <td>{_esc(eta_display)}</td>
+            <td>{_esc(minutes_display)}</td>
+            <td>{_esc(status)}</td>
+            <td style='max-width: 300px; word-wrap: break-word;'>{_esc(msg.get('text', ''))}</td>
         </tr>
         """
     
@@ -1773,14 +2314,14 @@ def display_deleted_dashboard() -> str:
         
         html += f"""
         <tr style='background-color: #fff0f0;'>
-            <td>{msg_time}</td>
-            <td>{deleted_display}</td>
-            <td>{name}</td>
-            <td>{team}</td>
-            <td>{vehicle}</td>
-            <td>{eta}</td>
-            <td style='max-width: 300px; word-wrap: break-word;'>{message_text}</td>
-            <td style='font-size: 10px; color: #666;'>{msg_id}</td>
+            <td>{_esc(msg_time)}</td>
+            <td>{_esc(deleted_display)}</td>
+            <td>{_esc(name)}</td>
+            <td>{_esc(team)}</td>
+            <td>{_esc(vehicle)}</td>
+            <td>{_esc(eta)}</td>
+            <td style='max-width: 300px; word-wrap: break-word;'>{_esc(message_text)}</td>
+            <td style='font-size: 10px; color: #666;'>{_esc(msg_id)}</td>
         </tr>
         """
     
@@ -1816,38 +2357,32 @@ if not is_testing and os.path.exists(static_dir):
 
 @app.post("/cleanup/invalid-timestamps")
 def cleanup_invalid_timestamps(api_key: str = Depends(validate_webhook_api_key)) -> Dict[str, Any]:
-    """Remove messages with invalid timestamps (1970-01-01 entries)"""
+    """Remove messages with clearly invalid timestamps only (safer)."""
     global messages
-    
-    # Reload latest data first
+
     reload_messages()
     initial_count = len(messages)
-    
-    # Remove messages with Unix timestamp 0 or equivalent to 1970-01-01
-    messages = [
-        msg for msg in messages 
-        if not (
-            "created_at" in msg and 
-            (msg["created_at"] == 0 or msg["created_at"] == "1970-01-01 00:00:00")
-        )
-    ]
-    
-    # Also remove messages with empty or unknown content
-    messages = [
-        msg for msg in messages 
-        if msg.get("message", "").strip() and 
-           msg.get("vehicle", "Unknown") != "Unknown" and
-           msg.get("eta", "Unknown") != "Unknown"
-    ]
-    
-    removed_count = initial_count - len(messages)
-    save_messages()  # Save cleaned data back to shared storage
-    
+    kept: List[Dict[str, Any]] = []
+    removed = 0
+
+    for msg in messages:
+        ts = msg.get("timestamp_utc") or msg.get("timestamp")
+        if not ts:
+            removed += 1
+            continue
+        # Drop obvious epoch-0/1970 artifacts
+        if isinstance(ts, str) and ts.startswith("1970-01-01"):
+            removed += 1
+            continue
+        kept.append(msg)
+
+    messages = kept
+    save_messages()
     return {
         "status": "success",
-        "message": f"Cleaned up {removed_count} invalid entries",
+        "message": f"Cleaned up {removed} invalid entries",
         "initial_count": initial_count,
-        "remaining_count": len(messages)
+        "remaining_count": len(messages),
     }
 
 @app.get("/")
