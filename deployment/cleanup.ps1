@@ -16,7 +16,8 @@ param(
     [switch]$Force,
     [string]$PurgeSoftDeleted = $null,   # prefix, e.g. "respondr-"
     [int]   $TimeoutSeconds    = 0,      # 0 = wait forever
-    [switch]$DeleteTempRgAfterPurge      # remove helper RG after purge
+    [switch]$DeleteTempRgAfterPurge,     # remove helper RG after purge
+    [switch]$PurgeLocalArtifacts         # also remove local generated files (values.yaml, secrets.yaml, generated manifests)
 )
 
 ### ---------- helper functions ----------
@@ -107,3 +108,28 @@ Wait-ForAksNodeRg  -MainRg $ResourceGroupName -Timeout $TimeoutSeconds
 if ($PurgeSoftDeleted) { Purge-CognitiveAccounts -Prefix $PurgeSoftDeleted }
 
 Write-Host "`nCleanup complete – environment is ready for redeployment." -ForegroundColor Green
+
+# Optionally remove local generated artifacts to ensure a pristine workspace
+if ($PurgeLocalArtifacts) {
+    Write-Host "Removing local generated deployment artifacts ..." -ForegroundColor Yellow
+    $files = @(
+        (Join-Path $PSScriptRoot 'values.yaml'),
+        (Join-Path $PSScriptRoot 'secrets.yaml'),
+        (Join-Path $PSScriptRoot 'respondr-k8s-generated.yaml'),
+        (Join-Path $PSScriptRoot 'respondr-k8s-current.yaml'),
+        (Join-Path $PSScriptRoot 'respondr-k8s-generated-oauth2.yaml')
+    )
+    foreach ($f in $files) {
+        if (Test-Path -LiteralPath $f) {
+            try {
+                Remove-Item -LiteralPath $f -Force
+                Write-Host "  - Removed $(Split-Path -Leaf $f)" -ForegroundColor DarkGray
+            } catch {
+                Write-Warning "  - Failed to remove $(Split-Path -Leaf $f): $_"
+            }
+        }
+    }
+    Write-Host "Local artifact cleanup complete." -ForegroundColor Green
+}
+
+

@@ -14,7 +14,9 @@
 param (
     [Parameter(Mandatory)][string]$ResourceGroupName,
     [Parameter()][string]$Location = "eastus2",
-    [switch]$SkipAgwNsgFix
+    [switch]$SkipAgwNsgFix,
+    [string]$Namespace = "respondr",
+    [string]$AppName = "respondr"
 )
 
 # Wait until the AKS managed cluster provisioningState returns to Succeeded (no active update)
@@ -77,7 +79,7 @@ function Repair-AGICPermissions {
         [string]$ResourceGroupName,
         [string]$AksClusterName,
         [string]$Location,
-        [string]$ResourcePrefix
+        [string]$VnetName
     )
     
     Write-Host "🔧 Attempting to repair AGIC permissions..." -ForegroundColor Yellow
@@ -93,7 +95,7 @@ function Repair-AGICPermissions {
     Write-Host "AGIC Identity: $agicIdentityId" -ForegroundColor Cyan
     
     # Get required resource IDs
-    $vnetId = az network vnet show --resource-group $ResourceGroupName --name "$ResourcePrefix-vnet" --query "id" -o tsv 2>$null
+    $vnetId = az network vnet show --resource-group $ResourceGroupName --name $VnetName --query "id" -o tsv 2>$null
     $mcResourceGroup = "MC_$($ResourceGroupName)_$($AksClusterName)_$($Location)"
     $subscriptionId = az account show --query id -o tsv
     
@@ -272,8 +274,8 @@ az aks get-credentials `
     --overwrite-existing
 
 # 3.5) Create dedicated namespace and configure workload identity
-Write-Host "`nCreating dedicated namespace for respondr..." -ForegroundColor Yellow
-kubectl create namespace respondr --dry-run=client -o yaml | kubectl apply -f -
+Write-Host "`nCreating dedicated namespace for $Namespace..." -ForegroundColor Yellow
+kubectl create namespace $Namespace --dry-run=client -o yaml | kubectl apply -f -
 
 Write-Host "`nEnsuring user-assigned managed identity and workload identity setup..." -ForegroundColor Yellow
     $identity = az identity show --name $podIdentityName --resource-group $ResourceGroupName -o json 2>$null | ConvertFrom-Json
@@ -320,7 +322,7 @@ if ($webhookPods.items.Count -gt 0) {
 }
 
 $issuer = az aks show --name $aksClusterName --resource-group $ResourceGroupName --query "oidcIssuerProfile.issuerUrl" -o tsv
-$ficName = "respondr-fic"
+$ficName = "$AppName-fic"
 
 # Create federated credential with templated namespace
 az identity federated-credential create `
@@ -328,16 +330,16 @@ az identity federated-credential create `
     --identity-name $podIdentityName `
     --resource-group $ResourceGroupName `
     --issuer $issuer `
-    --subject "system:serviceaccount:respondr:respondr-sa" `
+    --subject "system:serviceaccount:${Namespace}:${AppName}-sa" `
     --audience "api://AzureADTokenExchange" 2>$null
 
-# Create service account in the respondr namespace
-kubectl create serviceaccount respondr-sa -n respondr --dry-run=client -o yaml | kubectl apply -f -
-kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/client-id=$podIdentityClientId --overwrite
+# Create service account in the target namespace
+kubectl create serviceaccount "$AppName-sa" -n $Namespace --dry-run=client -o yaml | kubectl apply -f -
+kubectl annotate serviceaccount "$AppName-sa" -n $Namespace azure.workload.identity/client-id=$podIdentityClientId --overwrite
 
 # Get tenant ID for optional annotation
 $tenantId = az account show --query tenantId -o tsv
-kubectl annotate serviceaccount respondr-sa -n respondr azure.workload.identity/tenant-id=$tenantId --overwrite
+kubectl annotate serviceaccount "$AppName-sa" -n $Namespace azure.workload.identity/tenant-id=$tenantId --overwrite
 
 # 4) Attach ACR (if one exists)
 if ($acrName) {
@@ -392,6 +394,59 @@ Write-Host "Enabling AGIC addon..." -ForegroundColor Yellow
 $subnetId = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/virtualNetworks/$vnetName/subnets/$appGwSubnetName"
 Write-Host "Using subnet ID: $subnetId" -ForegroundColor Cyan
 
+# Wait for the subnet to be fully available before attempting to enable AGIC
+Write-Host "Verifying Application Gateway subnet exists..." -ForegroundColor Yellow
+$maxWaitTime = 120 # 2 minutes maximum wait
+$waitInterval = 10  # Start with 10 seconds
+$totalWaitTime = 0
+$subnetExists = $null
+
+while ($totalWaitTime -lt $maxWaitTime) {
+    $subnetExists = az network vnet subnet show --resource-group $ResourceGroupName --vnet-name $vnetName --name $appGwSubnetName --query "id" -o tsv 2>$null
+    
+    if ($subnetExists -and $subnetExists.Trim() -ne "") {
+        # Also verify the subnet is in a succeeded provisioning state
+        $provisioningState = az network vnet subnet show --resource-group $ResourceGroupName --vnet-name $vnetName --name $appGwSubnetName --query "provisioningState" -o tsv 2>$null
+        
+        if ($provisioningState -eq "Succeeded") {
+            Write-Host "✅ Application Gateway subnet verified and ready: $subnetExists" -ForegroundColor Green
+            break
+        } else {
+            Write-Host "⏳ Subnet exists but provisioning state is '$provisioningState', waiting..." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "⏳ Waiting for subnet '$appGwSubnetName' to appear (waited $totalWaitTime seconds)..." -ForegroundColor Yellow
+    }
+    
+    Start-Sleep -Seconds $waitInterval
+    $totalWaitTime += $waitInterval
+    
+    # Exponential backoff with jitter, but cap at 30 seconds
+    $waitInterval = [Math]::Min(30, $waitInterval * 1.2 + (Get-Random -Minimum 1 -Maximum 5))
+}
+
+if (-not $subnetExists -or $subnetExists.Trim() -eq "") {
+    Write-Host "❌ Application Gateway subnet '$appGwSubnetName' not found after $maxWaitTime seconds" -ForegroundColor Red
+    Write-Host "Available subnets in VNet '$vnetName':" -ForegroundColor Yellow
+    az network vnet subnet list --resource-group $ResourceGroupName --vnet-name $vnetName --query "[].{Name:name, State:provisioningState, AddressPrefix:addressPrefix}" -o table
+    
+    Write-Host ""
+    Write-Host "🔧 RECOVERY OPTIONS:" -ForegroundColor Yellow
+    Write-Host "1. Wait a few more minutes and run the AGIC enable command manually:" -ForegroundColor Cyan
+    Write-Host "   az aks enable-addons --resource-group $ResourceGroupName --name $aksClusterName --addons ingress-appgw --appgw-name $appGwName --appgw-subnet-id $subnetId" -ForegroundColor White
+    Write-Host "2. Continue without AGIC and use NGINX ingress instead:" -ForegroundColor Cyan
+    Write-Host "   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml" -ForegroundColor White
+    Write-Host "3. Check the Azure portal for subnet provisioning status" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "Press ENTER to continue without AGIC, or Ctrl+C to abort and fix manually..." -ForegroundColor Yellow
+    Read-Host
+    Write-Host "⚠️  Continuing deployment without AGIC due to subnet availability timeout" -ForegroundColor Yellow
+    $skipAgic = $true
+} else {
+    Write-Host "✅ Subnet is ready for AGIC configuration" -ForegroundColor Green
+    $skipAgic = $false
+}
+
 # Proactively ensure NSG on the Application Gateway subnet allows required inbound high ports
 if (-not $SkipAgwNsgFix) {
     Write-Host "Validating NSG requirements for Application Gateway subnet..." -ForegroundColor Yellow
@@ -403,57 +458,68 @@ if (-not $SkipAgwNsgFix) {
     Write-Host "Skipping NSG validation/changes due to -SkipAgwNsgFix switch." -ForegroundColor Yellow
 }
 
-$enableResult = $null
-try {
-    Invoke-AksCommandWithRetry -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Action {
-        az aks enable-addons `
-            --resource-group $ResourceGroupName `
-            --name $aksClusterName `
-            --addons ingress-appgw `
-            --appgw-name $appGwName `
-            --appgw-subnet-id $subnetId
-    }
-    $LASTEXITCODE = 0
-} catch {
-    $enableResult = $_.Exception.Message
-    $global:LASTEXITCODE = 1
-}
+# Only attempt to enable AGIC if the subnet is ready
+if (-not $skipAgic) {
+    $enableResult = az aks enable-addons `
+        --resource-group $ResourceGroupName `
+        --name $aksClusterName `
+        --addons ingress-appgw `
+        --appgw-name $appGwName `
+        --appgw-subnet-id $subnetId 2>&1
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "AGIC enable failed. Full output:" -ForegroundColor Red
-    Write-Host $enableResult -ForegroundColor Red
-    
-    # Check if AGIC is already enabled
-    $agicStatus = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.enabled" -o tsv 2>$null
-    if ($agicStatus -eq "true") {
-        Write-Host "AGIC addon is already enabled - continuing with deployment." -ForegroundColor Yellow
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "AGIC enable failed. Full output:" -ForegroundColor Red
+        Write-Host $enableResult -ForegroundColor Red
+        
+        # Check if AGIC is already enabled
+        $agicStatus = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.enabled" -o tsv 2>$null
+        if ($agicStatus -eq "true") {
+            Write-Host "AGIC addon is already enabled - continuing with deployment." -ForegroundColor Yellow
+        } else {
+            Write-Host "AGIC addon is not enabled and enablement failed." -ForegroundColor Red
+            Write-Host ""
+            Write-Host "🔧 RECOVERY OPTIONS:" -ForegroundColor Yellow
+            Write-Host "Manual fix 1: Run this command to enable AGIC manually:" -ForegroundColor Cyan
+            Write-Host "  az aks enable-addons --resource-group $ResourceGroupName --name $aksClusterName --addons ingress-appgw --appgw-name $appGwName --appgw-subnet-id $subnetId" -ForegroundColor White
+            Write-Host ""
+            Write-Host "Manual fix 2: Use NGINX Ingress instead of Application Gateway:" -ForegroundColor Cyan
+            Write-Host "  kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml" -ForegroundColor White
+            Write-Host ""
+            Write-Host "Manual fix 3: Check if the subnet was created correctly:" -ForegroundColor Cyan
+            Write-Host "  az network vnet subnet list --resource-group $ResourceGroupName --vnet-name $vnetName" -ForegroundColor White
+            Write-Host ""
+            Write-Host "You can continue the deployment without AGIC, but you'll need to manually configure ingress." -ForegroundColor Yellow
+            Write-Host "Press ENTER to continue without AGIC, or Ctrl+C to abort and fix manually..." -ForegroundColor Yellow
+            Read-Host
+            Write-Host "⚠️  Continuing deployment without AGIC - you'll need to configure ingress manually" -ForegroundColor Yellow
+            $skipAgic = $true
+        }
     } else {
-        Write-Host "AGIC addon is not enabled and enablement failed. This will prevent Application Gateway creation." -ForegroundColor Red
-        Write-Host "Manual fix: Run 'az aks enable-addons --resource-group $ResourceGroupName --name $aksClusterName --addons ingress-appgw --appgw-name $appGwName --appgw-subnet-id $subnetId'" -ForegroundColor Yellow
-        throw "AGIC enablement failed and addon is not active"
+        Write-Host "AGIC addon enabled successfully!" -ForegroundColor Green
     }
 } else {
-    Write-Host "AGIC addon enabled successfully!" -ForegroundColor Green
+    Write-Host "⚠️  Skipping AGIC enable due to subnet availability issues" -ForegroundColor Yellow
 }
 
-# Verify AGIC has proper permissions for Application Gateway creation
-Write-Host "Verifying AGIC managed identity has required permissions..." -ForegroundColor Yellow
-$agicIdentityId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv 2>$null
+# Verify AGIC has proper permissions for Application Gateway creation (only if AGIC was enabled)
+if (-not $skipAgic) {
+    Write-Host "Verifying AGIC managed identity has required permissions..." -ForegroundColor Yellow
+    $agicIdentityId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.identity.objectId" -o tsv 2>$null
 
-if ($agicIdentityId) {
-    Write-Host "AGIC managed identity object ID: $agicIdentityId" -ForegroundColor Cyan
-    
-    # Get the VNet resource ID for broader permissions
-    $vnetId = az network vnet show --resource-group $ResourceGroupName --name $vnetName --query "id" -o tsv 2>$null
-    $mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
-    
-    if ($vnetId) {
-        # Grant Network Contributor role on the entire VNet (required for subnet join operations)
-        Write-Host "Ensuring AGIC has Network Contributor role on VNet..." -ForegroundColor Yellow
-        $vnetRoleAssignment = az role assignment create `
-            --assignee $agicIdentityId `
-            --role "Network Contributor" `
-            --scope $vnetId 2>&1
+    if ($agicIdentityId) {
+        Write-Host "AGIC managed identity object ID: $agicIdentityId" -ForegroundColor Cyan
+        
+        # Get the VNet resource ID for broader permissions
+        $vnetId = az network vnet show --resource-group $ResourceGroupName --name $vnetName --query "id" -o tsv 2>$null
+        $mcResourceGroup = "MC_$($ResourceGroupName)_$($aksClusterName)_$($Location)"
+        
+        if ($vnetId) {
+            # Grant Network Contributor role on the entire VNet (required for subnet join operations)
+            Write-Host "Ensuring AGIC has Network Contributor role on VNet..." -ForegroundColor Yellow
+            $vnetRoleAssignment = az role assignment create `
+                --assignee $agicIdentityId `
+                --role "Network Contributor" `
+                --scope $vnetId 2>&1
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "✓ Network Contributor role on VNet assigned successfully" -ForegroundColor Green
@@ -490,16 +556,24 @@ if ($agicIdentityId) {
     }
     
     Write-Host "AGIC permissions configuration completed" -ForegroundColor Green
+    } else {
+        Write-Host "Warning: Could not retrieve AGIC managed identity - permissions may need manual configuration" -ForegroundColor Yellow
+    }
 } else {
-    Write-Host "Warning: Could not retrieve AGIC managed identity - permissions may need manual configuration" -ForegroundColor Yellow
+    Write-Host "⚠️  AGIC was skipped - Application Gateway will not be automatically created" -ForegroundColor Yellow
+    Write-Host "💡 Alternative ingress options:" -ForegroundColor Cyan
+    Write-Host "   • Install NGINX Ingress Controller" -ForegroundColor White
+    Write-Host "   • Use Azure Load Balancer with K8s Services" -ForegroundColor White
+    Write-Host "   • Manually configure Application Gateway later" -ForegroundColor White
 }
 
-# Wait for Application Gateway to be created by AGIC
-Write-Host "Waiting for Application Gateway to be ready..." -ForegroundColor Yellow
+# Wait for Application Gateway to be ready (only if AGIC was enabled)
+if (-not $skipAgic) {
+    Write-Host "Waiting for Application Gateway to be ready..." -ForegroundColor Yellow
 
-# Get the actual Application Gateway name from AGIC configuration (may differ from requested name)
-Write-Host "Getting actual Application Gateway name from AGIC..." -ForegroundColor Yellow
-$actualAppGwId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.config.effectiveApplicationGatewayId" -o tsv 2>$null
+    # Get the actual Application Gateway name from AGIC configuration (may differ from requested name)
+    Write-Host "Getting actual Application Gateway name from AGIC..." -ForegroundColor Yellow
+    $actualAppGwId = az aks show --resource-group $ResourceGroupName --name $aksClusterName --query "addonProfiles.ingressApplicationGateway.config.effectiveApplicationGatewayId" -o tsv 2>$null
 
 if ($actualAppGwId) {
     $actualAppGwName = $actualAppGwId.Split('/')[-1]
@@ -607,8 +681,7 @@ do {
         # 3) Permission issues (role assignments or subnet join)
         if (Test-AGICPermissionError -ErrorMessage $errorText) {
             Write-Host "🔍 Permission error detected - attempting automatic repair..." -ForegroundColor Yellow
-            $resourcePrefix = $ResourceGroupName  # Assuming resource prefix matches resource group name
-            if (Repair-AGICPermissions -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Location $Location -ResourcePrefix $resourcePrefix) {
+            if (Repair-AGICPermissions -ResourceGroupName $ResourceGroupName -AksClusterName $aksClusterName -Location $Location -VnetName $vnetName) {
                 Write-Host "🔄 Permission repair completed - monitoring deployment retry..." -ForegroundColor Green
                 $deploymentTimeout = (Get-Date).AddMinutes(10)
                 Start-Sleep 60
@@ -889,32 +962,42 @@ if (Test-Path $testPodYaml) {
     }
 } else {    Write-Host "test-pod.yaml not found at $testPodYaml" -ForegroundColor Red }
 
-# 7) Validate AGIC ingress and Azure DNS
-Write-Host "`nValidating Application Gateway ingress and DNS..." -ForegroundColor Yellow
-$ingressIp = kubectl get ingress respondr-ingress -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
-if ($ingressIp) {
-    Write-Host "Ingress IP: $ingressIp" -ForegroundColor Green
-    try {
-        $resp = Invoke-WebRequest -Uri "http://$ingressIp" -UseBasicParsing -TimeoutSec 5
-        Write-Host "Application responded with status $($resp.StatusCode)" -ForegroundColor Green
-    } catch {
-        Write-Host "Ingress test failed: $_" -ForegroundColor Yellow
-    }
 } else {
-    Write-Host "Ingress IP not available" -ForegroundColor Yellow
+    Write-Host "⚠️  Application Gateway section skipped - AGIC was not enabled" -ForegroundColor Yellow
+    Write-Host "💡 To use ingress, consider installing NGINX Ingress Controller:" -ForegroundColor Cyan
+    Write-Host "   kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/cloud/deploy.yaml" -ForegroundColor White
 }
 
-$dnsZone = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv
-if ($dnsZone) {
-    $fqdn = "respondr.$dnsZone"
-    $dnsIp = az network dns record-set a show --resource-group $ResourceGroupName --zone-name $dnsZone --name respondr --query "arecords[0].ipv4Address" -o tsv 2>$null
-    if ($dnsIp) { Write-Host "DNS A record for $fqdn -> $dnsIp" -ForegroundColor Green }
-    try {
-        Invoke-WebRequest -Uri "https://$fqdn" -UseBasicParsing -TimeoutSec 5 | Out-Null
-        Write-Host "DNS endpoint reachable" -ForegroundColor Green
-    } catch {
-        Write-Host "DNS endpoint unreachable: $_" -ForegroundColor Yellow
+# 7) Validate AGIC ingress and Azure DNS (only if AGIC was enabled)
+if (-not $skipAgic) {
+    Write-Host "`nValidating Application Gateway ingress and DNS..." -ForegroundColor Yellow
+    $ingressIp = kubectl get ingress "$AppName-ingress" -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+    if ($ingressIp) {
+        Write-Host "Ingress IP: $ingressIp" -ForegroundColor Green
+        try {
+            $resp = Invoke-WebRequest -Uri "http://$ingressIp" -UseBasicParsing -TimeoutSec 5
+            Write-Host "Application responded with status $($resp.StatusCode)" -ForegroundColor Green
+        } catch {
+            Write-Host "Ingress test failed: $_" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "Ingress IP not available" -ForegroundColor Yellow
     }
+
+    $dnsZone = az network dns zone list --resource-group $ResourceGroupName --query "[0].name" -o tsv
+    if ($dnsZone) {
+    $fqdn = "$AppName.$dnsZone"
+    $dnsIp = az network dns record-set a show --resource-group $ResourceGroupName --zone-name $dnsZone --name $AppName --query "arecords[0].ipv4Address" -o tsv 2>$null
+        if ($dnsIp) { Write-Host "DNS A record for $fqdn -> $dnsIp" -ForegroundColor Green }
+        try {
+            Invoke-WebRequest -Uri "https://$fqdn" -UseBasicParsing -TimeoutSec 5 | Out-Null
+            Write-Host "DNS endpoint reachable" -ForegroundColor Green
+        } catch {
+            Write-Host "DNS endpoint unreachable: $_" -ForegroundColor Yellow
+        }
+    }
+} else {
+    Write-Host "⚠️  Skipping ingress validation - AGIC was not enabled" -ForegroundColor Yellow
 }
 
 # 8) Check OpenAI account provisioning state
@@ -944,7 +1027,7 @@ if ($openAiState -eq "Succeeded") {
             --resource-group $ResourceGroupName `
             --deployment-name "gpt-5-nano" `
             --model-name "gpt-5-nano" `
-            --model-version "2025-04-14" `
+            --model-version "2025-08-07" `
             --model-format "OpenAI" `
             --sku-name "GlobalStandard" `
             --sku-capacity 200 2>&1
@@ -979,4 +1062,43 @@ if ($storageAccountName) {
     Write-Host "Storage provisioningState: $storageState" -ForegroundColor Cyan
 }
 
+Write-Host "`n" -ForegroundColor Green
+Write-Host "=" * 70 -ForegroundColor Green
+Write-Host "                    DEPLOYMENT SUMMARY" -ForegroundColor Green  
+Write-Host "=" * 70 -ForegroundColor Green
+
+Write-Host "✅ AKS Cluster: $aksClusterName" -ForegroundColor Green
+Write-Host "✅ Azure Container Registry: $acrName" -ForegroundColor Green
+Write-Host "✅ OpenAI Account: $openAiAccountName" -ForegroundColor Green
+Write-Host "✅ Storage Account: $storageAccountName" -ForegroundColor Green
+Write-Host "✅ Cert-Manager: Installed" -ForegroundColor Green
+Write-Host "✅ Workload Identity: Configured" -ForegroundColor Green
+
+if (-not $skipAgic) {
+    Write-Host "✅ Application Gateway Ingress Controller: Enabled" -ForegroundColor Green
+    if ($appGwName) {
+        Write-Host "✅ Application Gateway: $appGwName" -ForegroundColor Green
+    }
+} else {
+    Write-Host "⚠️  Application Gateway Ingress Controller: Skipped" -ForegroundColor Yellow
+    Write-Host "   💡 Consider installing NGINX Ingress Controller for ingress functionality" -ForegroundColor Cyan
+}
+
+Write-Host "`n🔧 Next Steps:" -ForegroundColor Yellow
+Write-Host "1. Deploy your application to the AKS cluster" -ForegroundColor White
+Write-Host "2. Configure ingress rules (Application Gateway or NGINX)" -ForegroundColor White
+Write-Host "3. Set up DNS records for your domain" -ForegroundColor White
+Write-Host "4. Configure SSL certificates with cert-manager" -ForegroundColor White
+
+if ($skipAgic) {
+    Write-Host "`n📋 AGIC Manual Setup (if needed):" -ForegroundColor Yellow
+    Write-Host "Run this command to enable AGIC manually:" -ForegroundColor Cyan
+    Write-Host "az aks enable-addons --resource-group $ResourceGroupName --name $aksClusterName --addons ingress-appgw --appgw-name $aksClusterName-appgw --appgw-subnet-id $subnetId" -ForegroundColor White
+}
+
 Write-Host "`nPost-deployment configuration completed successfully!" -ForegroundColor Green
+
+
+
+
+

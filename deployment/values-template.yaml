@@ -37,4 +37,5 @@ hostname: ""
 
 # Application Configuration
 namespace: "respondr"
+appName: "respondr"
 replicas: 2
