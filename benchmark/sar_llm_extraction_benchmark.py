@@ -431,6 +431,10 @@ def classify_status_from_text(msg: str) -> str:
     if re.search(r"\?\s*$", t):
         return "Informational"
 
+    # Available (check before generic 'respond' cues)
+    if re.search(r"\b(available|can\s+respond\s+if\s+needed|able\s+to\s+respond)\b", t):
+        return "Available"
+
     # Responding cues (expanded)
     if re.search(r"\b(respond(?:ing)?|en\s?route|enrt|on\s*it|rolling|leaving\s+now|\beta\b|be\s+there|headed|arrive|arriving|coming|etd)\b", t):
         return "Responding"
@@ -438,10 +442,6 @@ def classify_status_from_text(msg: str) -> str:
     # Implicit ETA implies responding (unless it's clearly channel/freq)
     if timeish and not re.search(r"\b(channel|ch\b|freq|mhz)\b", t):
         return "Responding"
-
-    # Available
-    if re.search(r"\b(available|can\s+respond\s+if\s+needed|able\s+to\s+respond)\b", t):
-        return "Available"
 
     # Informational catch-all (keys/channels)
     if re.search(r"\b(key|channel|freq|mhz)\b", t):
@@ -792,7 +792,8 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
             "presence_penalty": 0,
             "frequency_penalty": 0,
         }
-        # Allow up to 5 param-pruning retries
+        # Allow up to 5 retries; also increase token cap if output limit hit
+        hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "1024") or 1024)
         for _ in range(5):
             try:
                 # 1) Try json_schema
@@ -817,6 +818,13 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
                 if ("frequency_penalty" in etxt) and ("frequency_penalty" in common_kwargs):
                     common_kwargs.pop("frequency_penalty", None)
                     continue
+                # If output limit reached, increase token cap and retry
+                if ("output limit" in etxt or "max_tokens" in etxt or "max tokens" in etxt):
+                    cur = int(common_kwargs.get("max_completion_tokens", MAX_TOK_SINGLE) or MAX_TOK_SINGLE)
+                    new_val = min(hard_cap, max(cur * 2, cur + 128))
+                    if new_val > cur:
+                        common_kwargs["max_completion_tokens"] = new_val
+                        continue
                 if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
                     # 2) Try json_object
                     try:
@@ -836,6 +844,12 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
                                 pruned = True
                         if pruned:
                             continue
+                        if ("output limit" in etxt2 or "max_tokens" in etxt2 or "max tokens" in etxt2):
+                            cur = int(common_kwargs.get("max_completion_tokens", MAX_TOK_SINGLE) or MAX_TOK_SINGLE)
+                            new_val = min(hard_cap, max(cur * 2, cur + 128))
+                            if new_val > cur:
+                                common_kwargs["max_completion_tokens"] = new_val
+                                continue
                         if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
                             # 3) Try without response_format
                             return await client.chat.completions.create(
@@ -935,18 +949,24 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                 cur_dt = from_iso(case.current_ts)
                 prev_dt = from_iso(case.prev_eta) if case.prev_eta else None
                 dt = None if eta_text == "Unknown" else parse_eta_text_to_dt(str(eta_text), cur_dt, prev_dt)
-                # Assisted fallback extraction if eta_text is Unknown: quick regex pick
+                # Assisted fallback extraction if eta_text is Unknown: parse full message with safeguards
                 if dt is None and eta_text == "Unknown":
-                    candidate = None
-                    m = re.search(r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b", case.text.lower())
-                    if not m:
-                        m = re.search(r"\b\d{3,4}\b", case.text.lower())
-                    if not m:
-                        m = re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", case.text.lower())
-                    if m:
-                        candidate = m.group(0)
-                    if candidate:
-                        dt = parse_eta_text_to_dt(candidate, cur_dt, prev_dt)
+                    # Avoid interpreting '10-22/1022' as a time
+                    filtered_text = re.sub(r"\b(?:10-?22|1022)\b", " ", case.text, flags=re.IGNORECASE)
+                    dt = parse_eta_text_to_dt(filtered_text, cur_dt, prev_dt)
+                    # If still None, try a minimal token fallback as last resort
+                    if dt is None:
+                        candidate = None
+                        lowtxt = filtered_text.lower()
+                        m = re.search(r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b", lowtxt)
+                        if not m:
+                            m = re.search(r"\b\d{3,4}\b", lowtxt)
+                        if not m:
+                            m = re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", lowtxt)
+                        if m:
+                            candidate = m.group(0)
+                        if candidate:
+                            dt = parse_eta_text_to_dt(candidate, cur_dt, prev_dt)
                 eta_norm = to_iso(dt) if dt else "Unknown"
 
                 # Status normalization
@@ -1182,6 +1202,7 @@ def get_test_cases():
 
 def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, expected_status, message, case_num, base_time_iso, prev_eta_hhmm):
     """Parse LLM response and evaluate against expected values."""
+    parse_error = False
     
     # Parse the JSON response
     try:
@@ -1202,18 +1223,24 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
                 parsed_eta_text = data.get("eta_text", "").strip()
                 parsed_status = data.get("status", "").strip()
             except Exception:
+                parse_error = True
                 return {
                     "vehicle_correct": False,
                     "eta_correct": False,
                     "status_correct": False,
-                    "exact_match": False
+                    "exact_match": False,
+                    "parse_error": True,
+                    "raw_preview": response_text[:200]
                 }
         else:
+            parse_error = True
             return {
                 "vehicle_correct": False,
                 "eta_correct": False,
                 "status_correct": False,
-                "exact_match": False
+                "exact_match": False,
+                "parse_error": True,
+                "raw_preview": response_text[:200]
             }
     
     # Normalize parsed values
@@ -1259,6 +1286,7 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
         "eta_correct": eta_correct,
         "status_correct": status_correct,
         "exact_match": exact_match,
+    "parse_error": parse_error,
         "parsed_vehicle": norm_vehicle,
         "parsed_eta": norm_eta,
         "parsed_status": norm_status
@@ -1385,7 +1413,7 @@ async def run_benchmark_with_configs(model_configs, run_assisted: bool = True, r
         if config.get("reasoning"):
             extra_params["reasoning_effort"] = config["reasoning"]
 
-        # Create a modified config for the existing benchmark function
+    # Create a modified config for the existing benchmark function
         base_cfg = {
             "model": config["model"],
             "extra_params": extra_params,
@@ -1430,7 +1458,7 @@ async def benchmark_model_with_config(client, config):
     """Run the SAR benchmark for a single model configuration."""
     
     model_name = config["model"]
-    extra_params = config.get("extra_params", {})
+    extra_params = dict(config.get("extra_params", {}))
     description = config["description"]
     raw_mode = config.get("raw_mode", False)
     
@@ -1442,12 +1470,19 @@ async def benchmark_model_with_config(client, config):
     total_time = 0
     total_input_tokens = 0
     total_output_tokens = 0
+    parse_error_count = 0
+    parse_error_samples: List[str] = []
     
     # Global concurrency limiter
     sem = config.get("_sem")
     if sem is None:
         # Back-compat: create local semaphore if not provided
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    # In assisted runs, drop verbosity/reasoning to reduce verbosity and avoid unsupported params
+    if not raw_mode:
+        extra_params.pop("verbosity", None)
+        extra_params.pop("reasoning_effort", None)
 
     for i, (text, base_time_iso, prev_eta_hhmm, expected_vehicle, expected_eta, expected_status) in enumerate(test_cases):
         try:
@@ -1473,6 +1508,7 @@ async def benchmark_model_with_config(client, config):
                 # Lower default cap in assisted mode to reduce verbosity/cost
                 default_cap = 512 if raw_mode else 200
                 base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", str(default_cap)) or default_cap)
+                hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "1024") or 1024)
                 max_tok = base_tok
                 attempts = 3
                 delay = 1.0
@@ -1525,9 +1561,15 @@ async def benchmark_model_with_config(client, config):
                     except (RateLimitError, APITimeoutError, APIConnectionError, APIStatusError) as e:
                         last_err = e
                         msg = str(e).lower()
-                        # If output limit reached, try with smaller max tokens next attempt
-                        if "max_tokens" in msg or "output limit" in msg:
-                            max_tok = max(256, max_tok // 2)
+                        # If output limit reached, try with larger max tokens next attempt
+                        if "max_tokens" in msg or "output limit" in msg or "max tokens" in msg:
+                            new_val = min(hard_cap, max(max_tok * 2, max_tok + 128))
+                            if new_val > max_tok:
+                                max_tok = new_val
+                                # brief backoff before retrying
+                                await asyncio.sleep(delay)
+                                delay = min(delay * 2, 8.0)
+                                continue
                         # Backoff for 429 or timeouts
                         if isinstance(e, RateLimitError) or "429" in msg or "rate limit" in msg:
                             await asyncio.sleep(delay)
@@ -1558,6 +1600,10 @@ async def benchmark_model_with_config(client, config):
                     expected_vehicle, expected_eta, expected_status,
                     text, i + 1, base_time_iso, prev_eta_hhmm
                 )
+                if result.get("parse_error"):
+                    parse_error_count += 1
+                    if len(parse_error_samples) < 2:
+                        parse_error_samples.append(result.get("raw_preview", ""))
             else:
                 # RAW mode: parse JSON, compare absolute ISO directly
                 try:
@@ -1642,7 +1688,7 @@ async def benchmark_model_with_config(client, config):
         status_accuracy = np.mean([r["status_correct"] for r in valid])
         exact_accuracy = np.mean([r["exact_match"] for r in valid])
     
-    return {
+    result_obj = {
         "config": description,
         "model": model_name,
         "vehicle_accuracy": vehicle_accuracy,
@@ -1657,6 +1703,16 @@ async def benchmark_model_with_config(client, config):
     "avg_output_tokens": total_output_tokens / max(1, len(valid)),
     "test_cases": len(valid)
     }
+    # Diagnostics: if poor results or many parse errors, print a brief triage block
+    try:
+        if not raw_mode and (exact_accuracy <= 0.1 or parse_error_count > 0):
+            print(f"    🔎 Diagnostics: parse_errors={parse_error_count}/{len(valid)}; avg_output_tokens={result_obj['avg_output_tokens']:.0f}")
+            for idx, sample in enumerate(parse_error_samples, 1):
+                if sample:
+                    print(f"      • sample{idx}: {sample.replace('\n',' ')[:180]}…")
+    except Exception:
+        pass
+    return result_obj
 
 def display_benchmark_comparison(results):
     """Display benchmark results in a comparison table."""
