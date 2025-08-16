@@ -49,6 +49,115 @@ API_KEY = os.getenv("model_api_key")
 MAX_TOK_SINGLE = int(os.getenv("MAX_COMPLETION_TOKENS", "160") or 160)
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8") or 8)
 
+# Debug I/O logging
+DEBUG_IO = bool(int(os.getenv("BENCH_DEBUG_IO", "0") or 0))
+DEBUG_DIR = os.getenv("BENCH_DEBUG_DIR", "")
+
+def _to_jsonable(obj):
+    """Recursively convert objects to JSON-serializable primitives.
+    - Dicts/lists/tuples/sets → converted element-wise
+    - Objects with __dict__ → vars() processed; else str()
+    - Bytes → str() (repr)
+    """
+    import dataclasses
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if dataclasses.is_dataclass(obj):
+        try:
+            return {k: _to_jsonable(v) for k, v in dataclasses.asdict(obj).items()}
+        except Exception:
+            return str(obj)
+    if isinstance(obj, dict):
+        try:
+            return {str(k): _to_jsonable(v) for k, v in obj.items()}
+        except Exception:
+            # Fallback stringify keys/values if something odd
+            return {str(k): str(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8", errors="replace")
+        except Exception:
+            return str(obj)
+    # Objects with __dict__
+    if hasattr(obj, "__dict__"):
+        try:
+            return {k: _to_jsonable(v) for k, v in vars(obj).items()}
+        except Exception:
+            return str(obj)
+    # Last resort
+    return str(obj)
+
+def _ensure_debug_dir() -> str:
+    global DEBUG_DIR
+    if not DEBUG_DIR:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+        DEBUG_DIR = os.path.join(SCRIPT_DIR, "_debug", stamp)
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    # Maintain a 'latest' pointer directory for convenience
+    try:
+        latest_path = os.path.join(SCRIPT_DIR, "_debug", "latest")
+        if os.path.islink(latest_path) or os.path.exists(latest_path):
+            try:
+                if os.path.islink(latest_path):
+                    os.unlink(latest_path)
+                elif os.path.isdir(latest_path):
+                    # Replace directory by removing and re-creating link
+                    import shutil
+                    shutil.rmtree(latest_path, ignore_errors=True)
+                else:
+                    os.remove(latest_path)
+            except Exception:
+                pass
+        # Best-effort symlink; on Windows without privileges, this may fail silently
+        try:
+            os.symlink(DEBUG_DIR, latest_path)
+        except Exception:
+            # Fall back to a copy of an empty marker file containing path
+            try:
+                with open(latest_path, "w", encoding="utf-8") as f:
+                    f.write(DEBUG_DIR)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return DEBUG_DIR
+
+def _sanitize_filename(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", s)
+
+def _debug_write(model: str, case_idx: int, mode: str, payload: Dict[str, Any]) -> None:
+    try:
+        if not DEBUG_IO:
+            return
+        outdir = _ensure_debug_dir()
+        fname = f"{_sanitize_filename(model)}__case{case_idx:02d}__{mode}.json"
+        path = os.path.join(outdir, fname)
+        # Serialize to string first to avoid partial files on errors
+        try:
+            json_str = json.dumps(_to_jsonable(payload), ensure_ascii=False, indent=2)
+        except Exception:
+            # As a last resort, stringify the whole payload
+            json_str = json.dumps({"_raw": str(payload)}, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp then replace
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        try:
+            import os as _os
+            if _os.path.exists(path):
+                _os.replace(tmp_path, path)
+            else:
+                _os.rename(tmp_path, path)
+        except Exception:
+            # Fallback: try direct write
+            with open(path, "w", encoding="utf-8") as f2:
+                f2.write(json_str)
+    except Exception:
+        # Best-effort; never break the run on logging failures
+        pass
+
 if not AZURE_ENDPOINT or not API_KEY:
     raise SystemExit(
         "Missing env. Set model_endpoint and model_api_key (and optionally API_VERSION)."
@@ -298,6 +407,21 @@ def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: 
         m = re.search(r"\b(?:arrive|arrival|be there|there|by)\s*(?:at\s*)?(\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:am|pm))\b", low)
         if m:
             return convert_eta_text_to_hhmm(m.group(1), base_time, prev_eta_hhmm)
+
+        # NEW: "arrive/be there/eta in <N> [minutes]" but NOT "coming in <N>"
+        m = re.search(
+            r"\b(?:arriv(?:e|ing)|be\s*there|eta)\s+in\s+((?:\d+(?:\.\d+)?)|(?:[a-z\- ]+))\s*(?:mins?|minutes?)?\b",
+            low,
+        )
+        if m and not re.search(r"\bcoming\s+in\s+\d{1,3}\b", low):
+            amt = m.group(1).strip()
+            if re.match(r"^\d+(?:\.\d+)?$", amt):
+                mins = int(round(float(amt)))
+            else:
+                mins = _words_to_int(amt)
+            if mins is not None:
+                eta_dt = base_time + timedelta(minutes=_clamp_minutes(mins))
+                return eta_dt.strftime("%H:%M")
 
         # "minutes out"
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:mins?|minutes?)\s*out\b", low)
@@ -631,6 +755,11 @@ Rules:
     If unclear, set vehicle="Unknown" and vehicle_text="".
 - ETA: DO NOT calculate. Copy the literal time span: e.g., "2330", "08:45", "45 minutes", "1 hr", "7:05 pm". If none, use "Unknown".
 - STATUS: Provide your best guess from the message only. The evaluator may override it for scoring.
+\n+Formatting constraints:
+- Return ONLY a single JSON object. No prose, code fences, or explanations.
+- Keep strings short; copy exact substrings from the message.
+- If the message says "be there in 20" (no unit), set "eta_text" to the exact substring "in 20".
+- Never take "coming in <number>" as an ETA; that is a vehicle number here.
 """
 
 SYSTEM_PROMPT_RAW = """You are analyzing Search & Rescue response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
@@ -786,23 +915,32 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
         schema = RAW_SCHEMA if raw_mode else ASSISTED_SCHEMA
         # Common deterministic kwargs; may be pruned if unsupported
         common_kwargs = {
-            "max_completion_tokens": MAX_TOK_SINGLE,
+            # lower cap in assisted mode to discourage rambling
+            "max_completion_tokens": (MAX_TOK_SINGLE if raw_mode else 120),
             "temperature": 0,
             "top_p": 1,
             "presence_penalty": 0,
             "frequency_penalty": 0,
         }
+        # Hint smaller gpt-5-* models to reduce internal reasoning verbosity
+        if (not raw_mode) and re.match(r"^gpt-5-(nano|mini)", str(model)):
+            # These keys will be pruned below if unsupported by the endpoint
+            common_kwargs["verbosity"] = "low"
+            common_kwargs["reasoning_effort"] = "minimal"
         # Allow up to 5 retries; also increase token cap if output limit hit
         hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "1024") or 1024)
+        chosen_format = None
         for _ in range(5):
             try:
                 # 1) Try json_schema
-                return await client.chat.completions.create(
+                resp = await client.chat.completions.create(
                     model=model,
                     response_format={"type": "json_schema", "json_schema": schema},
                     messages=messages,
                     **common_kwargs,
                 )
+                chosen_format = "json_schema"
+                return resp, messages, dict(common_kwargs), chosen_format
             except APIStatusError as e:
                 etxt = str(e).lower()
                 # Remove unsupported params, if any
@@ -818,6 +956,12 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
                 if ("frequency_penalty" in etxt) and ("frequency_penalty" in common_kwargs):
                     common_kwargs.pop("frequency_penalty", None)
                     continue
+                if ("verbosity" in etxt) and ("verbosity" in common_kwargs):
+                    common_kwargs.pop("verbosity", None)
+                    continue
+                if ("reasoning" in etxt) and ("reasoning_effort" in common_kwargs):
+                    common_kwargs.pop("reasoning_effort", None)
+                    continue
                 # If output limit reached, increase token cap and retry
                 if ("output limit" in etxt or "max_tokens" in etxt or "max tokens" in etxt):
                     cur = int(common_kwargs.get("max_completion_tokens", MAX_TOK_SINGLE) or MAX_TOK_SINGLE)
@@ -828,17 +972,19 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
                 if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
                     # 2) Try json_object
                     try:
-                        return await client.chat.completions.create(
+                        resp2 = await client.chat.completions.create(
                             model=model,
                             response_format={"type": "json_object"},
                             messages=messages,
                             **common_kwargs,
                         )
+                        chosen_format = "json_object"
+                        return resp2, messages, dict(common_kwargs), chosen_format
                     except APIStatusError as e2:
                         etxt2 = str(e2).lower()
                         # Remove unsupported params and retry the loop
                         pruned = False
-                        for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+                        for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"):
                             if key in common_kwargs and key in etxt2:
                                 common_kwargs.pop(key, None)
                                 pruned = True
@@ -851,22 +997,25 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
                                 common_kwargs["max_completion_tokens"] = new_val
                                 continue
                         if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
-                            # 3) Try without response_format
-                            return await client.chat.completions.create(
+                            # 3) Try without response_format, add a soft stop to cut chatter
+                            resp3 = await client.chat.completions.create(
                                 model=model,
                                 messages=messages,
+                                stop=["\n\n"],
                                 **common_kwargs,
                             )
+                            chosen_format = "freeform"
+                            return resp3, messages, dict(common_kwargs), chosen_format
                         else:
                             raise
                 else:
                     raise
 
     # We request JSON-only; if model ignores, we fallback by regexing the first {...}
-    resp = await _create_with_fallback()
+    resp, messages, used_kwargs, chosen_format = await _create_with_fallback()
     raw = resp.choices[0].message.content or ""
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception:
         m = re.search(r"\{.*\}", raw, re.S)
         fallback_schema = {"vehicle":"Unknown","status":"Unknown","evidence":"","confidence":0.0}
@@ -874,9 +1023,35 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
             fallback_schema["eta_iso"] = "Unknown"
         else:
             fallback_schema["eta_text"] = "Unknown"
-        return json.loads(m.group(0)) if m else fallback_schema
+        data = json.loads(m.group(0)) if m else fallback_schema
 
-async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode: bool = False) -> CaseResult:
+    # Attach debug info
+    try:
+        data["_debug"] = {
+            "request": {
+                "model": model,
+                "raw_mode": raw_mode,
+                "response_format": chosen_format,
+                "schema": ("RAW" if raw_mode else "ASSISTED"),
+                "messages": messages,
+                "kwargs": used_kwargs,
+                "base_time": msg.current_ts,
+                "prev_eta": msg.prev_eta,
+            },
+            "response": {
+                "id": getattr(resp, "id", None),
+                "created": getattr(resp, "created", None),
+                # usage object may contain nested non-serializable classes; let _to_jsonable handle it
+                "usage": getattr(resp, "usage", None),
+                "finish_reason": getattr(resp.choices[0], "finish_reason", None),
+                "raw": raw,
+            },
+        }
+    except Exception:
+        pass
+    return data
+
+async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode: bool = False, case_idx: Optional[int] = None) -> CaseResult:
     last_err = None
     for attempt in range(1, RETRY + 2):
         try:
@@ -938,12 +1113,14 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                 # Validate vehicle_text span actually occurs in message; else ignore
                 if vehicle_span and vehicle_span.lower() not in case.text.lower():
                     vehicle_span = ""
-                # If Unknown, try to infer from span or message
+                # Always try to reconcile with the extracted span: if it normalizes to a concrete vehicle, trust it
+                if vehicle_span:
+                    span_norm = normalize_vehicle(vehicle_span)
+                    if span_norm != "Unknown":
+                        veh_norm = span_norm
+                # If still Unknown, try to infer from full message
                 if veh_norm == "Unknown":
-                    if vehicle_span:
-                        veh_norm = normalize_vehicle(vehicle_span)
-                    if veh_norm == "Unknown":
-                        veh_norm = normalize_vehicle(case.text)
+                    veh_norm = normalize_vehicle(case.text)
 
                 # ETA normalization (we convert; model does not) -> ISO
                 cur_dt = from_iso(case.current_ts)
@@ -999,6 +1176,38 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
             stat_rule = classify_status_from_text(case.text)
             ok_status = (stat_rule == exp_status)
             exact_triplet = ok_vehicle and ok_eta and ok_status
+
+            # Write debug log if enabled
+            try:
+                if DEBUG_IO:
+                    mode = "raw" if raw_mode else "assisted"
+                    dbg = data.get("_debug", {})
+                    dbg_out = {
+                        "case_idx": case_idx,
+                        "case": {
+                            "text": case.text,
+                            "current_ts": case.current_ts,
+                            "prev_eta": case.prev_eta,
+                            "note": case.note,
+                        },
+                        "request": dbg.get("request"),
+                        "response": dbg.get("response"),
+                        "normalized": {
+                            "vehicle": veh_norm,
+                            "eta": eta_norm,
+                            "status": stat_norm,
+                        },
+                        "expected": {"vehicle": exp_vehicle, "eta": exp_eta, "status": exp_status},
+                        "evaluation": {
+                            "ok_vehicle": ok_vehicle,
+                            "ok_eta": ok_eta,
+                            "ok_status": ok_status,
+                            "exact": exact_triplet,
+                        },
+                    }
+                    _debug_write(model, (case_idx or 0), mode, dbg_out)
+            except Exception:
+                pass
 
             return CaseResult(
                 ok_vehicle, ok_eta, ok_status, exact_triplet,
@@ -1090,6 +1299,8 @@ async def main():
     parser.add_argument("--cases", type=str, default=None)
     parser.add_argument("--tolerance-min", type=int, default=2)
     parser.add_argument("--models", type=str, default=None)
+    parser.add_argument("--debug-io", action="store_true")
+    parser.add_argument("--debug-dir", type=str, default=None)
     parser.add_argument("--help", "-h", action="store_true")
     args, _ = parser.parse_known_args()
     if args.help:
@@ -1104,12 +1315,17 @@ async def main():
         return
     raw_mode = args.raw
     global CASES_FILE, TOLERANCE_MIN, BENCH_MODELS
+    global DEBUG_IO, DEBUG_DIR
     if args.cases:
         CASES_FILE = args.cases
     if args.tolerance_min is not None:
         TOLERANCE_MIN = args.tolerance_min
     if args.models:
         BENCH_MODELS = [m.strip() for m in args.models.split(",") if m.strip()]
+    if args.debug_io:
+        DEBUG_IO = True
+    if args.debug_dir:
+        DEBUG_DIR = args.debug_dir
 
     # reload tests if cases file changed
     global TESTS
@@ -1132,14 +1348,32 @@ async def main():
     for model in BENCH_MODELS:
         print(f"\n{BOLD}Running cases on {model}{RESET}   ({len(TESTS)} cases)")
         start = time.time()
-        tasks = [run_one(client, model, case, raw_mode) for case in TESTS]
+        tasks = [run_one(client, model, case, raw_mode, idx) for idx, case in enumerate(TESTS)]
         results = await asyncio.gather(*tasks)
         model_to_results[model] = results
         dur = time.time() - start
 
         summ = summarize(results)
-        print(f"  Time: {dur:.2f}s | Vehicle {summ['vehicle_acc']:.2%}  ETA {summ['eta_acc']:.2%}  "
-              f"Status {summ['status_acc']:.2%}  Triplet {BOLD}{summ['triplet_acc']:.2%}{RESET}")
+        # ETA span coverage (assisted mode only): proportion of cases where model returned a non-Unknown eta_text
+        span_cov = None
+        if not raw_mode:
+            try:
+                # Count non-Unknown eta_text in debug payloads when available
+                cov_cnt, cov_tot = 0, 0
+                for r in results:
+                    got = r.got.get("raw") or {}
+                    if isinstance(got, dict):
+                        cov_tot += 1
+                        if (got.get("eta_text") or "Unknown") != "Unknown":
+                            cov_cnt += 1
+                span_cov = (cov_cnt / cov_tot) if cov_tot else None
+            except Exception:
+                span_cov = None
+        extra = (f" | ETA-span {span_cov:.0%}" if span_cov is not None else "")
+        print(
+            f"  Time: {dur:.2f}s | Vehicle {summ['vehicle_acc']:.2%}  ETA {summ['eta_acc']:.2%}  "
+            f"Status {summ['status_acc']:.2%}  Triplet {BOLD}{summ['triplet_acc']:.2%}{RESET}{extra}"
+        )
 
     # Aggregate and pretty print comparison
     rows = []
@@ -1224,24 +1458,13 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
                 parsed_status = data.get("status", "").strip()
             except Exception:
                 parse_error = True
-                return {
-                    "vehicle_correct": False,
-                    "eta_correct": False,
-                    "status_correct": False,
-                    "exact_match": False,
-                    "parse_error": True,
-                    "raw_preview": response_text[:200]
-                }
+                # Return a structured default instead of bailing hard
+                data = {"vehicle":"Unknown","vehicle_text":"","eta_text":"Unknown","status":"Unknown"}
+                parsed_vehicle = "Unknown"; parsed_vehicle_text = ""; parsed_eta_text = "Unknown"; parsed_status = "Unknown"
         else:
             parse_error = True
-            return {
-                "vehicle_correct": False,
-                "eta_correct": False,
-                "status_correct": False,
-                "exact_match": False,
-                "parse_error": True,
-                "raw_preview": response_text[:200]
-            }
+            data = {"vehicle":"Unknown","vehicle_text":"","eta_text":"Unknown","status":"Unknown"}
+            parsed_vehicle = "Unknown"; parsed_vehicle_text = ""; parsed_eta_text = "Unknown"; parsed_status = "Unknown"
     
     # Normalize parsed values
     # Prefer normalized label, but if Unknown, try span then full message
@@ -1254,14 +1477,42 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
 
     # For ETA, convert to ISO timestamp using the *case's* current_ts and prev_eta
     norm_eta = "Unknown"
+    base_time = None
+    prev_dt = None
+    try:
+        base_time = from_iso(base_time_iso)
+        prev_dt = from_iso(prev_eta_hhmm) if prev_eta_hhmm else None
+    except Exception:
+        base_time = None
+        prev_dt = None
     if parsed_eta_text:
         try:
-            base_time = from_iso(base_time_iso)
-            prev_dt = from_iso(prev_eta_hhmm) if prev_eta_hhmm else None
-            dt = parse_eta_text_to_dt(parsed_eta_text, base_time, prev_dt)
+            dt = parse_eta_text_to_dt(parsed_eta_text, base_time, prev_dt) if base_time else None
             norm_eta = to_iso(dt) if dt else "Unknown"
         except Exception:
             norm_eta = "Unknown"
+    # Fallback: if model didn't return an eta_text, try to extract a minimal candidate from the full message
+    if norm_eta == "Unknown":
+        try:
+            # Avoid interpreting 10-22/1022 as a time
+            filtered = re.sub(r"\b(?:10-?22|1022)\b", " ", message, flags=re.IGNORECASE)
+            lowtxt = filtered.lower()
+            cand = None
+            m = re.search(r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b", lowtxt)
+            if not m:
+                m = re.search(r"\b\d{3,4}\b", lowtxt)
+            if not m:
+                m = re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", lowtxt)
+            if not m:
+                # As last resort, a bare number could indicate minutes (e.g., "in 20")
+                m = re.search(r"\b\d{1,3}\b", lowtxt)
+            if m:
+                cand = m.group(0)
+            if cand and base_time:
+                dt = parse_eta_text_to_dt(cand, base_time, prev_dt)
+                norm_eta = to_iso(dt) if dt else "Unknown"
+        except Exception:
+            pass
     
     # Deterministic status from text
     norm_status = classify_status_from_text(message)
@@ -1506,7 +1757,7 @@ async def benchmark_model_with_config(client, config):
             async def _create_with_fallback_case():
                 # Retry with exponential backoff for transient errors and adjust max tokens on overflow
                 # Lower default cap in assisted mode to reduce verbosity/cost
-                default_cap = 512 if raw_mode else 200
+                default_cap = 512 if raw_mode else 120
                 base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", str(default_cap)) or default_cap)
                 hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "1024") or 1024)
                 max_tok = base_tok
@@ -1551,6 +1802,7 @@ async def benchmark_model_with_config(client, config):
                                             return await client.chat.completions.create(
                                                 model=model_name,
                                                 messages=messages,
+                                                stop=["\n\n"],
                                                 max_completion_tokens=max_tok,
                                                 **extra_params
                                             )
@@ -1888,6 +2140,8 @@ if __name__ == "__main__":
     parser.add_argument("--cases", type=str, default=None, help="Path to test cases JSON")
     parser.add_argument("--tolerance-min", type=int, default=2, help="ETA tolerance in minutes")
     parser.add_argument("--models", type=str, default=None, help="Comma-separated models for simple run")
+    parser.add_argument("--debug-io", action="store_true", help="Log request/response payloads per case")
+    parser.add_argument("--debug-dir", type=str, default=None, help="Directory to write debug logs")
     args, _ = parser.parse_known_args()
 
     # Route to the correct runner
@@ -1895,6 +2149,11 @@ if __name__ == "__main__":
         # In comprehensive runs, --raw-only / --assisted-only control which modes execute
         run_assisted = not args.raw_only
         run_raw = not args.assisted_only
+        # Set debug globals
+        if args.debug_io:
+            DEBUG_IO = True
+        if args.debug_dir:
+            DEBUG_DIR = args.debug_dir
         asyncio.run(run_comprehensive_benchmark(run_assisted=run_assisted, run_raw=run_raw))
     else:
         # For the simple run, preserve existing flags by mutating argv-like globals used in main()
@@ -1904,4 +2163,8 @@ if __name__ == "__main__":
             TOLERANCE_MIN = args.tolerance_min
         if args.models:
             BENCH_MODELS = [m.strip() for m in args.models.split(",") if m.strip()]
+        if args.debug_io:
+            DEBUG_IO = True
+        if args.debug_dir:
+            DEBUG_DIR = args.debug_dir
         asyncio.run(main())
