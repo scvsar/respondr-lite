@@ -26,10 +26,11 @@ param(
     [string]$Domain = "rtreit.com",
     
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "respondr"
+    [string]$Namespace = "respondr",
+    [string]$AppName = "respondr"
 )
 
-$hostname = "respondr.$Domain"
+$hostname = "$AppName.$Domain"
 
 Write-Host "OAuth2 Authentication Deployment Verification" -ForegroundColor Green
 Write-Host "=================================================" -ForegroundColor Green
@@ -76,7 +77,7 @@ Write-Host ""
 # Check 2: Deployment Status
 Write-Host "2. Checking Deployment Status..." -ForegroundColor Yellow
 try {
-    $pods = kubectl get pods -n $Namespace -l app=respondr -o json 2>$null | ConvertFrom-Json
+    $pods = kubectl get pods -n $Namespace -l app=$AppName -o json 2>$null | ConvertFrom-Json
     $podCount = $pods.items.Count
     
     if ($podCount -gt 0) {
@@ -108,13 +109,13 @@ Write-Host ""
 # Check 3: Service Configuration
 Write-Host "3. Checking Service Configuration..." -ForegroundColor Yellow
 try {
-    $service = kubectl get service respondr-service -n $Namespace -o json 2>$null | ConvertFrom-Json
+    $service = kubectl get service "$AppName-service" -n $Namespace -o json 2>$null | ConvertFrom-Json
     $targetPort = $service.spec.ports[0].targetPort
     
     Test-Check "Service exists" $true
     Test-Check "Service targets OAuth2 port" ($targetPort -eq 4180) "Target port: $targetPort"
 } catch {
-    Test-Check "Service exists" $false "Service 'respondr-service' not found"
+    Test-Check "Service exists" $false "Service '$AppName-service' not found"
 }
 
 Write-Host ""
@@ -122,14 +123,14 @@ Write-Host ""
 # Check 4: Ingress and Certificate
 Write-Host "4. Checking Ingress and Certificate..." -ForegroundColor Yellow
 try {
-    $ingress = kubectl get ingress respondr-ingress -n $Namespace -o json 2>$null | ConvertFrom-Json
+    $ingress = kubectl get ingress "$AppName-ingress" -n $Namespace -o json 2>$null | ConvertFrom-Json
     $ingressHost = $ingress.spec.rules[0].host
     
     Test-Check "Ingress exists" $true
     Test-Check "Ingress hostname configured" ($ingressHost -eq $hostname) "Host: $ingressHost"
     
     # Check certificate
-    $cert = kubectl get certificate respondr-tls-letsencrypt -n $Namespace -o json 2>$null | ConvertFrom-Json
+    $cert = kubectl get certificate "$AppName-tls-letsencrypt" -n $Namespace -o json 2>$null | ConvertFrom-Json
     $certReady = $cert.status.conditions | Where-Object { $_.type -eq "Ready" -and $_.status -eq "True" }
     
     Test-Check "Lets Encrypt certificate exists" $true
@@ -149,7 +150,7 @@ try {
     Test-Check "DNS resolves" $true "Resolves to: $resolvedIp"
     
     # Get expected IP from ingress
-    $ingressIp = kubectl get ingress respondr-ingress -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+    $ingressIp = kubectl get ingress "$AppName-ingress" -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
     if ($ingressIp) {
         Test-Check "DNS matches ingress IP" ($resolvedIp -eq $ingressIp) "Expected: $ingressIp, Got: $resolvedIp"
     }
@@ -196,7 +197,7 @@ Write-Host ""
 # Check 7: OAuth2 Proxy Logs
 Write-Host "7. Checking OAuth2 Proxy Logs..." -ForegroundColor Yellow
 try {
-    $logOutput = kubectl logs -n $Namespace -l app=respondr -c oauth2-proxy --tail=10 2>$null
+    $logOutput = kubectl logs -n $Namespace -l app=$AppName -c oauth2-proxy --tail=10 2>$null
     if ($logOutput) {
         $hasAuthLogs = $logOutput | Where-Object { $_ -match "authentication|login|oauth" }
         Test-Check "OAuth2 proxy logs available" $true

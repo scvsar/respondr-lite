@@ -8,6 +8,9 @@ param(
     [string]$Namespace = "respondr",
 
     [Parameter(Mandatory = $false)]
+    [string]$AppName = "respondr",
+
+    [Parameter(Mandatory = $false)]
     [string]$HostPrefix = "respondr",
 
     [Parameter(Mandatory = $false)]
@@ -43,15 +46,43 @@ Write-Host "🤖 Getting Azure OpenAI details..." -ForegroundColor Green
 $azureOpenAIEndpoint = ""
 $azureOpenAIDeployment = ""
 try {
-    $openAIAccountRaw = az cognitiveservices account show -g $ResourceGroupName -n respondr-openai-account --query "{endpoint: properties.endpoint}" -o json 2>$null
-    if ($openAIAccountRaw) {
-        $openAIAccount = $openAIAccountRaw | ConvertFrom-Json
-        $azureOpenAIEndpoint = $openAIAccount.endpoint
+    # List Cognitive Services accounts of kind OpenAI in the RG
+    $accountsJson = az cognitiveservices account list -g $ResourceGroupName --query "[?kind=='OpenAI']" -o json 2>$null
+    if ($accountsJson) {
+        $accounts = $accountsJson | ConvertFrom-Json
+        if ($accounts -and @($accounts).Count -gt 0) {
+            # Prefer a name that matches "<rg>-openai-account"; else take first
+            $expected = "$ResourceGroupName-openai-account"
+            $chosen = ($accounts | Where-Object { $_.name -ieq $expected } | Select-Object -First 1)
+            if (-not $chosen) { $chosen = $accounts[0] }
+            $openAIName = $chosen.name
+
+            # Endpoint
+            $endpointTsv = az cognitiveservices account show -g $ResourceGroupName -n $openAIName --query "properties.endpoint" -o tsv 2>$null
+            if ($endpointTsv) { $azureOpenAIEndpoint = $endpointTsv.Trim() }
+
+            # Deployments with model names
+            $deploymentsJson = az cognitiveservices account deployment list -g $ResourceGroupName -n $openAIName --query "[].{name:name, model:properties.model.name}" -o json 2>$null
+            if ($deploymentsJson) {
+                $deps = $deploymentsJson | ConvertFrom-Json
+                if ($deps -and -not ($deps -is [array])) { $deps = @($deps) }
+                if ($deps -and @($deps).Count -gt 0) {
+                    $preferred = @("gpt-5-nano","gpt-4o-mini","gpt-4o","gpt-4","gpt-35-turbo")
+                    $pick = $null
+                    foreach ($p in $preferred) {
+                        $pick = $deps | Where-Object { ($_.model -and ($_.model -ieq $p -or $_.model -ilike "$p*")) -or ($_.name -ieq $p -or $_.name -ilike "$p*") } | Select-Object -First 1
+                        if ($pick) { break }
+                    }
+                    if (-not $pick) { $pick = $deps[0] }
+                    if ($pick) { $azureOpenAIDeployment = $pick.name }
+                }
+            }
+        } else {
+            Write-Host "   No Azure OpenAI accounts found in RG $ResourceGroupName" -ForegroundColor Yellow
+        }
     } else {
-        Write-Host "   Azure OpenAI account not found under expected name; leaving endpoint empty" -ForegroundColor Yellow
+        Write-Host "   Unable to query Azure OpenAI accounts (no output)" -ForegroundColor Yellow
     }
-    $deploymentsRaw = az cognitiveservices account deployment list -g $ResourceGroupName -n respondr-openai-account --query "[].name" -o tsv 2>$null
-    if ($deploymentsRaw) { $azureOpenAIDeployment = ($deploymentsRaw | Select-Object -First 1) }
 } catch {
     Write-Host "   Skipping Azure OpenAI discovery due to error: $($_.Exception.Message)" -ForegroundColor Yellow
 }
@@ -112,13 +143,14 @@ resourceGroupName: "$ResourceGroupName"
 # Container Registry
 acrName: "$acrName"
 acrLoginServer: "$acrLoginServer"
-imageName: "respondr"
+imageName: "$AppName"
 imageTag: "$ImageTag"
 
 # Azure OpenAI
 azureOpenAIEndpoint: "$azureOpenAIEndpoint"
 azureOpenAIDeployment: "$azureOpenAIDeployment"
-azureOpenAIApiVersion: "2024-02-15-preview"
+# Keep in sync with create-secrets.ps1 default
+azureOpenAIApiVersion: "2024-12-01-preview"
 
 # OAuth2 Configuration
 oauth2ClientId: "$oauth2ClientId"
@@ -136,6 +168,7 @@ hostname: "$hostname"
 
 # Application Configuration
 namespace: "$Namespace"
+appName: "$AppName"
 replicas: 2
 useOAuth2: "true"
 "@
@@ -145,10 +178,11 @@ $valuesContent | Out-File -FilePath "values.yaml" -Encoding UTF8
 Write-Host "✅ Generated values.yaml with current environment configuration" -ForegroundColor Green
 Write-Host ""
 Write-Host "📋 Configuration Summary:" -ForegroundColor Cyan
-Write-Host "   Full Image: $acrLoginServer/respondr:latest" -ForegroundColor White
+Write-Host "   Full Image: $acrLoginServer/${AppName}:${ImageTag}" -ForegroundColor White
 Write-Host "   Hostname: $hostname" -ForegroundColor White
 Write-Host "   OAuth2 Redirect: $oauth2RedirectUrl" -ForegroundColor White
 Write-Host "   Tenant ID: $azureTenantId" -ForegroundColor White
+Write-Host "   App Name: $AppName" -ForegroundColor White
 Write-Host ""
 Write-Host "⚠️  IMPORTANT: This values.yaml file contains environment-specific configuration" -ForegroundColor Yellow
 Write-Host "   and should NEVER be committed to git. It's in .gitignore for this reason." -ForegroundColor Yellow
