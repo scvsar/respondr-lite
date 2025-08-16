@@ -45,7 +45,8 @@ BOLD, RESET = Style.BRIGHT, Style.RESET_ALL
 API_VERSION = os.getenv("API_VERSION", "2024-12-01-preview")
 AZURE_ENDPOINT = os.getenv("model_endpoint")
 API_KEY = os.getenv("model_api_key")
-MAX_TOK_SINGLE = int(os.getenv("MAX_COMPLETION_TOKENS", "256") or 256)
+# Slightly lower default for assisted single-call outputs to encourage brevity
+MAX_TOK_SINGLE = int(os.getenv("MAX_COMPLETION_TOKENS", "160") or 160)
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8") or 8)
 
 if not AZURE_ENDPOINT or not API_KEY:
@@ -602,40 +603,34 @@ TESTS: List[SarCase] = load_test_cases()
 # Prompts (assisted vs raw mode)
 # -----------------------------------------------------
 
-SYSTEM_PROMPT_ASSISTED = """You are a SAR message extractor. The user will give you a single responder chat message, plus context.
-Return ONLY a compact JSON object with fields described below. DO NOT do time arithmetic.
+SYSTEM_PROMPT_ASSISTED = """You are a SAR message extractor. Return ONLY a compact JSON object. Do NOT compute times.
+
+Goal: act as a span extractor. Copy short spans from the message for vehicle and ETA text; do not paraphrase.
 
 Context:
 - Messages are from Search & Rescue responders coordinating by chat.
-- Vehicles are usually either a personal vehicle (synonyms: POV, PV, personal vehicle, own car, driving myself)
-  or a numbered SAR rig written various ways: "78", "SAR 78", "SAR-078", "in 78", "coming in 78".
+- Vehicles are usually either a personal vehicle (POV/PV/own car) or a numbered SAR rig: "78", "SAR 78", "SAR-078", "in 78", "coming in 78".
 - The local shorthand "10-22" or "1022" means stand down/cancel (NOT a time).
-- People sometimes swear or are extremely brief.
-- Sometimes they post informational notes ("key for 74 is in the box")—that is NOT a response.
-- The current reference timestamp is provided as "Current time". Do NOT compute ETAs.
-- For ETA, output exactly what the message says as text (e.g., '15 minutes', '2330', '8:45 pm', '07:30') or 'Unknown' if none is present.
+- Questions and logistics (keys/channels) are informational, not a response.
+- Current time is given only for context—you must NOT do math.
 
-Output JSON schema (no extra keys, no trailing text):
+Output JSON (no extra keys, no trailing text):
 {
     "vehicle": "POV" | "SAR-<number>" | "SAR Rig" | "Unknown",
-    "eta_text": "<raw time text as written, or 'Unknown' if none>",
+    "vehicle_text": "<exact substring for the vehicle mention, else ''>",
+    "eta_text": "<exact substring for time/duration as written, else 'Unknown'>",
     "status": "Responding" | "Cancelled" | "Available" | "Informational" | "Not Responding" | "Unknown",
-  "evidence": "<short phrase from the message>",
-  "confidence": <float between 0 and 1>
+    "evidence": "<very short phrase from the message>",
+    "confidence": <float between 0 and 1>
 }
 
 Rules:
-- VEHICLE: Extract specific vehicle type. Never use "Not Responding" as a vehicle - use "Unknown" instead. "coming in <integer>" implies the SAR unit unless followed by a time unit.
-- ETA: DO NOT calculate. Return literal text (e.g., '2330', '08:45', '45 minutes', '1 hr', '7:05 pm') or 'Unknown'.
-- STATUS: 
-  - "Responding" = actively responding to mission
-  - "Cancelled" = person cancels their own response ('can't make it', 'I'm out')
-  - "Not Responding" = acknowledges stand down / using '10-22' code
-  - "Informational" = sharing info but not responding ('key is in box', asking questions)
-  - "Available" = willing to respond if needed
-  - "Unknown" = unclear intent
-- If message includes 'in 78', 'responding 78', 'sar 78', normalize vehicle to 'SAR-78'.
-- If message refers to personal vehicle, normalize vehicle to 'POV'.
+- VEHICLE: If "in 78", "responding 78", "sar 78" appears, normalize to "SAR-78" and set vehicle_text to that substring.
+    "coming in <integer>" implies the SAR unit unless followed by a time unit; copy that phrase into vehicle_text.
+    Personal vehicle mentions → vehicle="POV" and vehicle_text to the matching words.
+    If unclear, set vehicle="Unknown" and vehicle_text="".
+- ETA: DO NOT calculate. Copy the literal time span: e.g., "2330", "08:45", "45 minutes", "1 hr", "7:05 pm". If none, use "Unknown".
+- STATUS: Provide your best guess from the message only. The evaluator may override it for scoring.
 """
 
 SYSTEM_PROMPT_RAW = """You are analyzing Search & Rescue response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
@@ -751,12 +746,13 @@ ASSISTED_SCHEMA = {
         "additionalProperties": False,
         "properties": {
             "vehicle": {"type": "string", "pattern": "^(POV|SAR Rig|SAR-[1-9][0-9]{0,2}|Unknown)$"},
-            "eta_text": {"type": "string", "minLength": 1},
+            "vehicle_text": {"type": "string"},
+            "eta_text": {"type": "string"},
             "status": {"type": "string", "enum": ["Responding","Cancelled","Available","Informational","Not Responding","Unknown"]},
             "evidence": {"type": "string"},
             "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
         },
-        "required": ["vehicle","eta_text","status","evidence","confidence"]
+        "required": ["vehicle","vehicle_text","eta_text","status","evidence","confidence"]
     }
 }
 
@@ -788,38 +784,69 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
             {"role": "user", "content": build_user_prompt(msg, raw_mode)},
         ]
         schema = RAW_SCHEMA if raw_mode else ASSISTED_SCHEMA
-    # 1) Try json_schema
-        try:
-            return await client.chat.completions.create(
-                model=model,
-                response_format={"type": "json_schema", "json_schema": schema},
-                messages=messages,
-        max_completion_tokens=MAX_TOK_SINGLE,
-            )
-        except APIStatusError as e:
-            etxt = str(e).lower()
-            if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
-                # 2) Try json_object
-                try:
-                    return await client.chat.completions.create(
-                        model=model,
-                        response_format={"type": "json_object"},
-                        messages=messages,
-                        max_completion_tokens=MAX_TOK_SINGLE,
-                    )
-                except APIStatusError as e2:
-                    etxt2 = str(e2).lower()
-                    if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
-                        # 3) Try without response_format
+        # Common deterministic kwargs; may be pruned if unsupported
+        common_kwargs = {
+            "max_completion_tokens": MAX_TOK_SINGLE,
+            "temperature": 0,
+            "top_p": 1,
+            "presence_penalty": 0,
+            "frequency_penalty": 0,
+        }
+        # Allow up to 5 param-pruning retries
+        for _ in range(5):
+            try:
+                # 1) Try json_schema
+                return await client.chat.completions.create(
+                    model=model,
+                    response_format={"type": "json_schema", "json_schema": schema},
+                    messages=messages,
+                    **common_kwargs,
+                )
+            except APIStatusError as e:
+                etxt = str(e).lower()
+                # Remove unsupported params, if any
+                if ("temperature" in etxt) and ("temperature" in common_kwargs):
+                    common_kwargs.pop("temperature", None)
+                    continue
+                if ("top_p" in etxt) and ("top_p" in common_kwargs):
+                    common_kwargs.pop("top_p", None)
+                    continue
+                if ("presence_penalty" in etxt) and ("presence_penalty" in common_kwargs):
+                    common_kwargs.pop("presence_penalty", None)
+                    continue
+                if ("frequency_penalty" in etxt) and ("frequency_penalty" in common_kwargs):
+                    common_kwargs.pop("frequency_penalty", None)
+                    continue
+                if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
+                    # 2) Try json_object
+                    try:
                         return await client.chat.completions.create(
                             model=model,
+                            response_format={"type": "json_object"},
                             messages=messages,
-                            max_completion_tokens=MAX_TOK_SINGLE,
+                            **common_kwargs,
                         )
-                    else:
-                        raise
-            else:
-                raise
+                    except APIStatusError as e2:
+                        etxt2 = str(e2).lower()
+                        # Remove unsupported params and retry the loop
+                        pruned = False
+                        for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+                            if key in common_kwargs and key in etxt2:
+                                common_kwargs.pop(key, None)
+                                pruned = True
+                        if pruned:
+                            continue
+                        if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
+                            # 3) Try without response_format
+                            return await client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                **common_kwargs,
+                            )
+                        else:
+                            raise
+                else:
+                    raise
 
     # We request JSON-only; if model ignores, we fallback by regexing the first {...}
     resp = await _create_with_fallback()
@@ -877,12 +904,13 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                 # eta_iso already validated above; nothing else to do here
 
             else:
-                # Original assisted mode - harness does normalization
+                # Assisted mode - model returns spans; harness does normalization
                 vehicle_guess = data.get("vehicle") or "Unknown"
+                vehicle_span = (data.get("vehicle_text") or "").strip()
                 eta_text = data.get("eta_text") or "Unknown"
                 status_guess = data.get("status") or "Unknown"
 
-                # Vehicle normalization (in case the model returns raw strings)
+                # Vehicle normalization (prefer model's normalized label, validate span)
                 veh_norm = vehicle_guess
                 if veh_norm not in ["POV", "SAR Rig"] and not veh_norm.startswith("SAR-") and veh_norm not in ["Unknown", "Not Responding"]:
                     veh_norm = normalize_vehicle(str(vehicle_guess))
@@ -893,9 +921,15 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                         veh_norm = f"SAR-{num}"
                     except Exception:
                         pass
-                # Vehicle fallback from message
+                # Validate vehicle_text span actually occurs in message; else ignore
+                if vehicle_span and vehicle_span.lower() not in case.text.lower():
+                    vehicle_span = ""
+                # If Unknown, try to infer from span or message
                 if veh_norm == "Unknown":
-                    veh_norm = normalize_vehicle(case.text)
+                    if vehicle_span:
+                        veh_norm = normalize_vehicle(vehicle_span)
+                    if veh_norm == "Unknown":
+                        veh_norm = normalize_vehicle(case.text)
 
                 # ETA normalization (we convert; model does not) -> ISO
                 cur_dt = from_iso(case.current_ts)
@@ -1153,7 +1187,8 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
     try:
         data = json.loads(response_text.strip())
         parsed_vehicle = data.get("vehicle", "").strip()
-        # Schema uses 'eta_text'
+        # Assisted schema includes 'vehicle_text' and 'eta_text'
+        parsed_vehicle_text = data.get("vehicle_text", "").strip()
         parsed_eta_text = data.get("eta_text", "").strip()
         parsed_status = data.get("status", "").strip()
     except json.JSONDecodeError:
@@ -1163,6 +1198,7 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
             try:
                 data = json.loads(m.group(0))
                 parsed_vehicle = data.get("vehicle", "").strip()
+                parsed_vehicle_text = data.get("vehicle_text", "").strip()
                 parsed_eta_text = data.get("eta_text", "").strip()
                 parsed_status = data.get("status", "").strip()
             except Exception:
@@ -1181,7 +1217,13 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
             }
     
     # Normalize parsed values
+    # Prefer normalized label, but if Unknown, try span then full message
     norm_vehicle = normalize_vehicle(parsed_vehicle) if parsed_vehicle else "Unknown"
+    if norm_vehicle == "Unknown":
+        if 'parsed_vehicle_text' in locals() and parsed_vehicle_text:
+            norm_vehicle = normalize_vehicle(parsed_vehicle_text)
+        if norm_vehicle == "Unknown":
+            norm_vehicle = normalize_vehicle(message)
 
     # For ETA, convert to ISO timestamp using the *case's* current_ts and prev_eta
     norm_eta = "Unknown"
@@ -1333,9 +1375,11 @@ async def run_benchmark_with_configs(model_configs, run_assisted: bool = True, r
     # Prepare all tasks
     tasks = []
     task_labels = []
+    # Shared global concurrency limiter across all configs
+    shared_sem = asyncio.Semaphore(MAX_CONCURRENCY)
     for config in model_configs:
         # Add extra parameters for the API call
-        extra_params = {}
+        extra_params = {"temperature": 0, "top_p": 1, "presence_penalty": 0, "frequency_penalty": 0}
         if config.get("verbosity"):
             extra_params["verbosity"] = config["verbosity"]
         if config.get("reasoning"):
@@ -1346,6 +1390,7 @@ async def run_benchmark_with_configs(model_configs, run_assisted: bool = True, r
             "model": config["model"],
             "extra_params": extra_params,
             "description": config["description"],
+            "_sem": shared_sem,
         }
 
         if run_assisted:
@@ -1425,7 +1470,9 @@ async def benchmark_model_with_config(client, config):
             ]
             async def _create_with_fallback_case():
                 # Retry with exponential backoff for transient errors and adjust max tokens on overflow
-                base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", "2048") or 2048)
+                # Lower default cap in assisted mode to reduce verbosity/cost
+                default_cap = 512 if raw_mode else 200
+                base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", str(default_cap)) or default_cap)
                 max_tok = base_tok
                 attempts = 3
                 delay = 1.0
@@ -1443,6 +1490,11 @@ async def benchmark_model_with_config(client, config):
                                 )
                             except APIStatusError as e:
                                 etxt = str(e).lower()
+                                # Prune unsupported decode params dynamically
+                                for key, needle in (("temperature","temperature"),("top_p","top_p"),("presence_penalty","presence"),("frequency_penalty","frequency")):
+                                    if key in extra_params and needle in etxt and "unsupported" in etxt:
+                                        extra_params.pop(key, None)
+                                        break
                                 # Fallback response_format handling
                                 if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
                                     try:
@@ -1455,6 +1507,10 @@ async def benchmark_model_with_config(client, config):
                                         )
                                     except APIStatusError as e2:
                                         etxt2 = str(e2).lower()
+                                        for key, needle in (("temperature","temperature"),("top_p","top_p"),("presence_penalty","presence"),("frequency_penalty","frequency")):
+                                            if key in extra_params and needle in etxt2 and "unsupported" in etxt2:
+                                                extra_params.pop(key, None)
+                                                break
                                         if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
                                             return await client.chat.completions.create(
                                                 model=model_name,
