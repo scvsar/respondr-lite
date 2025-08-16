@@ -5,10 +5,11 @@
 # - Scores: per-field accuracy + exact triplet accuracy.
 #
 # Env:
-#   model_endpoint = https://<your-azure-resource>.openai.azure.com/
-#   model_api_key  = <key>
-#   API_VERSION    = 2024-12-01-preview (default)
-#   BENCH_MODELS   = optional comma-separated list of model names
+#   model_endpoint        = https://<your-azure-resource>.openai.azure.com/
+#   model_api_key         = <key>
+#   API_VERSION           = 2024-12-01-preview (default)
+#   BENCH_MODELS          = optional comma-separated list of model names
+#   MAX_COMPLETION_TOKENS = optional cap for model output tokens (default 256 for single, 2048 for comprehensive)
 #
 # Defaults (3 "fast" models): gpt-5-nano, gpt-5-mini, gpt-4o-mini
 
@@ -28,8 +29,14 @@ from dotenv import load_dotenv
 from openai import AsyncAzureOpenAI, APIConnectionError, RateLimitError, APIStatusError, APITimeoutError, AuthenticationError
 from colorama import Fore, Style, init
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file in this script's directory, overriding process env
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DOTENV_PATH = os.path.join(SCRIPT_DIR, ".env")
+if os.path.exists(DOTENV_PATH):
+    load_dotenv(DOTENV_PATH, override=True)
+else:
+    # Fall back to default search (project root, cwd), still overriding process env
+    load_dotenv(override=True)
 
 init(autoreset=True)
 GREEN, YELLOW, RED = Fore.GREEN, Fore.YELLOW, Fore.RED
@@ -38,6 +45,8 @@ BOLD, RESET = Style.BRIGHT, Style.RESET_ALL
 API_VERSION = os.getenv("API_VERSION", "2024-12-01-preview")
 AZURE_ENDPOINT = os.getenv("model_endpoint")
 API_KEY = os.getenv("model_api_key")
+MAX_TOK_SINGLE = int(os.getenv("MAX_COMPLETION_TOKENS", "256") or 256)
+MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8") or 8)
 
 if not AZURE_ENDPOINT or not API_KEY:
     raise SystemExit(
@@ -51,62 +60,51 @@ BENCH_MODELS = [m.strip() for m in os.getenv("BENCH_MODELS", ",".join(DEFAULT_MO
 # Normalization utilities
 # -----------------------
 
-def _to_pst():
-    # Minimal helper: treat default as America/Los_Angeles w/o DST headaches (benchmark only).
-    return timezone(timedelta(hours=-7))  # OK for test harness; your service uses zoneinfo already.
-
-def now_pst():
-    return datetime.now(_to_pst())
-
 def normalize_vehicle(text: str) -> str:
-    """Stronger vehicle parser using positive/negative cues.
-    - Positive cues: responding/in/taking/rolling/coming/arriving/with/driving/unit/sar
-    - Negative cues: channel/ch/freq/mhz/alpha/bravo/charlie/copy/subject/subj/grid/mile
-    - Special: "coming in <int>" => SAR-<int> unless time unit (min/m/mins/minutes) is nearby.
-    - POV synonyms.
+    """Drop-in replacement enforcing negative cues and avoiding stray number fallback.
+    - Prevents channel/freq/call-sign numbers from mapping to vehicles.
+    - Keeps "coming in <int>" → vehicle unless time unit follows.
+    - Handles explicit SAR-### even if other negatives present.
+    - Maps POV synonyms.
     """
-    t = text.strip().lower()
+    t = (text or "").lower()
+
     if not t:
         return "Unknown"
 
-    # Negative cues filter
-    if re.search(r"\b(channel|ch\b|freq|mhz|alpha|bravo|charlie|copy\b|subject|subj\b|grid|mile)\b", t):
-        # don't extract numbers in these contexts
-        pass
-
-    # POV triggers
-    if any(k in t for k in ["pov", "p.v.", "pv", "personal vehicle", "own car", "driving myself", "my car", "personal"]) and "sar" not in t:
+    # POV
+    if any(k in t for k in ["pov","p.v.","pv","personal vehicle","own car","driving myself","my car","personal"]) and "sar" not in t:
         return "POV"
 
-    # Explicit SAR rig
-    if "sar rig" in t:
+    # SAR Rig
+    if re.search(r"\bsar\s*rig\b", t):
         return "SAR Rig"
 
-    # Special: coming in <int> means vehicle unless minutes unit
-    m_special = re.search(r"\bcoming\s+in\s+(\d{1,3})\b", t)
-    if m_special:
-        # if not immediately followed by time unit nearby
-        span_end = m_special.end()
-        window = t[span_end: span_end + 8]
-        if not re.search(r"\b(m|min|mins|minutes)\b", window):
-            num = int(m_special.group(1))
-            if 1 <= num <= 999:
-                return f"SAR-{num}"
+    # Special: "coming in <int>" means vehicle unless a time unit follows
+    m = re.search(r"\bcoming\s+in\s+(\d{1,3})(?!\s*(?:m|min|mins?|minutes?)\b)", t)
+    if m:
+        n = int(m.group(1))
+        if 1 <= n <= 999:
+            return f"SAR-{n}"
 
-    # Positive cue + number
-    pos = re.search(r"\b(respond(?:ing)?|\bin\b|taking|rolling|coming|arriving|with|driving|unit|sar)\b", t)
-    m_num = re.search(r"\b(?:sar[\s-]*)?0*(\d{1,3})\b", t)
-    if m_num and (pos or "sar" in t):
-        num = int(m_num.group(1))
-        if 1 <= num <= 999:
-            return f"SAR-{num}"
+    # Negative and positive cues
+    NEG = r"\b(?:key|box|code|channel|ch\b|freq|mhz|alpha|bravo|charlie|copy\b|subject|subj\b|grid|mile)\b"
+    POS = r"(?:\bsar\b|\bunit\b|\brig\b|\btruck\b|\brespond(?:ing)?\b|\brolling\b|\btaking\b|\bcoming\b|\barriving\b|\bwith\b|\bdriving\b|\bin\b)"
 
-    # Fallback simple number form
-    m_any = re.search(r"\b(?:sar[\s-]*)?0*(\d{1,3})\b", t)
-    if m_any:
-        num = int(m_any.group(1))
-        if 1 <= num <= 999:
-            return f"SAR-{num}"
+    neg = bool(re.search(NEG, t))
+
+    # Explicit "SAR-###" wins even if negatives are present
+    m = re.search(r"\bsar[\s-]*0*(\d{1,3})\b", t)
+    if m:
+        return f"SAR-{int(m.group(1))}"
+
+    # Contexted numeric vehicle only when positive cues and no negative cues
+    if not neg and re.search(POS, t):
+        m = re.search(r"\b0*(\d{1,3})\b", t)
+        if m:
+            n = int(m.group(1))
+            if 1 <= n <= 999:
+                return f"SAR-{n}"
 
     return "Unknown"
 
@@ -189,6 +187,9 @@ def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: 
         low = _fix_common_typos(raw.lower())
         low = low.replace("~", "").strip()
 
+        # Treat ETD like ETA in SAR chat unless clearly a planning context
+        low = re.sub(r"^\s*etd\b", "eta", low)
+
         # 1) Exact HH:MM (with optional am/pm)
         m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*(am|pm)?\s*$", low)
         if m:
@@ -196,10 +197,14 @@ def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: 
             if minute > 59:
                 return "Unknown"
             if ap:
-                if ap == "pm" and hour != 12: hour += 12
-                if ap == "am" and hour == 12: hour = 0
-            if hour == 24: hour = 0
-            if hour > 23: return "Unknown"
+                if ap == "pm" and hour != 12:
+                    hour += 12
+                if ap == "am" and hour == 12:
+                    hour = 0
+            if hour == 24:
+                hour = 0
+            if hour > 23:
+                return "Unknown"
             return f"{hour:02d}:{minute:02d}"
 
         # 2) Compact 3/4-digit times (0830, 2330, 830)
@@ -209,16 +214,20 @@ def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: 
                 hour, minute = int(digits[0]), int(digits[1:3])
             else:
                 hour, minute = int(digits[:2]), int(digits[2:])
-            if hour == 24: hour = 0
-            if hour > 23 or minute > 59: return "Unknown"
+            if hour == 24:
+                hour = 0
+            if hour > 23 or minute > 59:
+                return "Unknown"
             return f"{hour:02d}:{minute:02d}"
 
         # 3) "8 pm"
         m = re.match(r"^\s*(\d{1,2})\s*(am|pm)\s*$", low)
         if m:
             hour, ap = int(m.group(1)), m.group(2)
-            if ap == "pm" and hour != 12: hour += 12
-            if ap == "am" and hour == 12: hour = 0
+            if ap == "pm" and hour != 12:
+                hour += 12
+            if ap == "am" and hour == 12:
+                hour = 0
             return f"{hour:02d}:00"
 
         # 4) Relative updates vs. previous ETA (if provided)
@@ -283,6 +292,25 @@ def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: 
                 if val is not None:
                     shifted = _shift_hhmm(prev_eta_hhmm, +val)
                     return shifted or "Unknown"
+
+        # "arrive/by/there at ..." hooks → delegate to the core parser
+        m = re.search(r"\b(?:arrive|arrival|be there|there|by)\s*(?:at\s*)?(\d{1,2}:\d{2}|\d{3,4}|\d{1,2}\s*(?:am|pm))\b", low)
+        if m:
+            return convert_eta_text_to_hhmm(m.group(1), base_time, prev_eta_hhmm)
+
+        # "minutes out"
+        m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:mins?|minutes?)\s*out\b", low)
+        if m:
+            mins = float(m.group(1))
+            eta_dt = base_time + timedelta(minutes=_clamp_minutes(mins))
+            return eta_dt.strftime("%H:%M")
+
+        # "15min" (no space)
+        m = re.search(r"\b(\d+)\s*min\b", low)
+        if m:
+            mins = int(m.group(1))
+            eta_dt = base_time + timedelta(minutes=_clamp_minutes(mins))
+            return eta_dt.strftime("%H:%M")
 
         # 5) Durations relative to base_time (numbers)
         if "an hour and a half" in low or "a hour and a half" in low or re.search(r"\b1\s*hour\s*and\s*a\s*half\b", low):
@@ -367,24 +395,57 @@ def classify_status_from_text(msg: str) -> str:
     t = (msg or "").strip().lower()
     if not t:
         return "Unknown"
-    # Stand-down / Not Responding first
-    if re.search(r"\b(10-?22|\bcopy\s*10-?22\b|\bcopy\s*1022\b|\back\b.*(10-?22|1022))\b", t):
-        return "Not Responding"
-    # Informational 1022 subject found / mission over
-    if re.search(r"\b(1022\s*subj(?:ect)?\s*found|mission\s*(?:over|complete)|per\s*ic)\b", t):
+
+    # --- time-ish mention ---
+    timeish = (
+        re.search(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", t) or
+        re.search(r"\b\d{3,4}\b", t) or
+        re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", t) or
+        re.search(r"\b(?:an|a)\s+hour\b", t) or
+        ("half an hour" in t)
+    )
+    # Guard: don't let 1022 drive timeish
+    if re.search(r"\b(?:10-?22|1022)\b", t):
+        timeish = False
+
+    # Informational stand-down content FIRST
+    if (
+        re.search(r"\b(?:10-?22|1022)\s*(?:subj(?:ect)?\s*found|subject\s*found)\b", t)
+        or re.search(r"\bmission\s*(?:over|complete)\b", t)
+        or re.search(r"\bper\s*ic\b", t)
+        or re.search(r"\bcopy\s+that\s*(?:10-?22|1022)\b", t)
+    ):
         return "Informational"
+
+    # Acknowledging stand-down (bare/ack/copy)
+    if re.fullmatch(r"\s*(?:10-?22|1022)\s*\.?\s*", t) or \
+       re.search(r"\b(?:copy|ack(?:nowledged)?)\s*(?:10-?22|1022)\b", t):
+        return "Not Responding"
+
     # Cancelled
     if re.search(r"(can't\s+make\s+it|won't\s+make|unavailable|i.?m\s+out|working\s+late|bail(?:ing)?|tap\s+out)", t):
         return "Cancelled"
-    # Responding cues
-    if re.search(r"\b(respond(?:ing)?|en\s?route|enrt|on\s*it|rolling|leaving\s+now|\beta\b|be\s+there|headed)\b", t):
+
+    # Questions are informational
+    if re.search(r"\?\s*$", t):
+        return "Informational"
+
+    # Responding cues (expanded)
+    if re.search(r"\b(respond(?:ing)?|en\s?route|enrt|on\s*it|rolling|leaving\s+now|\beta\b|be\s+there|headed|arrive|arriving|coming|etd)\b", t):
         return "Responding"
+
+    # Implicit ETA implies responding (unless it's clearly channel/freq)
+    if timeish and not re.search(r"\b(channel|ch\b|freq|mhz)\b", t):
+        return "Responding"
+
     # Available
     if re.search(r"\b(available|can\s+respond\s+if\s+needed|able\s+to\s+respond)\b", t):
         return "Available"
-    # Informational: questions, keys/channels
-    if re.search(r"\?$", t) or re.search(r"\b(key|channel|freq|mhz)\b", t):
+
+    # Informational catch-all (keys/channels)
+    if re.search(r"\b(key|channel|freq|mhz)\b", t):
         return "Informational"
+
     return "Unknown"
 
 # ISO helpers (UTC Z)
@@ -720,19 +781,48 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
     # Choose the appropriate prompt based on mode
     system_prompt = SYSTEM_PROMPT_RAW if raw_mode else SYSTEM_PROMPT_ASSISTED
     
-    # We request JSON-only; if model ignores, we fallback by regexing the first {...}
-    resp = await client.chat.completions.create(
-        model=model,
-        response_format={
-            "type": "json_schema",
-            "json_schema": RAW_SCHEMA if raw_mode else ASSISTED_SCHEMA,
-        },
-        messages=[
+    # Helper to call API with graceful fallback when json_schema isn't supported
+    async def _create_with_fallback():
+        messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": build_user_prompt(msg, raw_mode)},
-        ],
-        max_completion_tokens=256,
-    )
+        ]
+        schema = RAW_SCHEMA if raw_mode else ASSISTED_SCHEMA
+    # 1) Try json_schema
+        try:
+            return await client.chat.completions.create(
+                model=model,
+                response_format={"type": "json_schema", "json_schema": schema},
+                messages=messages,
+        max_completion_tokens=MAX_TOK_SINGLE,
+            )
+        except APIStatusError as e:
+            etxt = str(e).lower()
+            if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
+                # 2) Try json_object
+                try:
+                    return await client.chat.completions.create(
+                        model=model,
+                        response_format={"type": "json_object"},
+                        messages=messages,
+                        max_completion_tokens=MAX_TOK_SINGLE,
+                    )
+                except APIStatusError as e2:
+                    etxt2 = str(e2).lower()
+                    if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
+                        # 3) Try without response_format
+                        return await client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            max_completion_tokens=MAX_TOK_SINGLE,
+                        )
+                    else:
+                        raise
+            else:
+                raise
+
+    # We request JSON-only; if model ignores, we fallback by regexing the first {...}
+    resp = await _create_with_fallback()
     raw = resp.choices[0].message.content or ""
     try:
         return json.loads(raw)
@@ -740,7 +830,7 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
         m = re.search(r"\{.*\}", raw, re.S)
         fallback_schema = {"vehicle":"Unknown","status":"Unknown","evidence":"","confidence":0.0}
         if raw_mode:
-            fallback_schema["eta"] = "Unknown"
+            fallback_schema["eta_iso"] = "Unknown"
         else:
             fallback_schema["eta_text"] = "Unknown"
         return json.loads(m.group(0)) if m else fallback_schema
@@ -851,10 +941,7 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                     except Exception:
                         ok_eta = False
 
-            ok_status = (stat_norm == exp_status)
-            exact_triplet = ok_vehicle and ok_eta and ok_status
-
-            # Deterministic status for scoring (ignore model status)
+            # Deterministic status for scoring (ignore model status from LLM)
             stat_rule = classify_status_from_text(case.text)
             ok_status = (stat_rule == exp_status)
             exact_triplet = ok_vehicle and ok_eta and ok_status
@@ -1070,12 +1157,28 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
         parsed_eta_text = data.get("eta_text", "").strip()
         parsed_status = data.get("status", "").strip()
     except json.JSONDecodeError:
-        return {
-            "vehicle_correct": False,
-            "eta_correct": False,
-            "status_correct": False,
-            "exact_match": False
-        }
+        # Try to extract the first JSON object
+        m = re.search(r"\{.*?\}", response_text, re.S)
+        if m:
+            try:
+                data = json.loads(m.group(0))
+                parsed_vehicle = data.get("vehicle", "").strip()
+                parsed_eta_text = data.get("eta_text", "").strip()
+                parsed_status = data.get("status", "").strip()
+            except Exception:
+                return {
+                    "vehicle_correct": False,
+                    "eta_correct": False,
+                    "status_correct": False,
+                    "exact_match": False
+                }
+        else:
+            return {
+                "vehicle_correct": False,
+                "eta_correct": False,
+                "status_correct": False,
+                "exact_match": False
+            }
     
     # Normalize parsed values
     norm_vehicle = normalize_vehicle(parsed_vehicle) if parsed_vehicle else "Unknown"
@@ -1103,7 +1206,7 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
         try:
             a = from_iso(str(norm_eta)) if norm_eta != "Unknown" else None
             b = from_iso(str(expected_eta))
-            eta_correct = a is not None and abs(int((a - b).total_seconds() // 60)) <= 2
+            eta_correct = a is not None and abs(int((a - b).total_seconds() // 60)) <= TOLERANCE_MIN
         except Exception:
             eta_correct = False
     status_correct = (norm_status == expected_status)
@@ -1119,28 +1222,32 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
         "parsed_status": norm_status
     }
 
-async def run_comprehensive_benchmark():
-    """Run benchmark with all model variants and reasoning/verbosity combinations."""
-    
+async def run_comprehensive_benchmark(run_assisted: bool = True, run_raw: bool = True):
+    """Run benchmark with all model variants and reasoning/verbosity combinations.
+    Args:
+        run_assisted: include assisted-mode runs
+        run_raw: include raw-mode runs
+    """
+
     # --- Configuration Options ---
     FAST_MODELS_ONLY = False  # Set to False to test all models
     INCLUDE_REASONING_VARIANTS = True  # Set to True to test reasoning levels
     INCLUDE_VERBOSITY_VARIANTS = True  # Set to True to test verbosity levels
-    
+
     print(f"{BOLD}🚀 SAR LLM Extraction Benchmark{RESET}")
     print(f"Configuration: Fast={'Y' if FAST_MODELS_ONLY else 'N'}, Reasoning={'Y' if INCLUDE_REASONING_VARIANTS else 'N'}, Verbosity={'Y' if INCLUDE_VERBOSITY_VARIANTS else 'N'}")
     print("-" * 80)
-    
+
     # Base fast models (always included)
     if FAST_MODELS_ONLY:
         base_models = ["gpt-5-nano", "gpt-5-mini", "gpt-4o-mini"]
     else:
         # All available models - focus on gpt-5-nano, gpt-5-mini, plus gpt-4o and gpt-5-chat
         base_models = ["gpt-4o", "gpt-4o-mini", "gpt-5-chat", "gpt-5-nano", "gpt-5-mini"]
-    
+
     # Build model configurations
     model_configs = []
-    
+
     # Add base models without special parameters
     for model in base_models:
         model_configs.append({
@@ -1149,12 +1256,12 @@ async def run_comprehensive_benchmark():
             "reasoning": None,
             "description": f"{model} (default)"
         })
-    
+
     # Add reasoning variants if enabled
     if INCLUDE_REASONING_VARIANTS:
         reasoning_levels = ["minimal", "low", "medium", "high"]
         gpt5_variants = [m for m in base_models if m.startswith("gpt-5") and m not in ["gpt-5-chat"]]
-        
+
         for model in gpt5_variants:
             for reasoning in reasoning_levels:
                 model_configs.append({
@@ -1163,12 +1270,12 @@ async def run_comprehensive_benchmark():
                     "reasoning": reasoning,
                     "description": f"{model} (reasoning={reasoning})"
                 })
-    
+
     # Add verbosity variants if enabled
     if INCLUDE_VERBOSITY_VARIANTS:
         verbosity_levels = ["low", "medium", "high"]
         gpt5_variants = [m for m in base_models if m.startswith("gpt-5") and m not in ["gpt-5-chat"]]
-        
+
         for model in gpt5_variants:
             for verbosity in verbosity_levels:
                 model_configs.append({
@@ -1177,13 +1284,13 @@ async def run_comprehensive_benchmark():
                     "reasoning": None,
                     "description": f"{model} (verbosity={verbosity})"
                 })
-    
+
     # Add combined variants if both are enabled
     if INCLUDE_REASONING_VARIANTS and INCLUDE_VERBOSITY_VARIANTS:
         reasoning_levels = ["low", "medium"]  # Limit combinations to avoid explosion
         verbosity_levels = ["low", "medium"]
         gpt5_variants = [m for m in base_models if m.startswith("gpt-5") and m not in ["gpt-5-chat"]]
-        
+
         for model in gpt5_variants:
             for reasoning in reasoning_levels:
                 for verbosity in verbosity_levels:
@@ -1193,16 +1300,16 @@ async def run_comprehensive_benchmark():
                         "reasoning": reasoning,
                         "description": f"{model} (reasoning={reasoning}, verbosity={verbosity})"
                     })
-    
+
     print(f"Testing {len(model_configs)} model configurations:")
     for i, config in enumerate(model_configs, 1):
         print(f"  {i:2d}. {config['description']}")
     print()
-    
-    # Run the benchmark with these configurations
-    await run_benchmark_with_configs(model_configs)
 
-async def run_benchmark_with_configs(model_configs):
+    # Run the benchmark with these configurations
+    await run_benchmark_with_configs(model_configs, run_assisted=run_assisted, run_raw=run_raw)
+
+async def run_benchmark_with_configs(model_configs, run_assisted: bool = True, run_raw: bool = True):
     """Run the SAR benchmark with specified model configurations."""
     
     # Validate environment
@@ -1225,6 +1332,7 @@ async def run_benchmark_with_configs(model_configs):
     
     # Prepare all tasks
     tasks = []
+    task_labels = []
     for config in model_configs:
         # Add extra parameters for the API call
         extra_params = {}
@@ -1232,15 +1340,22 @@ async def run_benchmark_with_configs(model_configs):
             extra_params["verbosity"] = config["verbosity"]
         if config.get("reasoning"):
             extra_params["reasoning_effort"] = config["reasoning"]
-        
+
         # Create a modified config for the existing benchmark function
-        task_config = {
+        base_cfg = {
             "model": config["model"],
             "extra_params": extra_params,
-            "description": config["description"]
+            "description": config["description"],
         }
-        
-        tasks.append(benchmark_model_with_config(client, task_config))
+
+        if run_assisted:
+            assisted_cfg = {**base_cfg, "description": f"{base_cfg['description']} [assisted]", "raw_mode": False}
+            tasks.append(benchmark_model_with_config(client, assisted_cfg))
+            task_labels.append(assisted_cfg["description"])
+        if run_raw:
+            raw_cfg = {**base_cfg, "description": f"{base_cfg['description']} [raw]", "raw_mode": True}
+            tasks.append(benchmark_model_with_config(client, raw_cfg))
+            task_labels.append(raw_cfg["description"])
     
     # Run all benchmarks concurrently
     print(f"Executing {len(tasks)} benchmark runs...")
@@ -1249,10 +1364,10 @@ async def run_benchmark_with_configs(model_configs):
     # Process and display results
     successful_results = []
     failed_results = []
-    
+
     for i, result in enumerate(results):
         if isinstance(result, Exception):
-            failed_results.append((model_configs[i]["description"], str(result)))
+            failed_results.append((task_labels[i], str(result)))
         else:
             successful_results.append(result)
     
@@ -1272,6 +1387,7 @@ async def benchmark_model_with_config(client, config):
     model_name = config["model"]
     extra_params = config.get("extra_params", {})
     description = config["description"]
+    raw_mode = config.get("raw_mode", False)
     
     print(f"  🧪 Testing {description}...")
     
@@ -1282,22 +1398,95 @@ async def benchmark_model_with_config(client, config):
     total_input_tokens = 0
     total_output_tokens = 0
     
+    # Global concurrency limiter
+    sem = config.get("_sem")
+    if sem is None:
+        # Back-compat: create local semaphore if not provided
+        sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
     for i, (text, base_time_iso, prev_eta_hhmm, expected_vehicle, expected_eta, expected_status) in enumerate(test_cases):
         try:
             start_time = time.time()
             
-            # Make API call with extra parameters
-            response = await client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    # keep the same shape as your main() path
-                    {"role": "user", "content": f"Current time (do NOT calculate): {base_time_iso}\nPrevious ETA (if any): {prev_eta_hhmm or 'None'}\nMessage: {text}"}
-                ],
-                response_format={"type": "json_object"},
-                max_completion_tokens=2048,  # Increased token limit for better responses
-                **extra_params
+            # Make API call with strict schema and mode-specific prompts
+            system_prompt = SYSTEM_PROMPT_RAW if raw_mode else SYSTEM_PROMPT_ASSISTED
+            schema = RAW_SCHEMA if raw_mode else ASSISTED_SCHEMA
+            user_content = (
+                f"Current time (UTC){'' if raw_mode else ', do NOT calculate'}: {base_time_iso}\n"
+                f"Previous ETA (if any): {prev_eta_hhmm or 'None'}\n"
+                f"Message: {text}" if not raw_mode else
+                f"Current time (UTC): {base_time_iso}\nPrevious ETA (if any): {prev_eta_hhmm or 'None'}\nSAR Message: {text}\n\nExtract vehicle, calculate ETA to an absolute ISO-8601 UTC string (eta_iso), and determine response status."
             )
+
+            # Call API with fallback for response_format support across models
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content}
+            ]
+            async def _create_with_fallback_case():
+                # Retry with exponential backoff for transient errors and adjust max tokens on overflow
+                base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", "2048") or 2048)
+                max_tok = base_tok
+                attempts = 3
+                delay = 1.0
+                last_err = None
+                for attempt in range(1, attempts + 1):
+                    try:
+                        async with sem:
+                            try:
+                                return await client.chat.completions.create(
+                                    model=model_name,
+                                    messages=messages,
+                                    response_format={"type": "json_schema", "json_schema": schema},
+                                    max_completion_tokens=max_tok,
+                                    **extra_params
+                                )
+                            except APIStatusError as e:
+                                etxt = str(e).lower()
+                                # Fallback response_format handling
+                                if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
+                                    try:
+                                        return await client.chat.completions.create(
+                                            model=model_name,
+                                            messages=messages,
+                                            response_format={"type": "json_object"},
+                                            max_completion_tokens=max_tok,
+                                            **extra_params
+                                        )
+                                    except APIStatusError as e2:
+                                        etxt2 = str(e2).lower()
+                                        if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
+                                            return await client.chat.completions.create(
+                                                model=model_name,
+                                                messages=messages,
+                                                max_completion_tokens=max_tok,
+                                                **extra_params
+                                            )
+                                        else:
+                                            raise
+                                else:
+                                    raise
+                    except (RateLimitError, APITimeoutError, APIConnectionError, APIStatusError) as e:
+                        last_err = e
+                        msg = str(e).lower()
+                        # If output limit reached, try with smaller max tokens next attempt
+                        if "max_tokens" in msg or "output limit" in msg:
+                            max_tok = max(256, max_tok // 2)
+                        # Backoff for 429 or timeouts
+                        if isinstance(e, RateLimitError) or "429" in msg or "rate limit" in msg:
+                            await asyncio.sleep(delay)
+                            delay = min(delay * 2, 8.0)
+                            continue
+                        # For other APIStatusError, do one more quick retry, then give up
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 8.0)
+                        continue
+                # After retries, re-raise last error
+                if last_err:
+                    raise last_err
+                raise RuntimeError("unknown error in _create_with_fallback_case")
+
+            response = await _create_with_fallback_case()
             
             end_time = time.time()
             duration = end_time - start_time
@@ -1306,27 +1495,96 @@ async def benchmark_model_with_config(client, config):
             total_output_tokens += response.usage.completion_tokens
             
             # Parse and evaluate result
-            result = parse_and_evaluate_result(
-                response.choices[0].message.content,
-                expected_vehicle, expected_eta, expected_status,
-                text, i + 1, base_time_iso, prev_eta_hhmm
-            )
+            content = response.choices[0].message.content
+            if not raw_mode:
+                result = parse_and_evaluate_result(
+                    content,
+                    expected_vehicle, expected_eta, expected_status,
+                    text, i + 1, base_time_iso, prev_eta_hhmm
+                )
+            else:
+                # RAW mode: parse JSON, compare absolute ISO directly
+                try:
+                    data = json.loads(content)
+                except Exception:
+                    m = re.search(r"\{.*?\}", content, re.S)
+                    if m:
+                        try:
+                            data = json.loads(m.group(0))
+                        except Exception:
+                            data = {}
+                    else:
+                        data = {}
+                parsed_vehicle = data.get("vehicle", "Unknown")
+                parsed_eta_iso = data.get("eta_iso", "Unknown")
+                parsed_status = data.get("status", "Unknown")
+
+                # Normalize vehicle formatting
+                vnorm = parsed_vehicle
+                if isinstance(vnorm, str) and (vnorm.startswith("SAR-") or vnorm.startswith("SAR ")):
+                    try:
+                        num = int(re.findall(r"\d+", vnorm)[0])
+                        vnorm = f"SAR-{num}"
+                    except Exception:
+                        pass
+                if vnorm == "Unknown":
+                    vnorm = normalize_vehicle(text)
+
+                # Status by deterministic classifier for scoring
+                snorm = classify_status_from_text(text)
+
+                # ETA: validate ISO and apply tolerance
+                if snorm in ("Cancelled", "Not Responding"):
+                    eta_norm = "Unknown"
+                else:
+                    try:
+                        _ = from_iso(parsed_eta_iso) if parsed_eta_iso and parsed_eta_iso != "Unknown" else None
+                        eta_norm = parsed_eta_iso if _ else "Unknown"
+                    except Exception:
+                        eta_norm = "Unknown"
+
+                vehicle_correct = (vnorm == expected_vehicle)
+                if expected_eta == "Unknown":
+                    eta_correct = (eta_norm == expected_eta)
+                else:
+                    try:
+                        a = from_iso(eta_norm) if eta_norm != "Unknown" else None
+                        b = from_iso(expected_eta)
+                        eta_correct = a is not None and abs(int((a - b).total_seconds() // 60)) <= TOLERANCE_MIN
+                    except Exception:
+                        eta_correct = False
+                status_correct = (snorm == expected_status)
+                exact_match = vehicle_correct and eta_correct and status_correct
+
+                result = {
+                    "vehicle_correct": vehicle_correct,
+                    "eta_correct": eta_correct,
+                    "status_correct": status_correct,
+                    "exact_match": exact_match,
+                }
             all_results.append(result)
             
         except Exception as e:
             print(f"    ❌ Error on test case {i+1}: {e}")
+            # Mark as skipped so we don't penalize accuracy for infra hiccups
             all_results.append({
                 "vehicle_correct": False,
-                "eta_correct": False, 
+                "eta_correct": False,
                 "status_correct": False,
-                "exact_match": False
+                "exact_match": False,
+                "skipped": True
             })
     
     # Calculate metrics
-    vehicle_accuracy = np.mean([r["vehicle_correct"] for r in all_results])
-    eta_accuracy = np.mean([r["eta_correct"] for r in all_results])
-    status_accuracy = np.mean([r["status_correct"] for r in all_results])
-    exact_accuracy = np.mean([r["exact_match"] for r in all_results])
+    # Exclude skipped cases from accuracy denominators
+    valid = [r for r in all_results if not r.get("skipped")]
+    if not valid:
+        vehicle_accuracy = eta_accuracy = status_accuracy = exact_accuracy = 0.0
+    else:
+        vehicle_accuracy = np.mean([r["vehicle_correct"] for r in valid])
+        eta_accuracy = np.mean([r["eta_correct"] for r in valid])
+        status_accuracy = np.mean([r["status_correct"] for r in valid])
+        exact_accuracy = np.mean([r["exact_match"] for r in valid])
     
     return {
         "config": description,
@@ -1336,12 +1594,12 @@ async def benchmark_model_with_config(client, config):
         "status_accuracy": status_accuracy,
         "exact_accuracy": exact_accuracy,
         "total_time": total_time,
-        "avg_time": total_time / len(test_cases),
+    "avg_time": total_time / max(1, len(valid)),
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
-        "avg_input_tokens": total_input_tokens / len(test_cases),
-        "avg_output_tokens": total_output_tokens / len(test_cases),
-        "test_cases": len(test_cases)
+    "avg_input_tokens": total_input_tokens / max(1, len(valid)),
+    "avg_output_tokens": total_output_tokens / max(1, len(valid)),
+    "test_cases": len(valid)
     }
 
 def display_benchmark_comparison(results):
@@ -1508,24 +1766,30 @@ def display_benchmark_comparison(results):
         print(f"  {i}. {result['config']} - {GREEN}{result['avg_time']:.2f}s{RESET} avg response")
 
 if __name__ == "__main__":
-    # Choose which benchmark to run
-    import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "--comprehensive":
-        # Run with all model variants
-        asyncio.run(run_comprehensive_benchmark())
-    elif "--help" in sys.argv or "-h" in sys.argv:
-        print(f"{BOLD}SAR LLM Extraction Benchmark{RESET}")
-        print()
-        print("Usage:")
-        print("  python sar_llm_extraction_benchmark.py                # Standard assisted mode")
-        print("  python sar_llm_extraction_benchmark.py --raw          # Raw mode (LLMs do all parsing)")
-        print("  python sar_llm_extraction_benchmark.py --comprehensive # Full model comparison")
-        print()
-        print("Modes:")
-        print("  • Assisted Mode: Harness normalizes vehicle names and converts ETA text to HH:MM")
-        print("  • Raw Mode: LLMs must parse everything themselves and output final HH:MM times")
-        print("  • Comprehensive: Test multiple model variants with reasoning/verbosity options")
+    # Unified CLI that respects flags even in comprehensive mode
+    import argparse
+    parser = argparse.ArgumentParser(description="SAR LLM Extraction Benchmark")
+    parser.add_argument("--comprehensive", action="store_true", help="Run full model comparison grid")
+    parser.add_argument("--raw", action="store_true", help="Raw mode for simple run (LLMs do parsing)")
+    parser.add_argument("--raw-only", action="store_true", help="In comprehensive mode, run RAW only")
+    parser.add_argument("--assisted-only", action="store_true", help="In comprehensive mode, run ASSISTED only")
+    parser.add_argument("--cases", type=str, default=None, help="Path to test cases JSON")
+    parser.add_argument("--tolerance-min", type=int, default=2, help="ETA tolerance in minutes")
+    parser.add_argument("--models", type=str, default=None, help="Comma-separated models for simple run")
+    args, _ = parser.parse_known_args()
+
+    # Route to the correct runner
+    if args.comprehensive:
+        # In comprehensive runs, --raw-only / --assisted-only control which modes execute
+        run_assisted = not args.raw_only
+        run_raw = not args.assisted_only
+        asyncio.run(run_comprehensive_benchmark(run_assisted=run_assisted, run_raw=run_raw))
     else:
-        # Run the main function (supports --raw flag)
+        # For the simple run, preserve existing flags by mutating argv-like globals used in main()
+        if args.cases:
+            CASES_FILE = args.cases
+        if args.tolerance_min is not None:
+            TOLERANCE_MIN = args.tolerance_min
+        if args.models:
+            BENCH_MODELS = [m.strip() for m in args.models.split(",") if m.strip()]
         asyncio.run(main())

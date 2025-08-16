@@ -189,13 +189,7 @@
             "expectedVehicle": "Unknown",
             "expectedETA": "Unknown",
             "expectedStatus": "Cancelled"
-        },
-        {
-            "input": "Copy 74-1 alpha. Using channel 22.",
-            "expectedVehicle": "Unknown",
-            "expectedETA": "Unknown",
-            "expectedStatus": "Informational"
-        },
+    },
         {
             "input": "Taking SAR-42, ETA 15 minutes",
             "expectedVehicle": "SAR-42",
@@ -257,6 +251,42 @@
             "expectedETA": "2024-02-22T06:55:00Z",
             "expectedStatus": "Responding",
             "prevETA": "2024-02-22T07:00:00Z"
+        },
+        {
+            "input": "Copy 74-1 alpha. Using channel 22.",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational"
+        },
+        {
+            "input": "coming in 5 minutes",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T06:50:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "arrive by 08:35",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T08:35:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "ETD 15min",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T07:00:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "1022 subject found",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational"
+        },
+        {
+            "input": "ack 1022",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Not Responding"
         }
     ]
 }
