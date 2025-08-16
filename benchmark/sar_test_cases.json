@@ -1,0 +1,262 @@
+{
+    "meta": {
+        "baseTime": "2024-02-22T06:45:00Z"
+    },
+    "cases": [
+        {
+            "input": "Responding in 78 should arrive 2330",
+            "expectedVehicle": "SAR-78",
+            "expectedETA": "2024-02-22T23:30:00Z",
+            "expectedStatus": "Responding",
+            "note": "classic fail from prod"
+        },
+        {
+            "input": "Responding SAR 78 eta 2330",
+            "expectedVehicle": "SAR-78",
+            "expectedETA": "2024-02-22T23:30:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "In SAR-078; ETA 08:05",
+            "expectedVehicle": "SAR-78",
+            "expectedETA": "2024-02-22T08:05:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "Rolling now in 12, ETA 45 min",
+            "currentTimeStamp": "2024-02-22T12:00:00Z",
+            "expectedVehicle": "SAR-12",
+            "expectedETA": "2024-02-22T12:45:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "Taking the SAR rig, be there in 20",
+            "expectedVehicle": "SAR Rig",
+            "expectedETA": "2024-02-22T07:05:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "pov eta 0830",
+            "expectedVehicle": "POV",
+            "expectedETA": "2024-02-22T08:30:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "PV 8:45 am",
+            "expectedVehicle": "POV",
+            "expectedETA": "2024-02-22T08:45:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "driving myself, eta ~1 hr",
+            "expectedVehicle": "POV",
+            "expectedETA": "2024-02-22T07:45:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "Responding, an hour and a half out",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T08:15:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "enroute — 2 hrs and 10 mins",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T08:55:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "leaving now, 30m",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T07:15:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "ETA 1730",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T17:30:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "eta 7:05 pm",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T19:05:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "etd 20 mins",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T07:05:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "can't make it tonight",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Cancelled"
+        },
+        {
+            "input": "10-22",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Not Responding"
+        },
+        {
+            "input": "1022 subj found",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational"
+        },
+        {
+            "input": "copy 10-22",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Not Responding"
+        },
+        {
+            "input": "Copy that 1022",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational",
+            "note": "should NOT parse as 10:22 ETA"
+        },
+        {
+            "input": "I can respond if needed",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Available"
+        },
+        {
+            "input": "key for 74 is in the box",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational",
+            "note": "treat as non-responder / info only"
+        },
+        {
+            "input": "Who can respond to Vesper mission?",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational"
+        },
+        {
+            "input": "coming in 5",
+            "expectedVehicle": "SAR-5",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "responding 105, eta 08:00",
+            "expectedVehicle": "SAR-105",
+            "expectedETA": "2024-02-22T08:00:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "On it",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "rolling",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "maybe later",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Unknown"
+        },
+        {
+            "input": "ETA 05:15",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-23T05:15:00Z",
+            "expectedStatus": "Responding",
+            "note": "Next-day wrap logic check (ETA earlier than base time)",
+            "baseTimeOverride": "23:50"
+        },
+        {
+            "input": "fuck this I'm out",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Cancelled"
+        },
+        {
+            "input": "Copy 74-1 alpha. Using channel 22.",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Informational"
+        },
+        {
+            "input": "Taking SAR-42, ETA 15 minutes",
+            "expectedVehicle": "SAR-42",
+            "expectedETA": "2024-02-22T07:00:00Z",
+            "expectedStatus": "Responding",
+            "note": "ETA needs conversion from duration"
+        },
+        {
+            "input": "Unavailable tonight, working late",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "Unknown",
+            "expectedStatus": "Cancelled"
+        },
+        {
+            "input": "POV responding, see you at 21:15",
+            "expectedVehicle": "POV",
+            "expectedETA": "2024-02-22T21:15:00Z",
+            "expectedStatus": "Responding"
+        },
+        {
+            "input": "twenty mninutes out",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T07:05:00Z",
+            "expectedStatus": "Responding",
+            "note": "spelled-out with typo; should resolve to base+20"
+        },
+        {
+            "input": "will be 7 minutes early from my previous ETA",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T08:23:00Z",
+            "expectedStatus": "Responding",
+            "prevETA": "2024-02-22T08:30:00Z"
+        },
+        {
+            "input": "ETA +10",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T14:15:00Z",
+            "expectedStatus": "Responding",
+            "prevETA": "2024-02-22T14:05:00Z",
+            "note": "should resolve to 14:15"
+        },
+        {
+            "input": "pushed back by fifteen",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T21:55:00Z",
+            "expectedStatus": "Responding",
+            "prevETA": "2024-02-22T21:40:00Z"
+        },
+        {
+            "input": "same as before",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T19:10:00Z",
+            "expectedStatus": "Responding",
+            "prevETA": "2024-02-22T19:10:00Z"
+        },
+        {
+            "input": "bumped up 5",
+            "expectedVehicle": "Unknown",
+            "expectedETA": "2024-02-22T06:55:00Z",
+            "expectedStatus": "Responding",
+            "prevETA": "2024-02-22T07:00:00Z"
+        }
+    ]
+}
