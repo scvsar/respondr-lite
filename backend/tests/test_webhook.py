@@ -10,13 +10,18 @@ Security Features:
 - Automatic environment detection and setup
 
 Usage:
-  python tests/test_webhook.py            # Test local endpoint
-  python tests/test_webhook.py --production  # Test production endpoint
+    python tests/test_webhook.py            # Test local endpoint
+    python tests/test_webhook.py --production  # Test production endpoint
 
 Prerequisites:
 - Run create-secrets.ps1 to generate .env file with current API keys
 - Or manually set WEBHOOK_API_KEY environment variable
+
+Note: This is an integration script and should not run during unit tests.
 """
+
+import pytest
+pytest.skip("Manual/integration test script; skipped in automated pytest runs", allow_module_level=True)
 
 import requests
 import json
