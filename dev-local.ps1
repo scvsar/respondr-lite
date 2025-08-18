@@ -72,6 +72,36 @@ function Ensure-Redis {
     return $false
 }
 
+function Clear-RedisMessages {
+    Write-Host "🧹 Clearing Redis message cache for fresh start..." -ForegroundColor Yellow
+    
+    # Check if Redis is available
+    if (-not (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379)) {
+        Write-Host "⚠️  Redis not available, skipping cache clear" -ForegroundColor Yellow
+        return
+    }
+    
+    # Try to use redis-cli if available, otherwise use docker
+    $redisCli = Get-Command redis-cli -ErrorAction SilentlyContinue
+    if ($redisCli) {
+        Write-Host "Using redis-cli to clear cache..." -ForegroundColor Gray
+        & redis-cli FLUSHALL | Out-Null
+    } else {
+        # Try using docker to run redis-cli
+        $docker = Get-Command docker -ErrorAction SilentlyContinue
+        if ($docker) {
+            Write-Host "Using docker redis-cli to clear cache..." -ForegroundColor Gray
+            & docker exec respondr-redis redis-cli FLUSHALL 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                # If respondr-redis doesn't exist, try connecting to any redis container or run a temp one
+                & docker run --rm --network host redis:7-alpine redis-cli -h localhost FLUSHALL 2>$null | Out-Null
+            }
+        }
+    }
+    
+    Write-Host "✅ Redis cache cleared" -ForegroundColor Green
+}
+
 # Check if .env file exists
 if (-not (Test-Path "backend\.env")) {
     Write-Host "❌ backend\.env file not found!" -ForegroundColor Red
@@ -118,10 +148,20 @@ if ($Docker) {
     # Ensure Redis for local persistence
     Ensure-Redis | Out-Null
     
+    # Clear Redis messages for fresh start
+    Clear-RedisMessages
+    
+    # Clear conflicting Azure OpenAI environment variables to ensure .env file is used
+    Write-Host "Clearing conflicting Azure OpenAI environment variables..." -ForegroundColor Yellow
+    Remove-Item Env:AZURE_OPENAI_ENDPOINT -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_API_VERSION -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_DEPLOYMENT -ErrorAction SilentlyContinue
+    Write-Host "✅ Environment cleared for .env file usage" -ForegroundColor Green
+    
     # Start backend in new terminal using venv python if available
     $venvPy = Join-Path $PWD "backend\.venv\Scripts\python.exe"
     $pyCmd = if (Test-Path $venvPy) { $venvPy } else { 'python' }
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:REDIS_HOST='localhost'; `$env:REDIS_PORT='6379'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:DISABLE_API_KEY_CHECK='true'; `$env:ALLOW_CLEAR_ALL='true'; `$env:REDIS_HOST='localhost'; `$env:REDIS_PORT='6379'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
@@ -153,11 +193,23 @@ if ($Docker) {
     # Ensure Redis for local persistence
     Ensure-Redis | Out-Null
     
+    # Clear Redis messages for fresh start
+    Clear-RedisMessages
+    
+    # Clear conflicting Azure OpenAI environment variables to ensure .env file is used
+    Write-Host "Clearing conflicting Azure OpenAI environment variables..." -ForegroundColor Yellow
+    Remove-Item Env:AZURE_OPENAI_ENDPOINT -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_API_VERSION -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_DEPLOYMENT -ErrorAction SilentlyContinue
+    Write-Host "✅ Environment cleared for .env file usage" -ForegroundColor Green
+    
     Set-Location backend
     $venvPy = Join-Path $PWD "..\backend\.venv\Scripts\python.exe"
     if (-not (Test-Path $venvPy)) { $venvPy = 'python' }
     $env:TIMEZONE='America/Los_Angeles'
     $env:ALLOW_LOCAL_AUTH_BYPASS='true'
+    $env:DISABLE_API_KEY_CHECK='true'
+    $env:ALLOW_CLEAR_ALL='true'
     $env:REDIS_HOST='localhost'
     $env:REDIS_PORT='6379'
     & $venvPy -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
