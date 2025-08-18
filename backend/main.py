@@ -31,8 +31,9 @@ def get_timezone(name: str) -> timezone:
     return timezone(timedelta(hours=-8))
 from urllib.parse import quote
 import importlib
+import tempfile
 import redis
-from fastapi import FastAPI, Request, HTTPException, Header, Depends
+from fastapi import FastAPI, Request, HTTPException, Header, Depends, Query
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
@@ -690,6 +691,258 @@ def _call_assisted_llm(text: str, current_iso_utc: str, prev_eta_iso_utc: Option
     logger.warning(f"Assisted LLM call failed; using deterministic fallback: {attempt_err}")
     return {}
 
+def _call_llm_only(text: str, current_iso_utc: str, prev_eta_iso_utc: Optional[str]) -> Dict[str, Any]:
+    """LLM-only end-to-end extraction: ask the model to compute final outputs (no helper functions).
+
+    Returns a dict with keys: vehicle, eta_hhmm, status, evidence, confidence.
+    - vehicle normalized: POV | SAR Rig | SAR-<n> | Unknown
+    - eta_hhmm: HH:MM in 24h local-to-current-time context, or 'Unknown'
+    - status: Responding | Cancelled | Available | Informational | Not Responding | Unknown
+    """
+    # Create temp file path for logging LLM calls
+    temp_dir = tempfile.gettempdir()
+    log_file = os.path.join(temp_dir, "respondr_llm_debug.log")
+    
+    # Log the call attempt
+    log_entry = {
+        "timestamp": datetime.now().isoformat(),
+        "function": "_call_llm_only",
+        "input": {
+            "text": text,
+            "current_iso_utc": current_iso_utc,
+            "prev_eta_iso_utc": prev_eta_iso_utc
+        }
+    }
+    
+    if client is None:
+        log_entry["error"] = "Azure OpenAI client is None"
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry) + "\n")
+        return {}
+    
+    model = cast(str, azure_openai_deployment)
+    sys_msg = (
+"""You are analyzing Search & Rescue response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
+
+Context:
+- Messages are from SAR responders coordinating by chat
+- Current time is provided - use it to calculate actual ETAs from relative or duration times
+- Vehicle types: Personal vehicles (POV, PV, own car, etc.) or numbered SAR units (78, SAR-78, etc.)
+- "10-22" / "1022" means stand down/cancel (NOT a time)
+- Parse ALL time formats: absolute times (0830, 8:30 am), durations (15 min, 1 hr), relative phrases
+
+Output JSON schema (no extra keys, no trailing text):
+{
+    "vehicle": "POV" | "SAR-<number>" | "SAR Rig" | "Unknown",
+    "eta_iso": "<ISO 8601 UTC like 2024-02-22T12:45:00Z or 'Unknown'>",
+    "status": "Responding" | "Cancelled" | "Available" | "Informational" | "Not Responding" | "Unknown",
+  "evidence": "<short phrase from the message>",
+  "confidence": <float between 0 and 1>
+}
+
+Vehicle Normalization:
+- Personal vehicle references → "POV"
+- SAR unit numbers (any format) → "SAR-<number>" (e.g., "SAR-78")
+- SAR rig references → "SAR Rig"
+- No vehicle mentioned/unclear → "Unknown"
+- NEVER use "Not Responding" as a vehicle type
+
+ETA Calculation:
+- Convert ALL time references to HH:MM format (24-hour)
+- Durations: Add to current time (e.g., "15 min" + current time)
+- Absolute times: Convert to HH:MM (e.g., "0830" → "08:30", "8:30 pm" → "20:30")
+- Relative updates: Modify previous ETA if provided
+- No time mentioned → "Unknown"
+- NEVER use "Not Responding" or "Cancelled" as ETA values
+ - RAW output must place the final result as ISO-8601 UTC in field "eta_iso".
+
+Status Classification:
+- "Responding" = actively responding to mission
+- "Cancelled" = person cancels their own response ('can't make it', 'I'm out')
+- "Not Responding" = acknowledges stand down / using '10-22' code
+- "Informational" = sharing info but not responding ('key is in box', asking questions)
+- "Available" = willing to respond if needed
+- "Unknown" = unclear intent
+- SAR rig/truck references → "SAR Rig"
+- Cancellations/non-responses → "Not Responding"
+
+ETA Calculation (YOU must do the math):
+- Absolute times: Convert to 24-hour HH:MM format
+- Durations: Add to current time to get arrival time in HH:MM
+- AM/PM times: Convert properly to 24-hour format
+- If no ETA info or cancelled → "Unknown", "Cancelled", or "Not Responding"
+
+Status Classification:
+- Actively responding with vehicle/ETA → "Responding"  
+- Personal cancellation → "Cancelled"
+- Official stand-down (10-22) → "Not Responding"
+- Available but not committed → "Available"
+- Information only → "Informational"
+"""
+    )
+    user_msg = (
+        f"Current time (UTC): {current_iso_utc}\n"
+        f"Previous ETA (UTC, optional): {prev_eta_iso_utc or 'None'}\n"
+        f"Message: {text}"
+    )
+    
+    log_entry["request"] = {
+        "model": model,
+        "system_message": sys_msg,
+        "user_message": user_msg
+    }
+    
+    # Robust API call with fallback handling (adapted from benchmark)
+    def _create_with_fallback():
+        if client is None:
+            raise Exception("Azure OpenAI client is None")
+            
+        messages = [{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}]
+        
+        # Common deterministic kwargs; may be pruned if unsupported
+        common_kwargs = {
+            "max_completion_tokens": 220,
+            "temperature": 0,
+            "top_p": 1,
+            "presence_penalty": 0,
+            "frequency_penalty": 0,
+        }
+        
+        # Hint smaller gpt-5-* models to reduce internal reasoning verbosity
+        if model and re.match(r"^gpt-5-(nano|mini)", str(model)):
+            common_kwargs["verbosity"] = "low"  # type: ignore
+            common_kwargs["reasoning_effort"] = "minimal"  # type: ignore
+        
+        chosen_format = None
+        hard_cap = 1024
+        
+        for _ in range(5):
+            try:
+                # 1) Try json_object first (more widely supported than json_schema)
+                resp = client.chat.completions.create(
+                    model=model,
+                    response_format={"type": "json_object"},
+                    messages=messages,
+                    **common_kwargs,
+                )
+                chosen_format = "json_object"
+                return resp, messages, dict(common_kwargs), chosen_format
+                
+            except Exception as e:
+                etxt = str(e).lower()
+                # Remove unsupported params, if any
+                if ("temperature" in etxt) and ("temperature" in common_kwargs):
+                    common_kwargs.pop("temperature", None)
+                    continue
+                if ("top_p" in etxt) and ("top_p" in common_kwargs):
+                    common_kwargs.pop("top_p", None)
+                    continue
+                if ("presence_penalty" in etxt) and ("presence_penalty" in common_kwargs):
+                    common_kwargs.pop("presence_penalty", None)
+                    continue
+                if ("frequency_penalty" in etxt) and ("frequency_penalty" in common_kwargs):
+                    common_kwargs.pop("frequency_penalty", None)
+                    continue
+                if ("verbosity" in etxt) and ("verbosity" in common_kwargs):
+                    common_kwargs.pop("verbosity", None)
+                    continue
+                if ("reasoning" in etxt) and ("reasoning_effort" in common_kwargs):
+                    common_kwargs.pop("reasoning_effort", None)
+                    continue
+                    
+                # If output limit reached, increase token cap and retry
+                if ("output limit" in etxt or "max_tokens" in etxt or "max tokens" in etxt):
+                    cur = int(common_kwargs.get("max_completion_tokens", 220) or 220)
+                    new_val = min(hard_cap, max(cur * 2, cur + 128))
+                    if new_val > cur:
+                        common_kwargs["max_completion_tokens"] = new_val
+                        continue
+                        
+                # If json_object not supported, try without response_format
+                if "response_format" in etxt and ("json_object" in etxt or "not supported" in etxt):
+                    try:
+                        resp2 = client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            stop=["\n\n"],  # soft stop to cut chatter
+                            **common_kwargs,
+                        )
+                        chosen_format = "freeform"
+                        return resp2, messages, dict(common_kwargs), chosen_format
+                    except Exception as e2:
+                        etxt2 = str(e2).lower()
+                        # Remove any remaining unsupported params
+                        pruned = False
+                        for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"):
+                            if key in common_kwargs and key in etxt2:
+                                common_kwargs.pop(key, None)
+                                pruned = True
+                        if pruned:
+                            continue
+                        else:
+                            raise
+                else:
+                    raise
+        
+        # If all retries failed, make a minimal call
+        if client is None:
+            raise Exception("Azure OpenAI client is None")
+        return client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_completion_tokens=220,
+        ), messages, {"max_completion_tokens": 220}, "minimal"
+    
+    try:
+        resp, messages, used_kwargs, chosen_format = _create_with_fallback()
+        raw = (resp.choices[0].message.content or "").strip()
+        
+        log_entry["response"] = {
+            "status": "success",
+            "raw_content": raw,
+            "usage": resp.usage.model_dump() if resp.usage else None,
+            "response_format": chosen_format,
+            "kwargs_used": used_kwargs
+        }
+        
+        print(f"DEBUG LLM-only raw response: {raw[:200]}...")  # Temporary debug
+        
+        # Parse JSON with fallback
+        try:
+            data = json.loads(raw)
+        except Exception:
+            m = re.search(r"\{.*\}", raw, flags=re.S)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                except Exception:
+                    data = {}
+            else:
+                data = {}
+        
+        print(f"DEBUG LLM-only parsed data: {data}")  # Temporary debug
+        
+        log_entry["parsed_data"] = data
+        log_entry["success"] = True
+        
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry) + "\n")
+            
+        return data if isinstance(data, dict) else {}
+        
+    except Exception as e:
+        logger.warning(f"LLM-only parse failed: {e}")
+        print(f"DEBUG LLM-only error: {e}")  # Temporary debug
+        
+        log_entry["error"] = str(e)
+        log_entry["error_type"] = type(e).__name__
+        log_entry["success"] = False
+        
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry) + "\n")
+            
+        return {}
+
 def classify_status_llm(client: Optional[AzureOpenAI], text: str, prev_status: Optional[str] = None) -> Dict[str, Any]:
     """
     Lightweight intent classifier. Returns:
@@ -738,8 +991,8 @@ def classify_status_llm(client: Optional[AzureOpenAI], text: str, prev_status: O
                 *fewshots,
                 {"role": "user", "content": prompt},
             ],
-            temperature=0,
-            max_tokens=60,
+            # temperature=0,  # gpt-5-nano only supports default temperature of 1
+            max_completion_tokens=60,  # Use max_completion_tokens instead of max_tokens for newer models
             # If your Azure model supports strict JSON mode, you can enable it:
             # response_format={"type": "json_object"},
         )
@@ -1442,7 +1695,13 @@ def convert_eta_to_timestamp(eta_str: str, current_time: datetime) -> str:
         logger.warning(f"Error converting ETA '{eta_str}': {e}")
         return "Unknown"
 
-def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None) -> Dict[str, Any]:
+def extract_details_from_text(
+    text: str,
+    base_time: Optional[datetime] = None,
+    prev_eta_iso: Optional[str] = None,
+    prefer_assisted: Optional[bool] = None,
+    mode: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Extract vehicle, ETA, and infer status (responding/cancelled/etc.).
     - Deterministic parsing for vehicle and ETA stays in code.
@@ -1485,7 +1744,31 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
     vehicle = "Unknown"
     eta = "Unknown"
     try:
-        if not FAST_LOCAL_PARSE and client is not None and azure_openai_deployment:
+        # Support an explicit mode selector: 'raw' | 'assisted' | 'llm-only'
+        explicit_mode = (mode or "").strip().lower() if mode else None
+        if explicit_mode == "llm-only":
+            cur_iso = anchor_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+            data = _call_llm_only(text, cur_iso, prev_eta_iso)
+            if data:
+                vehicle = str(data.get("vehicle") or "Unknown")
+                # LLM-only mode returns eta_iso - preserve the full ISO timestamp
+                eta_raw = str(data.get("eta_iso") or "Unknown")
+                rs = str(data.get("status") or "Unknown")
+                
+                # For LLM-only mode, return the ISO timestamp directly
+                eta = eta_raw  # Keep the full ISO timestamp
+                
+                return {
+                    "vehicle": vehicle,
+                    "eta": eta,
+                    "raw_status": rs if rs else "Unknown",
+                    "status_source": "LLM-Only",
+                    "status_confidence": float(data.get("confidence") or 0.0),
+                }
+
+        # Decide if assisted LLM spans are allowed for this call
+        allow_assisted = (prefer_assisted if prefer_assisted is not None else (not FAST_LOCAL_PARSE)) or (explicit_mode == "assisted")
+        if allow_assisted and client is not None and azure_openai_deployment:
             cur_iso = anchor_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
             spans = _call_assisted_llm(text, cur_iso, prev_eta_iso)
             if spans:
@@ -1692,7 +1975,26 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     except Exception:
         prev_eta_iso = None
 
-    parsed = extract_details_from_text(context_message, base_time=message_dt, prev_eta_iso=prev_eta_iso)
+    # Per-request processing mode override via header or query (?mode=raw|assisted)
+    mode_str = (request.headers.get("X-Processing-Mode") or request.query_params.get("mode") or "").strip().lower()
+    prefer_assisted: Optional[bool] = None
+    parse_mode: Optional[str] = None
+    if mode_str in ("raw", "rules", "deterministic"):
+        prefer_assisted = False
+        parse_mode = "raw"
+    elif mode_str in ("assist", "assisted"):
+        prefer_assisted = True
+        parse_mode = "assisted"
+    elif mode_str in ("llm-only", "llm", "ai-only"):
+        parse_mode = "llm-only"
+
+    parsed = extract_details_from_text(
+        context_message,
+        base_time=message_dt,
+        prev_eta_iso=prev_eta_iso,
+        prefer_assisted=prefer_assisted,
+        mode=parse_mode,
+    )
     logger.info(f"Parsed details: vehicle={parsed.get('vehicle')}, eta={parsed.get('eta')}, raw_status={parsed.get('raw_status')}")
 
     # Calculate additional fields for better display
@@ -1706,6 +2008,13 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     status_confidence = parsed.get("status_confidence")
     status_evidence = parsed.get("status_evidence")
 
+
+    # Determine which mode was used for transparency
+    if parse_mode == "llm-only":
+        used_mode = "llm-only"
+    else:
+        used_assisted = (prefer_assisted if prefer_assisted is not None else (not FAST_LOCAL_PARSE)) and (client is not None and azure_openai_deployment)
+        used_mode = ("assisted" if used_assisted else "raw")
 
     message_record: Dict[str, Any] = {
         "name": display_name,
@@ -1721,7 +2030,8 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "eta_timestamp": eta_info.get("eta_timestamp"),
         "eta_timestamp_utc": eta_info.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_info.get("minutes_until_arrival"),
-        "arrival_status": arrival_status
+    "arrival_status": arrival_status,
+    "processing_mode": used_mode,
     }
 
     # Reload messages to get latest data from other pods
@@ -1730,9 +2040,61 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
     save_messages()  # Save to shared storage
     return {"status": "ok"}
 
+@app.post("/api/parse-debug")
+async def parse_debug(request: Request) -> JSONResponse:
+    """Run both raw and assisted parsing on a sample without persisting.
+
+    Body accepts: text (required), created_at (epoch seconds, optional), name (optional), prev_eta_iso (optional ISO string).
+    Auth: admin or local bypass.
+    """
+    if not _authn_domain_and_admin_ok(request):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    try:
+        body_raw = await request.json()
+        body: Dict[str, Any] = cast(Dict[str, Any], body_raw if isinstance(body_raw, dict) else {})
+    except Exception:
+        body = {}
+
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="'text' is required")
+
+    created_at = body.get("created_at")
+    prev_eta_iso = cast(Optional[str], body.get("prev_eta_iso"))
+
+    try:
+        base_dt = datetime.fromtimestamp(float(created_at), tz=APP_TZ) if created_at is not None else now_tz()
+    except Exception:
+        base_dt = now_tz()
+
+    # Compute all three modes; assisted/llm-only may be unavailable if client not configured
+    raw_out = extract_details_from_text(text, base_time=base_dt, prev_eta_iso=prev_eta_iso, prefer_assisted=False, mode="raw")
+    azure_ok = (client is not None and azure_openai_deployment)
+    assisted_out = (
+        extract_details_from_text(text, base_time=base_dt, prev_eta_iso=prev_eta_iso, prefer_assisted=True, mode="assisted")
+        if azure_ok else {"error": "assisted mode unavailable (no Azure client)"}
+    )
+    llm_only_out = (
+        extract_details_from_text(text, base_time=base_dt, prev_eta_iso=prev_eta_iso, mode="llm-only")
+        if azure_ok else {"error": "llm-only unavailable (no Azure client)"}
+    )
+
+    return JSONResponse(content={
+        "base_time_iso": base_dt.astimezone(timezone.utc).isoformat(),
+        "raw": raw_out,
+        "assisted": assisted_out,
+        "llm_only": llm_only_out,
+        "assisted_available": azure_ok,
+        "llm_only_available": azure_ok,
+        "env_default_mode": ("raw" if FAST_LOCAL_PARSE else "assisted"),
+    })
+
 def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) -> Dict[str, Any]:
     """Calculate additional ETA information for better display"""
     try:
+        eta_str = eta_str.strip() if isinstance(eta_str, str) else str(eta_str)
+        
         if eta_str in ["Unknown", "Not Responding", "Cancelled"]:
             return {
                 "eta_timestamp": None,
@@ -1740,6 +2102,27 @@ def calculate_eta_info(eta_str: str, message_time: Optional[datetime] = None) ->
                 "minutes_until_arrival": None,
                 "status": ("Cancelled" if eta_str == "Cancelled" else eta_str)
             }
+
+        # Try to parse as ISO timestamp first (for LLM-only mode)
+        if "T" in eta_str and ("Z" in eta_str or "+" in eta_str or "-" in eta_str[-6:]):
+            try:
+                # Parse ISO timestamp
+                eta_datetime = datetime.fromisoformat(eta_str.replace("Z", "+00:00"))
+                
+                # Calculate minutes until arrival from current time
+                current_time = now_tz()
+                time_diff = eta_datetime - current_time
+                minutes_until = int(time_diff.total_seconds() / 60)
+
+                return {
+                    "eta_timestamp": eta_datetime.isoformat(),
+                    "eta_timestamp_utc": eta_datetime.astimezone(timezone.utc).isoformat(),
+                    "minutes_until_arrival": minutes_until,
+                    "status": "Responding" if minutes_until > 0 else "Arrived"
+                }
+            except Exception as e:
+                logger.warning(f"Failed to parse ISO timestamp '{eta_str}': {e}")
+                # Fall through to HH:MM parsing
 
         # Try to parse as HH:MM format
         if ":" in eta_str and len(eta_str) == 5:  # HH:MM format
