@@ -45,8 +45,118 @@ BOLD, RESET = Style.BRIGHT, Style.RESET_ALL
 API_VERSION = os.getenv("API_VERSION", "2024-12-01-preview")
 AZURE_ENDPOINT = os.getenv("model_endpoint")
 API_KEY = os.getenv("model_api_key")
-MAX_TOK_SINGLE = int(os.getenv("MAX_COMPLETION_TOKENS", "256") or 256)
+# Slightly lower default for assisted single-call outputs to encourage brevity
+MAX_TOK_SINGLE = int(os.getenv("MAX_COMPLETION_TOKENS", "160") or 160)
 MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8") or 8)
+
+# Debug I/O logging
+DEBUG_IO = bool(int(os.getenv("BENCH_DEBUG_IO", "0") or 0))
+DEBUG_DIR = os.getenv("BENCH_DEBUG_DIR", "")
+
+def _to_jsonable(obj):
+    """Recursively convert objects to JSON-serializable primitives.
+    - Dicts/lists/tuples/sets → converted element-wise
+    - Objects with __dict__ → vars() processed; else str()
+    - Bytes → str() (repr)
+    """
+    import dataclasses
+    if obj is None or isinstance(obj, (bool, int, float, str)):
+        return obj
+    if dataclasses.is_dataclass(obj):
+        try:
+            return {k: _to_jsonable(v) for k, v in dataclasses.asdict(obj).items()}
+        except Exception:
+            return str(obj)
+    if isinstance(obj, dict):
+        try:
+            return {str(k): _to_jsonable(v) for k, v in obj.items()}
+        except Exception:
+            # Fallback stringify keys/values if something odd
+            return {str(k): str(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_to_jsonable(v) for v in obj]
+    if isinstance(obj, bytes):
+        try:
+            return obj.decode("utf-8", errors="replace")
+        except Exception:
+            return str(obj)
+    # Objects with __dict__
+    if hasattr(obj, "__dict__"):
+        try:
+            return {k: _to_jsonable(v) for k, v in vars(obj).items()}
+        except Exception:
+            return str(obj)
+    # Last resort
+    return str(obj)
+
+def _ensure_debug_dir() -> str:
+    global DEBUG_DIR
+    if not DEBUG_DIR:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%SZ")
+        DEBUG_DIR = os.path.join(SCRIPT_DIR, "_debug", stamp)
+    os.makedirs(DEBUG_DIR, exist_ok=True)
+    # Maintain a 'latest' pointer directory for convenience
+    try:
+        latest_path = os.path.join(SCRIPT_DIR, "_debug", "latest")
+        if os.path.islink(latest_path) or os.path.exists(latest_path):
+            try:
+                if os.path.islink(latest_path):
+                    os.unlink(latest_path)
+                elif os.path.isdir(latest_path):
+                    # Replace directory by removing and re-creating link
+                    import shutil
+                    shutil.rmtree(latest_path, ignore_errors=True)
+                else:
+                    os.remove(latest_path)
+            except Exception:
+                pass
+        # Best-effort symlink; on Windows without privileges, this may fail silently
+        try:
+            os.symlink(DEBUG_DIR, latest_path)
+        except Exception:
+            # Fall back to a copy of an empty marker file containing path
+            try:
+                with open(latest_path, "w", encoding="utf-8") as f:
+                    f.write(DEBUG_DIR)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return DEBUG_DIR
+
+def _sanitize_filename(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", s)
+
+def _debug_write(model: str, case_idx: int, mode: str, payload: Dict[str, Any]) -> None:
+    try:
+        if not DEBUG_IO:
+            return
+        outdir = _ensure_debug_dir()
+        fname = f"{_sanitize_filename(model)}__case{case_idx:02d}__{mode}.json"
+        path = os.path.join(outdir, fname)
+        # Serialize to string first to avoid partial files on errors
+        try:
+            json_str = json.dumps(_to_jsonable(payload), ensure_ascii=False, indent=2)
+        except Exception:
+            # As a last resort, stringify the whole payload
+            json_str = json.dumps({"_raw": str(payload)}, ensure_ascii=False, indent=2)
+        # Atomic write: write to temp then replace
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(json_str)
+        try:
+            import os as _os
+            if _os.path.exists(path):
+                _os.replace(tmp_path, path)
+            else:
+                _os.rename(tmp_path, path)
+        except Exception:
+            # Fallback: try direct write
+            with open(path, "w", encoding="utf-8") as f2:
+                f2.write(json_str)
+    except Exception:
+        # Best-effort; never break the run on logging failures
+        pass
 
 if not AZURE_ENDPOINT or not API_KEY:
     raise SystemExit(
@@ -298,6 +408,21 @@ def convert_eta_text_to_hhmm(eta_text: str, base_time: datetime, prev_eta_hhmm: 
         if m:
             return convert_eta_text_to_hhmm(m.group(1), base_time, prev_eta_hhmm)
 
+        # NEW: "arrive/be there/eta in <N> [minutes]" but NOT "coming in <N>"
+        m = re.search(
+            r"\b(?:arriv(?:e|ing)|be\s*there|eta)\s+in\s+((?:\d+(?:\.\d+)?)|(?:[a-z\- ]+))\s*(?:mins?|minutes?)?\b",
+            low,
+        )
+        if m and not re.search(r"\bcoming\s+in\s+\d{1,3}\b", low):
+            amt = m.group(1).strip()
+            if re.match(r"^\d+(?:\.\d+)?$", amt):
+                mins = int(round(float(amt)))
+            else:
+                mins = _words_to_int(amt)
+            if mins is not None:
+                eta_dt = base_time + timedelta(minutes=_clamp_minutes(mins))
+                return eta_dt.strftime("%H:%M")
+
         # "minutes out"
         m = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:mins?|minutes?)\s*out\b", low)
         if m:
@@ -430,6 +555,10 @@ def classify_status_from_text(msg: str) -> str:
     if re.search(r"\?\s*$", t):
         return "Informational"
 
+    # Available (check before generic 'respond' cues)
+    if re.search(r"\b(available|can\s+respond\s+if\s+needed|able\s+to\s+respond)\b", t):
+        return "Available"
+
     # Responding cues (expanded)
     if re.search(r"\b(respond(?:ing)?|en\s?route|enrt|on\s*it|rolling|leaving\s+now|\beta\b|be\s+there|headed|arrive|arriving|coming|etd)\b", t):
         return "Responding"
@@ -437,10 +566,6 @@ def classify_status_from_text(msg: str) -> str:
     # Implicit ETA implies responding (unless it's clearly channel/freq)
     if timeish and not re.search(r"\b(channel|ch\b|freq|mhz)\b", t):
         return "Responding"
-
-    # Available
-    if re.search(r"\b(available|can\s+respond\s+if\s+needed|able\s+to\s+respond)\b", t):
-        return "Available"
 
     # Informational catch-all (keys/channels)
     if re.search(r"\b(key|channel|freq|mhz)\b", t):
@@ -602,40 +727,39 @@ TESTS: List[SarCase] = load_test_cases()
 # Prompts (assisted vs raw mode)
 # -----------------------------------------------------
 
-SYSTEM_PROMPT_ASSISTED = """You are a SAR message extractor. The user will give you a single responder chat message, plus context.
-Return ONLY a compact JSON object with fields described below. DO NOT do time arithmetic.
+SYSTEM_PROMPT_ASSISTED = """You are a SAR message extractor. Return ONLY a compact JSON object. Do NOT compute times.
+
+Goal: act as a span extractor. Copy short spans from the message for vehicle and ETA text; do not paraphrase.
 
 Context:
 - Messages are from Search & Rescue responders coordinating by chat.
-- Vehicles are usually either a personal vehicle (synonyms: POV, PV, personal vehicle, own car, driving myself)
-  or a numbered SAR rig written various ways: "78", "SAR 78", "SAR-078", "in 78", "coming in 78".
+- Vehicles are usually either a personal vehicle (POV/PV/own car) or a numbered SAR rig: "78", "SAR 78", "SAR-078", "in 78", "coming in 78".
 - The local shorthand "10-22" or "1022" means stand down/cancel (NOT a time).
-- People sometimes swear or are extremely brief.
-- Sometimes they post informational notes ("key for 74 is in the box")—that is NOT a response.
-- The current reference timestamp is provided as "Current time". Do NOT compute ETAs.
-- For ETA, output exactly what the message says as text (e.g., '15 minutes', '2330', '8:45 pm', '07:30') or 'Unknown' if none is present.
+- Questions and logistics (keys/channels) are informational, not a response.
+- Current time is given only for context—you must NOT do math.
 
-Output JSON schema (no extra keys, no trailing text):
+Output JSON (no extra keys, no trailing text):
 {
     "vehicle": "POV" | "SAR-<number>" | "SAR Rig" | "Unknown",
-    "eta_text": "<raw time text as written, or 'Unknown' if none>",
+    "vehicle_text": "<exact substring for the vehicle mention, else ''>",
+    "eta_text": "<exact substring for time/duration as written, else 'Unknown'>",
     "status": "Responding" | "Cancelled" | "Available" | "Informational" | "Not Responding" | "Unknown",
-  "evidence": "<short phrase from the message>",
-  "confidence": <float between 0 and 1>
+    "evidence": "<very short phrase from the message>",
+    "confidence": <float between 0 and 1>
 }
 
 Rules:
-- VEHICLE: Extract specific vehicle type. Never use "Not Responding" as a vehicle - use "Unknown" instead. "coming in <integer>" implies the SAR unit unless followed by a time unit.
-- ETA: DO NOT calculate. Return literal text (e.g., '2330', '08:45', '45 minutes', '1 hr', '7:05 pm') or 'Unknown'.
-- STATUS: 
-  - "Responding" = actively responding to mission
-  - "Cancelled" = person cancels their own response ('can't make it', 'I'm out')
-  - "Not Responding" = acknowledges stand down / using '10-22' code
-  - "Informational" = sharing info but not responding ('key is in box', asking questions)
-  - "Available" = willing to respond if needed
-  - "Unknown" = unclear intent
-- If message includes 'in 78', 'responding 78', 'sar 78', normalize vehicle to 'SAR-78'.
-- If message refers to personal vehicle, normalize vehicle to 'POV'.
+- VEHICLE: If "in 78", "responding 78", "sar 78" appears, normalize to "SAR-78" and set vehicle_text to that substring.
+    "coming in <integer>" implies the SAR unit unless followed by a time unit; copy that phrase into vehicle_text.
+    Personal vehicle mentions → vehicle="POV" and vehicle_text to the matching words.
+    If unclear, set vehicle="Unknown" and vehicle_text="".
+- ETA: DO NOT calculate. Copy the literal time span: e.g., "2330", "08:45", "45 minutes", "1 hr", "7:05 pm". If none, use "Unknown".
+- STATUS: Provide your best guess from the message only. The evaluator may override it for scoring.
+\n+Formatting constraints:
+- Return ONLY a single JSON object. No prose, code fences, or explanations.
+- Keep strings short; copy exact substrings from the message.
+- If the message says "be there in 20" (no unit), set "eta_text" to the exact substring "in 20".
+- Never take "coming in <number>" as an ETA; that is a vehicle number here.
 """
 
 SYSTEM_PROMPT_RAW = """You are analyzing Search & Rescue response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
@@ -751,12 +875,13 @@ ASSISTED_SCHEMA = {
         "additionalProperties": False,
         "properties": {
             "vehicle": {"type": "string", "pattern": "^(POV|SAR Rig|SAR-[1-9][0-9]{0,2}|Unknown)$"},
-            "eta_text": {"type": "string", "minLength": 1},
+            "vehicle_text": {"type": "string"},
+            "eta_text": {"type": "string"},
             "status": {"type": "string", "enum": ["Responding","Cancelled","Available","Informational","Not Responding","Unknown"]},
             "evidence": {"type": "string"},
             "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0}
         },
-        "required": ["vehicle","eta_text","status","evidence","confidence"]
+        "required": ["vehicle","vehicle_text","eta_text","status","evidence","confidence"]
     }
 }
 
@@ -788,44 +913,109 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
             {"role": "user", "content": build_user_prompt(msg, raw_mode)},
         ]
         schema = RAW_SCHEMA if raw_mode else ASSISTED_SCHEMA
-    # 1) Try json_schema
-        try:
-            return await client.chat.completions.create(
-                model=model,
-                response_format={"type": "json_schema", "json_schema": schema},
-                messages=messages,
-        max_completion_tokens=MAX_TOK_SINGLE,
-            )
-        except APIStatusError as e:
-            etxt = str(e).lower()
-            if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
-                # 2) Try json_object
-                try:
-                    return await client.chat.completions.create(
-                        model=model,
-                        response_format={"type": "json_object"},
-                        messages=messages,
-                        max_completion_tokens=MAX_TOK_SINGLE,
-                    )
-                except APIStatusError as e2:
-                    etxt2 = str(e2).lower()
-                    if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
-                        # 3) Try without response_format
-                        return await client.chat.completions.create(
+        # Common deterministic kwargs; may be pruned if unsupported
+        common_kwargs = {
+            # lower cap in assisted mode to discourage rambling
+            "max_completion_tokens": (MAX_TOK_SINGLE if raw_mode else 120),
+            "temperature": 0,
+            "top_p": 1,
+            "presence_penalty": 0,
+            "frequency_penalty": 0,
+        }
+        # Hint smaller gpt-5-* models to reduce internal reasoning verbosity
+        if (not raw_mode) and re.match(r"^gpt-5-(nano|mini)", str(model)):
+            # These keys will be pruned below if unsupported by the endpoint
+            common_kwargs["verbosity"] = "low"
+            common_kwargs["reasoning_effort"] = "minimal"
+        # Allow up to 5 retries; also increase token cap if output limit hit
+        hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "1024") or 1024)
+        chosen_format = None
+        for _ in range(5):
+            try:
+                # 1) Try json_schema
+                resp = await client.chat.completions.create(
+                    model=model,
+                    response_format={"type": "json_schema", "json_schema": schema},
+                    messages=messages,
+                    **common_kwargs,
+                )
+                chosen_format = "json_schema"
+                return resp, messages, dict(common_kwargs), chosen_format
+            except APIStatusError as e:
+                etxt = str(e).lower()
+                # Remove unsupported params, if any
+                if ("temperature" in etxt) and ("temperature" in common_kwargs):
+                    common_kwargs.pop("temperature", None)
+                    continue
+                if ("top_p" in etxt) and ("top_p" in common_kwargs):
+                    common_kwargs.pop("top_p", None)
+                    continue
+                if ("presence_penalty" in etxt) and ("presence_penalty" in common_kwargs):
+                    common_kwargs.pop("presence_penalty", None)
+                    continue
+                if ("frequency_penalty" in etxt) and ("frequency_penalty" in common_kwargs):
+                    common_kwargs.pop("frequency_penalty", None)
+                    continue
+                if ("verbosity" in etxt) and ("verbosity" in common_kwargs):
+                    common_kwargs.pop("verbosity", None)
+                    continue
+                if ("reasoning" in etxt) and ("reasoning_effort" in common_kwargs):
+                    common_kwargs.pop("reasoning_effort", None)
+                    continue
+                # If output limit reached, increase token cap and retry
+                if ("output limit" in etxt or "max_tokens" in etxt or "max tokens" in etxt):
+                    cur = int(common_kwargs.get("max_completion_tokens", MAX_TOK_SINGLE) or MAX_TOK_SINGLE)
+                    new_val = min(hard_cap, max(cur * 2, cur + 128))
+                    if new_val > cur:
+                        common_kwargs["max_completion_tokens"] = new_val
+                        continue
+                if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
+                    # 2) Try json_object
+                    try:
+                        resp2 = await client.chat.completions.create(
                             model=model,
+                            response_format={"type": "json_object"},
                             messages=messages,
-                            max_completion_tokens=MAX_TOK_SINGLE,
+                            **common_kwargs,
                         )
-                    else:
-                        raise
-            else:
-                raise
+                        chosen_format = "json_object"
+                        return resp2, messages, dict(common_kwargs), chosen_format
+                    except APIStatusError as e2:
+                        etxt2 = str(e2).lower()
+                        # Remove unsupported params and retry the loop
+                        pruned = False
+                        for key in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"):
+                            if key in common_kwargs and key in etxt2:
+                                common_kwargs.pop(key, None)
+                                pruned = True
+                        if pruned:
+                            continue
+                        if ("output limit" in etxt2 or "max_tokens" in etxt2 or "max tokens" in etxt2):
+                            cur = int(common_kwargs.get("max_completion_tokens", MAX_TOK_SINGLE) or MAX_TOK_SINGLE)
+                            new_val = min(hard_cap, max(cur * 2, cur + 128))
+                            if new_val > cur:
+                                common_kwargs["max_completion_tokens"] = new_val
+                                continue
+                        if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
+                            # 3) Try without response_format, add a soft stop to cut chatter
+                            resp3 = await client.chat.completions.create(
+                                model=model,
+                                messages=messages,
+                                stop=["\n\n"],
+                                **common_kwargs,
+                            )
+                            chosen_format = "freeform"
+                            return resp3, messages, dict(common_kwargs), chosen_format
+                        else:
+                            raise
+                else:
+                    raise
 
     # We request JSON-only; if model ignores, we fallback by regexing the first {...}
-    resp = await _create_with_fallback()
+    resp, messages, used_kwargs, chosen_format = await _create_with_fallback()
     raw = resp.choices[0].message.content or ""
     try:
-        return json.loads(raw)
+        data = json.loads(raw)
     except Exception:
         m = re.search(r"\{.*\}", raw, re.S)
         fallback_schema = {"vehicle":"Unknown","status":"Unknown","evidence":"","confidence":0.0}
@@ -833,9 +1023,35 @@ async def ask_model(client: AsyncAzureOpenAI, model: str, msg: SarCase, raw_mode
             fallback_schema["eta_iso"] = "Unknown"
         else:
             fallback_schema["eta_text"] = "Unknown"
-        return json.loads(m.group(0)) if m else fallback_schema
+        data = json.loads(m.group(0)) if m else fallback_schema
 
-async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode: bool = False) -> CaseResult:
+    # Attach debug info
+    try:
+        data["_debug"] = {
+            "request": {
+                "model": model,
+                "raw_mode": raw_mode,
+                "response_format": chosen_format,
+                "schema": ("RAW" if raw_mode else "ASSISTED"),
+                "messages": messages,
+                "kwargs": used_kwargs,
+                "base_time": msg.current_ts,
+                "prev_eta": msg.prev_eta,
+            },
+            "response": {
+                "id": getattr(resp, "id", None),
+                "created": getattr(resp, "created", None),
+                # usage object may contain nested non-serializable classes; let _to_jsonable handle it
+                "usage": getattr(resp, "usage", None),
+                "finish_reason": getattr(resp.choices[0], "finish_reason", None),
+                "raw": raw,
+            },
+        }
+    except Exception:
+        pass
+    return data
+
+async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode: bool = False, case_idx: Optional[int] = None) -> CaseResult:
     last_err = None
     for attempt in range(1, RETRY + 2):
         try:
@@ -877,12 +1093,13 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                 # eta_iso already validated above; nothing else to do here
 
             else:
-                # Original assisted mode - harness does normalization
+                # Assisted mode - model returns spans; harness does normalization
                 vehicle_guess = data.get("vehicle") or "Unknown"
+                vehicle_span = (data.get("vehicle_text") or "").strip()
                 eta_text = data.get("eta_text") or "Unknown"
                 status_guess = data.get("status") or "Unknown"
 
-                # Vehicle normalization (in case the model returns raw strings)
+                # Vehicle normalization (prefer model's normalized label, validate span)
                 veh_norm = vehicle_guess
                 if veh_norm not in ["POV", "SAR Rig"] and not veh_norm.startswith("SAR-") and veh_norm not in ["Unknown", "Not Responding"]:
                     veh_norm = normalize_vehicle(str(vehicle_guess))
@@ -893,7 +1110,15 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                         veh_norm = f"SAR-{num}"
                     except Exception:
                         pass
-                # Vehicle fallback from message
+                # Validate vehicle_text span actually occurs in message; else ignore
+                if vehicle_span and vehicle_span.lower() not in case.text.lower():
+                    vehicle_span = ""
+                # Always try to reconcile with the extracted span: if it normalizes to a concrete vehicle, trust it
+                if vehicle_span:
+                    span_norm = normalize_vehicle(vehicle_span)
+                    if span_norm != "Unknown":
+                        veh_norm = span_norm
+                # If still Unknown, try to infer from full message
                 if veh_norm == "Unknown":
                     veh_norm = normalize_vehicle(case.text)
 
@@ -901,18 +1126,24 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
                 cur_dt = from_iso(case.current_ts)
                 prev_dt = from_iso(case.prev_eta) if case.prev_eta else None
                 dt = None if eta_text == "Unknown" else parse_eta_text_to_dt(str(eta_text), cur_dt, prev_dt)
-                # Assisted fallback extraction if eta_text is Unknown: quick regex pick
+                # Assisted fallback extraction if eta_text is Unknown: parse full message with safeguards
                 if dt is None and eta_text == "Unknown":
-                    candidate = None
-                    m = re.search(r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b", case.text.lower())
-                    if not m:
-                        m = re.search(r"\b\d{3,4}\b", case.text.lower())
-                    if not m:
-                        m = re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", case.text.lower())
-                    if m:
-                        candidate = m.group(0)
-                    if candidate:
-                        dt = parse_eta_text_to_dt(candidate, cur_dt, prev_dt)
+                    # Avoid interpreting '10-22/1022' as a time
+                    filtered_text = re.sub(r"\b(?:10-?22|1022)\b", " ", case.text, flags=re.IGNORECASE)
+                    dt = parse_eta_text_to_dt(filtered_text, cur_dt, prev_dt)
+                    # If still None, try a minimal token fallback as last resort
+                    if dt is None:
+                        candidate = None
+                        lowtxt = filtered_text.lower()
+                        m = re.search(r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b", lowtxt)
+                        if not m:
+                            m = re.search(r"\b\d{3,4}\b", lowtxt)
+                        if not m:
+                            m = re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", lowtxt)
+                        if m:
+                            candidate = m.group(0)
+                        if candidate:
+                            dt = parse_eta_text_to_dt(candidate, cur_dt, prev_dt)
                 eta_norm = to_iso(dt) if dt else "Unknown"
 
                 # Status normalization
@@ -945,6 +1176,38 @@ async def run_one(client: AsyncAzureOpenAI, model: str, case: SarCase, raw_mode:
             stat_rule = classify_status_from_text(case.text)
             ok_status = (stat_rule == exp_status)
             exact_triplet = ok_vehicle and ok_eta and ok_status
+
+            # Write debug log if enabled
+            try:
+                if DEBUG_IO:
+                    mode = "raw" if raw_mode else "assisted"
+                    dbg = data.get("_debug", {})
+                    dbg_out = {
+                        "case_idx": case_idx,
+                        "case": {
+                            "text": case.text,
+                            "current_ts": case.current_ts,
+                            "prev_eta": case.prev_eta,
+                            "note": case.note,
+                        },
+                        "request": dbg.get("request"),
+                        "response": dbg.get("response"),
+                        "normalized": {
+                            "vehicle": veh_norm,
+                            "eta": eta_norm,
+                            "status": stat_norm,
+                        },
+                        "expected": {"vehicle": exp_vehicle, "eta": exp_eta, "status": exp_status},
+                        "evaluation": {
+                            "ok_vehicle": ok_vehicle,
+                            "ok_eta": ok_eta,
+                            "ok_status": ok_status,
+                            "exact": exact_triplet,
+                        },
+                    }
+                    _debug_write(model, (case_idx or 0), mode, dbg_out)
+            except Exception:
+                pass
 
             return CaseResult(
                 ok_vehicle, ok_eta, ok_status, exact_triplet,
@@ -1036,6 +1299,8 @@ async def main():
     parser.add_argument("--cases", type=str, default=None)
     parser.add_argument("--tolerance-min", type=int, default=2)
     parser.add_argument("--models", type=str, default=None)
+    parser.add_argument("--debug-io", action="store_true")
+    parser.add_argument("--debug-dir", type=str, default=None)
     parser.add_argument("--help", "-h", action="store_true")
     args, _ = parser.parse_known_args()
     if args.help:
@@ -1050,12 +1315,17 @@ async def main():
         return
     raw_mode = args.raw
     global CASES_FILE, TOLERANCE_MIN, BENCH_MODELS
+    global DEBUG_IO, DEBUG_DIR
     if args.cases:
         CASES_FILE = args.cases
     if args.tolerance_min is not None:
         TOLERANCE_MIN = args.tolerance_min
     if args.models:
         BENCH_MODELS = [m.strip() for m in args.models.split(",") if m.strip()]
+    if args.debug_io:
+        DEBUG_IO = True
+    if args.debug_dir:
+        DEBUG_DIR = args.debug_dir
 
     # reload tests if cases file changed
     global TESTS
@@ -1078,14 +1348,32 @@ async def main():
     for model in BENCH_MODELS:
         print(f"\n{BOLD}Running cases on {model}{RESET}   ({len(TESTS)} cases)")
         start = time.time()
-        tasks = [run_one(client, model, case, raw_mode) for case in TESTS]
+        tasks = [run_one(client, model, case, raw_mode, idx) for idx, case in enumerate(TESTS)]
         results = await asyncio.gather(*tasks)
         model_to_results[model] = results
         dur = time.time() - start
 
         summ = summarize(results)
-        print(f"  Time: {dur:.2f}s | Vehicle {summ['vehicle_acc']:.2%}  ETA {summ['eta_acc']:.2%}  "
-              f"Status {summ['status_acc']:.2%}  Triplet {BOLD}{summ['triplet_acc']:.2%}{RESET}")
+        # ETA span coverage (assisted mode only): proportion of cases where model returned a non-Unknown eta_text
+        span_cov = None
+        if not raw_mode:
+            try:
+                # Count non-Unknown eta_text in debug payloads when available
+                cov_cnt, cov_tot = 0, 0
+                for r in results:
+                    got = r.got.get("raw") or {}
+                    if isinstance(got, dict):
+                        cov_tot += 1
+                        if (got.get("eta_text") or "Unknown") != "Unknown":
+                            cov_cnt += 1
+                span_cov = (cov_cnt / cov_tot) if cov_tot else None
+            except Exception:
+                span_cov = None
+        extra = (f" | ETA-span {span_cov:.0%}" if span_cov is not None else "")
+        print(
+            f"  Time: {dur:.2f}s | Vehicle {summ['vehicle_acc']:.2%}  ETA {summ['eta_acc']:.2%}  "
+            f"Status {summ['status_acc']:.2%}  Triplet {BOLD}{summ['triplet_acc']:.2%}{RESET}{extra}"
+        )
 
     # Aggregate and pretty print comparison
     rows = []
@@ -1148,12 +1436,14 @@ def get_test_cases():
 
 def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, expected_status, message, case_num, base_time_iso, prev_eta_hhmm):
     """Parse LLM response and evaluate against expected values."""
+    parse_error = False
     
     # Parse the JSON response
     try:
         data = json.loads(response_text.strip())
         parsed_vehicle = data.get("vehicle", "").strip()
-        # Schema uses 'eta_text'
+        # Assisted schema includes 'vehicle_text' and 'eta_text'
+        parsed_vehicle_text = data.get("vehicle_text", "").strip()
         parsed_eta_text = data.get("eta_text", "").strip()
         parsed_status = data.get("status", "").strip()
     except json.JSONDecodeError:
@@ -1163,36 +1453,66 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
             try:
                 data = json.loads(m.group(0))
                 parsed_vehicle = data.get("vehicle", "").strip()
+                parsed_vehicle_text = data.get("vehicle_text", "").strip()
                 parsed_eta_text = data.get("eta_text", "").strip()
                 parsed_status = data.get("status", "").strip()
             except Exception:
-                return {
-                    "vehicle_correct": False,
-                    "eta_correct": False,
-                    "status_correct": False,
-                    "exact_match": False
-                }
+                parse_error = True
+                # Return a structured default instead of bailing hard
+                data = {"vehicle":"Unknown","vehicle_text":"","eta_text":"Unknown","status":"Unknown"}
+                parsed_vehicle = "Unknown"; parsed_vehicle_text = ""; parsed_eta_text = "Unknown"; parsed_status = "Unknown"
         else:
-            return {
-                "vehicle_correct": False,
-                "eta_correct": False,
-                "status_correct": False,
-                "exact_match": False
-            }
+            parse_error = True
+            data = {"vehicle":"Unknown","vehicle_text":"","eta_text":"Unknown","status":"Unknown"}
+            parsed_vehicle = "Unknown"; parsed_vehicle_text = ""; parsed_eta_text = "Unknown"; parsed_status = "Unknown"
     
     # Normalize parsed values
+    # Prefer normalized label, but if Unknown, try span then full message
     norm_vehicle = normalize_vehicle(parsed_vehicle) if parsed_vehicle else "Unknown"
+    if norm_vehicle == "Unknown":
+        if 'parsed_vehicle_text' in locals() and parsed_vehicle_text:
+            norm_vehicle = normalize_vehicle(parsed_vehicle_text)
+        if norm_vehicle == "Unknown":
+            norm_vehicle = normalize_vehicle(message)
 
     # For ETA, convert to ISO timestamp using the *case's* current_ts and prev_eta
     norm_eta = "Unknown"
+    base_time = None
+    prev_dt = None
+    try:
+        base_time = from_iso(base_time_iso)
+        prev_dt = from_iso(prev_eta_hhmm) if prev_eta_hhmm else None
+    except Exception:
+        base_time = None
+        prev_dt = None
     if parsed_eta_text:
         try:
-            base_time = from_iso(base_time_iso)
-            prev_dt = from_iso(prev_eta_hhmm) if prev_eta_hhmm else None
-            dt = parse_eta_text_to_dt(parsed_eta_text, base_time, prev_dt)
+            dt = parse_eta_text_to_dt(parsed_eta_text, base_time, prev_dt) if base_time else None
             norm_eta = to_iso(dt) if dt else "Unknown"
         except Exception:
             norm_eta = "Unknown"
+    # Fallback: if model didn't return an eta_text, try to extract a minimal candidate from the full message
+    if norm_eta == "Unknown":
+        try:
+            # Avoid interpreting 10-22/1022 as a time
+            filtered = re.sub(r"\b(?:10-?22|1022)\b", " ", message, flags=re.IGNORECASE)
+            lowtxt = filtered.lower()
+            cand = None
+            m = re.search(r"\b\d{1,2}:\d{2}(?:\s*(?:am|pm))?\b", lowtxt)
+            if not m:
+                m = re.search(r"\b\d{3,4}\b", lowtxt)
+            if not m:
+                m = re.search(r"\b\d+\s*(?:m|min|mins?|minutes?|h|hr|hrs?|hours?)\b", lowtxt)
+            if not m:
+                # As last resort, a bare number could indicate minutes (e.g., "in 20")
+                m = re.search(r"\b\d{1,3}\b", lowtxt)
+            if m:
+                cand = m.group(0)
+            if cand and base_time:
+                dt = parse_eta_text_to_dt(cand, base_time, prev_dt)
+                norm_eta = to_iso(dt) if dt else "Unknown"
+        except Exception:
+            pass
     
     # Deterministic status from text
     norm_status = classify_status_from_text(message)
@@ -1217,6 +1537,7 @@ def parse_and_evaluate_result(response_text, expected_vehicle, expected_eta, exp
         "eta_correct": eta_correct,
         "status_correct": status_correct,
         "exact_match": exact_match,
+    "parse_error": parse_error,
         "parsed_vehicle": norm_vehicle,
         "parsed_eta": norm_eta,
         "parsed_status": norm_status
@@ -1333,19 +1654,22 @@ async def run_benchmark_with_configs(model_configs, run_assisted: bool = True, r
     # Prepare all tasks
     tasks = []
     task_labels = []
+    # Shared global concurrency limiter across all configs
+    shared_sem = asyncio.Semaphore(MAX_CONCURRENCY)
     for config in model_configs:
         # Add extra parameters for the API call
-        extra_params = {}
+        extra_params = {"temperature": 0, "top_p": 1, "presence_penalty": 0, "frequency_penalty": 0}
         if config.get("verbosity"):
             extra_params["verbosity"] = config["verbosity"]
         if config.get("reasoning"):
             extra_params["reasoning_effort"] = config["reasoning"]
 
-        # Create a modified config for the existing benchmark function
+    # Create a modified config for the existing benchmark function
         base_cfg = {
             "model": config["model"],
             "extra_params": extra_params,
             "description": config["description"],
+            "_sem": shared_sem,
         }
 
         if run_assisted:
@@ -1385,7 +1709,7 @@ async def benchmark_model_with_config(client, config):
     """Run the SAR benchmark for a single model configuration."""
     
     model_name = config["model"]
-    extra_params = config.get("extra_params", {})
+    extra_params = dict(config.get("extra_params", {}))
     description = config["description"]
     raw_mode = config.get("raw_mode", False)
     
@@ -1397,12 +1721,19 @@ async def benchmark_model_with_config(client, config):
     total_time = 0
     total_input_tokens = 0
     total_output_tokens = 0
+    parse_error_count = 0
+    parse_error_samples: List[str] = []
     
     # Global concurrency limiter
     sem = config.get("_sem")
     if sem is None:
         # Back-compat: create local semaphore if not provided
         sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+    # In assisted runs, drop verbosity/reasoning to reduce verbosity and avoid unsupported params
+    if not raw_mode:
+        extra_params.pop("verbosity", None)
+        extra_params.pop("reasoning_effort", None)
 
     for i, (text, base_time_iso, prev_eta_hhmm, expected_vehicle, expected_eta, expected_status) in enumerate(test_cases):
         try:
@@ -1425,7 +1756,10 @@ async def benchmark_model_with_config(client, config):
             ]
             async def _create_with_fallback_case():
                 # Retry with exponential backoff for transient errors and adjust max tokens on overflow
-                base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", "2048") or 2048)
+                # Lower default cap in assisted mode to reduce verbosity/cost
+                default_cap = 512 if raw_mode else 120
+                base_tok = int(os.getenv("MAX_COMPLETION_TOKENS", str(default_cap)) or default_cap)
+                hard_cap = int(os.getenv("MAX_COMPLETION_TOKENS_HARD", "1024") or 1024)
                 max_tok = base_tok
                 attempts = 3
                 delay = 1.0
@@ -1443,6 +1777,11 @@ async def benchmark_model_with_config(client, config):
                                 )
                             except APIStatusError as e:
                                 etxt = str(e).lower()
+                                # Prune unsupported decode params dynamically
+                                for key, needle in (("temperature","temperature"),("top_p","top_p"),("presence_penalty","presence"),("frequency_penalty","frequency")):
+                                    if key in extra_params and needle in etxt and "unsupported" in etxt:
+                                        extra_params.pop(key, None)
+                                        break
                                 # Fallback response_format handling
                                 if ("response_format" in etxt and ("json_schema" in etxt or "not supported" in etxt)) or "invalid parameter" in etxt:
                                     try:
@@ -1455,10 +1794,15 @@ async def benchmark_model_with_config(client, config):
                                         )
                                     except APIStatusError as e2:
                                         etxt2 = str(e2).lower()
+                                        for key, needle in (("temperature","temperature"),("top_p","top_p"),("presence_penalty","presence"),("frequency_penalty","frequency")):
+                                            if key in extra_params and needle in etxt2 and "unsupported" in etxt2:
+                                                extra_params.pop(key, None)
+                                                break
                                         if "response_format" in etxt2 and ("json_object" in etxt2 or "not supported" in etxt2):
                                             return await client.chat.completions.create(
                                                 model=model_name,
                                                 messages=messages,
+                                                stop=["\n\n"],
                                                 max_completion_tokens=max_tok,
                                                 **extra_params
                                             )
@@ -1469,9 +1813,15 @@ async def benchmark_model_with_config(client, config):
                     except (RateLimitError, APITimeoutError, APIConnectionError, APIStatusError) as e:
                         last_err = e
                         msg = str(e).lower()
-                        # If output limit reached, try with smaller max tokens next attempt
-                        if "max_tokens" in msg or "output limit" in msg:
-                            max_tok = max(256, max_tok // 2)
+                        # If output limit reached, try with larger max tokens next attempt
+                        if "max_tokens" in msg or "output limit" in msg or "max tokens" in msg:
+                            new_val = min(hard_cap, max(max_tok * 2, max_tok + 128))
+                            if new_val > max_tok:
+                                max_tok = new_val
+                                # brief backoff before retrying
+                                await asyncio.sleep(delay)
+                                delay = min(delay * 2, 8.0)
+                                continue
                         # Backoff for 429 or timeouts
                         if isinstance(e, RateLimitError) or "429" in msg or "rate limit" in msg:
                             await asyncio.sleep(delay)
@@ -1502,6 +1852,10 @@ async def benchmark_model_with_config(client, config):
                     expected_vehicle, expected_eta, expected_status,
                     text, i + 1, base_time_iso, prev_eta_hhmm
                 )
+                if result.get("parse_error"):
+                    parse_error_count += 1
+                    if len(parse_error_samples) < 2:
+                        parse_error_samples.append(result.get("raw_preview", ""))
             else:
                 # RAW mode: parse JSON, compare absolute ISO directly
                 try:
@@ -1586,7 +1940,7 @@ async def benchmark_model_with_config(client, config):
         status_accuracy = np.mean([r["status_correct"] for r in valid])
         exact_accuracy = np.mean([r["exact_match"] for r in valid])
     
-    return {
+    result_obj = {
         "config": description,
         "model": model_name,
         "vehicle_accuracy": vehicle_accuracy,
@@ -1601,6 +1955,16 @@ async def benchmark_model_with_config(client, config):
     "avg_output_tokens": total_output_tokens / max(1, len(valid)),
     "test_cases": len(valid)
     }
+    # Diagnostics: if poor results or many parse errors, print a brief triage block
+    try:
+        if not raw_mode and (exact_accuracy <= 0.1 or parse_error_count > 0):
+            print(f"    🔎 Diagnostics: parse_errors={parse_error_count}/{len(valid)}; avg_output_tokens={result_obj['avg_output_tokens']:.0f}")
+            for idx, sample in enumerate(parse_error_samples, 1):
+                if sample:
+                    print(f"      • sample{idx}: {sample.replace('\n',' ')[:180]}…")
+    except Exception:
+        pass
+    return result_obj
 
 def display_benchmark_comparison(results):
     """Display benchmark results in a comparison table."""
@@ -1776,6 +2140,8 @@ if __name__ == "__main__":
     parser.add_argument("--cases", type=str, default=None, help="Path to test cases JSON")
     parser.add_argument("--tolerance-min", type=int, default=2, help="ETA tolerance in minutes")
     parser.add_argument("--models", type=str, default=None, help="Comma-separated models for simple run")
+    parser.add_argument("--debug-io", action="store_true", help="Log request/response payloads per case")
+    parser.add_argument("--debug-dir", type=str, default=None, help="Directory to write debug logs")
     args, _ = parser.parse_known_args()
 
     # Route to the correct runner
@@ -1783,6 +2149,11 @@ if __name__ == "__main__":
         # In comprehensive runs, --raw-only / --assisted-only control which modes execute
         run_assisted = not args.raw_only
         run_raw = not args.assisted_only
+        # Set debug globals
+        if args.debug_io:
+            DEBUG_IO = True
+        if args.debug_dir:
+            DEBUG_DIR = args.debug_dir
         asyncio.run(run_comprehensive_benchmark(run_assisted=run_assisted, run_raw=run_raw))
     else:
         # For the simple run, preserve existing flags by mutating argv-like globals used in main()
@@ -1792,4 +2163,8 @@ if __name__ == "__main__":
             TOLERANCE_MIN = args.tolerance_min
         if args.models:
             BENCH_MODELS = [m.strip() for m in args.models.split(",") if m.strip()]
+        if args.debug_io:
+            DEBUG_IO = True
+        if args.debug_dir:
+            DEBUG_DIR = args.debug_dir
         asyncio.run(main())

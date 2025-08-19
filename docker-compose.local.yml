@@ -17,6 +17,7 @@ services:
     environment:
       - DEBUG=true
       - REDIS_HOST=redis
+  - DISABLE_API_KEY_CHECK=true
     env_file:
       - backend/.env
     volumes:

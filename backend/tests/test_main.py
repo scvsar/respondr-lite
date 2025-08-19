@@ -68,8 +68,8 @@ def test_webhook_endpoint(mock_openai_response):
     mock_openai_response.choices = [
         MagicMock(
             message=MagicMock(
-                content='{"vehicle": "SAR-78", "eta": "15:45"}',
-                function_call=None  # No function calling
+                content='{"vehicle": "SAR-78", "eta_iso": "2025-01-01T15:45:00Z", "status":"Responding", "confidence":0.9}',
+                function_call=None
             )
         )
     ]
@@ -79,8 +79,7 @@ def test_webhook_endpoint(mock_openai_response):
     mock_client.chat.completions.create.return_value = mock_openai_response
     
     with patch('main.messages', test_messages), \
-         patch('main.client', mock_client), \
-         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
+         patch('main.client', mock_client):
         
         webhook_data = {
             "name": "Test User",
@@ -106,8 +105,8 @@ def test_webhook_endpoint(mock_openai_response):
         # If we found the test user's message, verify its contents
         if test_user_message:
             assert test_user_message["vehicle"] == "SAR-78"
-            assert re.match(r"\d{2}:\d{2}", test_user_message["eta"])
-            assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])
+            assert re.match(r"\d{2}:\d{2}", test_user_message["eta"])  # HH:MM after LLM iso conversion
+            assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])  # legacy format in tests
 
 def test_extract_details_with_vehicle_and_eta():
     """Test extracting details with both vehicle and ETA present"""
@@ -117,19 +116,18 @@ def test_extract_details_with_vehicle_and_eta():
     mock_response.choices = [
         MagicMock(
             message=MagicMock(
-                content='{"vehicle": "SAR78", "eta": "15:30"}',  # Use valid time format
-                function_call=None  # No function call in this test
+                content='{"vehicle": "SAR-78", "eta_iso": "2025-01-01T15:30:00Z", "status":"Responding", "confidence":0.8}',
+                function_call=None
             )
         )
     ]
     mock_client.chat.completions.create.return_value = mock_response
     
-    with patch('main.client', mock_client), \
-         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
+    with patch('main.client', mock_client):
         
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
-        assert result["vehicle"] == "SAR-78"
-        assert re.match(r"\d{2}:\d{2}", result["eta"])
+    assert result["vehicle"] == "SAR-78"
+    assert re.match(r"\d{2}:\d{2}", result["eta"]) 
 
 def test_extract_details_with_pov():
     """Test extracting details with POV vehicle"""
@@ -139,19 +137,18 @@ def test_extract_details_with_pov():
     mock_response.choices = [
         MagicMock(
             message=MagicMock(
-                content='{"vehicle": "POV", "eta": "23:30"}',
-                function_call=None  # No function call in this test
+                content='{"vehicle": "POV", "eta_iso": "2025-01-01T23:30:00Z", "status":"Responding", "confidence":0.7}',
+                function_call=None
             )
         )
     ]
     mock_client.chat.completions.create.return_value = mock_response
     
-    with patch('main.client', mock_client), \
-         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
+    with patch('main.client', mock_client):
         
         result = extract_details_from_text("Taking my personal vehicle, ETA 23:30")
-        assert result["vehicle"] == "POV"
-        assert result["eta"] == "23:30"
+    assert result["vehicle"] == "POV"
+    assert re.match(r"\d{2}:\d{2}", result["eta"])  # derived from eta_iso
 
 def test_extract_details_with_api_error():
     """Test error handling when API call fails"""
@@ -159,12 +156,11 @@ def test_extract_details_with_api_error():
     mock_client = MagicMock()
     mock_client.chat.completions.create.side_effect = Exception("API Error")
     
-    with patch('main.client', mock_client), \
-         patch('main.FAST_LOCAL_PARSE', False):  # Force using Azure OpenAI path
-        
+    with patch('main.client', mock_client):
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
-        assert result["vehicle"] == "SAR-78"
-        assert re.match(r"\d{2}:\d{2}", result["eta"])
+    # With AI error, defaults to Unknown per LLM-only contract
+    assert result["vehicle"] == "Unknown"
+    assert result["eta"] == "Unknown"
 
 def test_dashboard_endpoint():
     """Test the dashboard HTML endpoint"""
@@ -196,7 +192,8 @@ def test_static_files():
     # Find if there's a static route in the application
     static_route = False
     for route in app.routes:
-        if hasattr(route, "path") and route.path.startswith("/static"):
+        route_path = getattr(route, "path", getattr(route, "path_format", ""))
+        if isinstance(route_path, str) and route_path.startswith("/static"):
             static_route = True
             break
     
