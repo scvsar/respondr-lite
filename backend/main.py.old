@@ -2048,7 +2048,7 @@ async def parse_debug(request: Request) -> JSONResponse:
     Auth: admin or local bypass.
     """
     if not _authn_domain_and_admin_ok(request):
-        raise HTTPException(status_code=403, detail="Not authorized")
+        raise HTTPException(status_code=403, detail="Not authorized") 
 
     try:
         body_raw = await request.json()
