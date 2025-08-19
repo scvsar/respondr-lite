@@ -1053,6 +1053,11 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         ]
         active_user_messages.sort(key=lambda x: _coerce_dt(cast(Optional[str], x.get('timestamp_utc') or x.get('timestamp'))))
         user_message_history = active_user_messages
+        
+        # DEBUG: Log context building details
+        logger.info(f"CONTEXT DEBUG for {display_name}: Found {len(active_user_messages)} active messages")
+        for i, msg in enumerate(active_user_messages):
+            logger.info(f"  {i+1}. {msg.get('timestamp', 'NO_TS')} - '{msg.get('text', 'NO_TEXT')}' -> vehicle={msg.get('vehicle', 'NO_VEH')}, eta={msg.get('eta', 'NO_ETA')}")
     except Exception:
         user_message_history = []
 
@@ -1074,6 +1079,9 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         
         context_message += f"\n\nPrevious status: Last ETA was {latest_eta}, last vehicle was {latest_vehicle}"
         context_message += f"\nNote: If user is standing down/cancelling, set ETA to 'Unknown'. If no new ETA is mentioned and user is still responding, maintain the previous ETA of {latest_eta}"
+        
+        # DEBUG: Log the context message being sent to LLM
+        logger.info(f"CONTEXT DEBUG: Sending to LLM - '{context_message}'")
 
     # Previous ETA for relative updates (get the most recent one)
     prev_eta_iso: Optional[str] = None
