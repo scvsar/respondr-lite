@@ -480,6 +480,76 @@ def _compute_eta_fields(eta_str: Optional[str], eta_ts: Optional[datetime], base
     }
 
 
+def _extract_eta_from_text_local(text: str, base_time: datetime) -> Optional[datetime]:
+    """Deterministically extract an ETA from explicit local-time mentions in text.
+    Supports:
+    - HH:MM AM/PM or H:MM am/pm or HH am/pm
+    - 4-digit military times like 2145 (interpreted as local time)
+    Returns a timezone-aware datetime in APP_TZ, rolled to next day if not in the future relative to base_time.
+    """
+    s = text or ""
+    try:
+        # 1) AM/PM formats
+        m = re.search(r"(?i)\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", s)
+        if m:
+            h = int(m.group(1))
+            mnt = int(m.group(2) or 0)
+            ampm = m.group(3).lower()
+            if not (1 <= h <= 12 and 0 <= mnt <= 59):
+                return None
+            if ampm == "pm" and h != 12:
+                h += 12
+            if ampm == "am" and h == 12:
+                h = 0
+            eta_local = base_time.replace(hour=h, minute=mnt, second=0, microsecond=0)
+            if eta_local <= base_time:
+                eta_local += timedelta(days=1)
+            return eta_local
+
+        # 2) Military 4-digit like 2145 or 0930
+        m2 = re.search(r"\b((?:[01]\d|2[0-3])[0-5]\d)\b", s)
+        if m2:
+            val = m2.group(1)
+            h = int(val[:2])
+            mnt = int(val[2:])
+            eta_local = base_time.replace(hour=h, minute=mnt, second=0, microsecond=0)
+            if eta_local <= base_time:
+                eta_local += timedelta(days=1)
+            return eta_local
+    except Exception:
+        return None
+    return None
+
+
+def _extract_duration_eta(text: str, base_time: datetime) -> Optional[datetime]:
+    """Deterministically extract ETA from duration mentions like '15 min', '1 hr', '15-20 minutes'.
+    Chooses a conservative upper bound when a range is provided (e.g., 15-20 → 20 minutes).
+    Returns a timezone-aware datetime in APP_TZ; never returns a past time (adds to base_time).
+    """
+    s = (text or "").lower()
+    try:
+        # minutes range or single
+        m = re.search(r"\b(\d{1,3})(?:\s*[-~]\s*(\d{1,3}))?\s*(?:min|mins|minute|minutes)\b", s)
+        if m:
+            a = int(m.group(1))
+            b = int(m.group(2)) if m.group(2) else None
+            minutes = max(a, b) if b is not None else a
+            minutes = max(0, min(minutes, 24 * 60))  # clamp to one day
+            return base_time + timedelta(minutes=minutes)
+
+        # hours range or single
+        h = re.search(r"\b(\d{1,2})(?:\s*[-~]\s*(\d{1,2}))?\s*(?:hr|hrs|hour|hours)\b", s)
+        if h:
+            a = int(h.group(1))
+            b = int(h.group(2)) if h.group(2) else None
+            hours = max(a, b) if b is not None else a
+            hours = max(0, min(hours, 48))  # clamp to two days
+            return base_time + timedelta(hours=hours)
+    except Exception:
+        return None
+    return None
+
+
 # ----------------------------------------------------------------------------
 # Azure OpenAI client and LLM-only parser
 # ----------------------------------------------------------------------------
@@ -530,24 +600,33 @@ def _call_llm_only(text: str, current_iso_utc: str, prev_eta_iso_utc: Optional[s
         return {}
 
     model = cast(str, azure_openai_deployment)
+    # Derive local time equivalent for the model's context
+    try:
+        _cur_dt_utc = datetime.fromisoformat(current_iso_utc.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        _cur_dt_utc = datetime.now(timezone.utc)
+    _cur_dt_local = _cur_dt_utc.astimezone(APP_TZ)
+
     sys_msg = (
-        """You are analyzing Search & Rescue response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
+        f"""You are analyzing Search & Rescue response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
 
 Context:
 - Messages are from SAR responders coordinating by chat
-- Current time is provided - use it to calculate actual ETAs from relative or duration times
+- Current time is provided in both UTC and local timezone
+- Local timezone: {TIMEZONE}
+- IMPORTANT: Assume times mentioned in messages are in the local timezone ({TIMEZONE}). Convert to UTC for the final eta_iso.
 - Vehicle types: Personal vehicles (POV, PV, own car, etc.) or numbered SAR units (78, SAR-78, etc.)
 - "10-22" / "1022" means stand down/cancel (NOT a time)
-- Parse ALL time formats: absolute times (0830, 8:30 am), durations (15 min, 1 hr), relative phrases
+- Parse ALL time formats: absolute times (0830, 8:30 am), military/compact times (e.g., 2145), durations (e.g., 15 min, 1 hr, 15-20 minutes), and relative phrases
 
 Output JSON schema (no extra keys, no trailing text):
-{
+{{
     "vehicle": "POV" | "SAR-<number>" | "SAR Rig" | "Unknown",
     "eta_iso": "<ISO 8601 UTC like 2024-02-22T12:45:00Z or 'Unknown'>",
     "status": "Responding" | "Cancelled" | "Available" | "Informational" | "Not Responding" | "Unknown",
     "evidence": "<short phrase from the message>",
     "confidence": <float between 0 and 1>
-}
+}}
 
 Vehicle Normalization:
 - Personal vehicle references → "POV"
@@ -557,12 +636,12 @@ Vehicle Normalization:
 - NEVER use "Not Responding" as a vehicle type
 
 ETA Calculation:
-- Convert ALL time references to HH:MM format (24h)
-- Durations: Add to current time (e.g., "15 min" + current time)
-- Absolute times: Convert to HH:MM (e.g., "0830" → "08:30", "8:30 pm" → "20:30")
+- Convert ALL time references to HH:MM 24-hour local time first
+- Durations: Add to current local time; for ranges (e.g., 15-20) choose the conservative upper bound
+- Absolute/military times (e.g., 2145): Interpret as local time in {TIMEZONE}
 - Relative updates: Modify previous ETA if provided
 - No time mentioned → "Unknown"
-- RAW output must place the final result as ISO-8601 UTC in field "eta_iso".
+- Place the final result as ISO-8601 UTC in field "eta_iso" (convert from local to UTC)
 
 Status Classification:
 - "Responding" = actively responding to mission
@@ -574,7 +653,8 @@ Status Classification:
 """
     )
     user_msg = (
-        f"Current time (UTC): {current_iso_utc}\n"
+        f"Current time (UTC): {_cur_dt_utc.isoformat().replace('+00:00','Z')}\n"
+        f"Current time (Local {TIMEZONE}): {_cur_dt_local.isoformat()}\n"
         f"Previous ETA (UTC, optional): {prev_eta_iso_utc or 'None'}\n"
         f"Message: {text}"
     )
@@ -600,7 +680,7 @@ Status Classification:
         try:
             if re.match(r"^gpt-5-(nano|mini)", str(model), re.I):
                 common_kwargs["verbosity"] = "low"              # type: ignore
-                common_kwargs["reasoning_effort"] = "minimal"   # type: ignore
+                common_kwargs["reasoning_effort"] = "low"   # type: ignore
         except Exception:
             pass
 
@@ -797,11 +877,54 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
         if eta_text_alt:
             eta_fields = _compute_eta_fields(eta_text_alt, None, anchor_time)
         else:
-            eta_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
+            # Deterministic safety net for explicit AM/PM or military times
+            det_eta = _extract_eta_from_text_local(text, anchor_time)
+            if det_eta is not None:
+                logger.debug(f"Deterministic ETA fallback applied (no LLM eta_iso). text='{text}', parsed_local='{det_eta.isoformat()}'")
+                eta_fields = _compute_eta_fields(None, det_eta, anchor_time)
+            else:
+                # Try duration-based ETA extraction (e.g., 15-20 minutes, 1 hr)
+                dur_eta = _extract_duration_eta(text, anchor_time)
+                if dur_eta is not None:
+                    logger.debug(f"Deterministic duration ETA applied. text='{text}', parsed_local='{dur_eta.isoformat()}'")
+                    eta_fields = _compute_eta_fields(None, dur_eta, anchor_time)
+                else:
+                    eta_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
     else:
-        eta_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
+        temp_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
+        # If LLM produced an ETA that is in the past and text clearly says PM/AM, try deterministic parse
+        try:
+            minutes = temp_fields.get("minutes_until_arrival")
+            if isinstance(minutes, int) and minutes <= -5 and re.search(r"(?i)\b(am|pm)\b", text or ""):
+                det_eta = _extract_eta_from_text_local(text, anchor_time)
+                if det_eta is not None:
+                    logger.debug(f"Deterministic ETA override applied (LLM produced past ETA). text='{text}', parsed_local='{det_eta.isoformat()}', old_fields={temp_fields}")
+                    temp_fields = _compute_eta_fields(None, det_eta, anchor_time)
+            # If still Unknown, try duration ETA as a final fallback
+            if (not temp_fields.get("eta_timestamp_utc") and not temp_fields.get("eta_timestamp")):
+                dur_eta = _extract_duration_eta(text, anchor_time)
+                if dur_eta is not None:
+                    logger.debug(f"Deterministic duration ETA applied (post-LLM). text='{text}', parsed_local='{dur_eta.isoformat()}'")
+                    temp_fields = _compute_eta_fields(None, dur_eta, anchor_time)
+        except Exception:
+            pass
+        eta_fields = temp_fields
 
-    # No heuristic fallbacks; remain Unknown when AI doesn't provide vehicle
+    # Track source of ETA derivation for debugging
+    eta_source = "LLM"
+    if (not eta_iso or eta_iso == "Unknown"):
+        if eta_fields.get("eta") != "Unknown":
+            eta_source = "Deterministic"
+    else:
+        # If we overrode due to past ETA with AM/PM text
+        if isinstance(data, dict):
+            try:
+                # Recompute what fields would have been from eta_iso and compare
+                check_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
+                if check_fields.get("eta_timestamp_utc") != eta_fields.get("eta_timestamp_utc"):
+                    eta_source = "Deterministic"
+            except Exception:
+                pass
 
     return {
         "vehicle": vehicle,
@@ -812,6 +935,7 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
         "eta_timestamp": eta_fields.get("eta_timestamp"),
         "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
+        "parse_source": eta_source,
     }
 
 
@@ -915,6 +1039,7 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         "eta_timestamp_utc": parsed.get("eta_timestamp_utc"),
         "minutes_until_arrival": parsed.get("minutes_until_arrival"),
         "arrival_status": arrival_status,
+    "parse_source": parsed.get("parse_source", "LLM"),
     }
 
     reload_messages()
@@ -1081,6 +1206,7 @@ async def create_responder_entry(request: Request) -> JSONResponse:
         "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
         "arrival_status": eta_fields.get("arrival_status"),
+    "parse_source": "Manual",
     }
 
     reload_messages()
@@ -1128,6 +1254,7 @@ async def update_responder_entry(msg_id: str, request: Request) -> JSONResponse:
         "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
         "arrival_status": eta_fields.get("arrival_status"),
+    "parse_source": "Manual",
     })
 
     messages[idx] = current
@@ -1293,6 +1420,7 @@ def display_dashboard() -> str:
             <th>ETA</th>
             <th>Minutes Out</th>
             <th>Status</th>
+            <th>Parse Source</th>
             <th>Message</th>
         </tr>
     """
@@ -1331,6 +1459,7 @@ def display_dashboard() -> str:
             <td>{_esc(eta_display)}</td>
             <td>{_esc(minutes_display)}</td>
             <td>{_esc(status)}</td>
+            <td>{_esc(msg.get('parse_source', 'LLM'))}</td>
             <td style='max-width: 300px; word-wrap: break-word;'>{_esc(msg.get('text', ''))}</td>
         </tr>
         """
@@ -1366,6 +1495,7 @@ def display_deleted_dashboard() -> str:
             <th>Unit/Team</th>
             <th>Vehicle</th>
             <th>ETA</th>
+            <th>Parse Source</th>
             <th>Message</th>
             <th>Message ID</th>
         </tr>
@@ -1400,6 +1530,7 @@ def display_deleted_dashboard() -> str:
             <td>{_esc(team)}</td>
             <td>{_esc(vehicle)}</td>
             <td>{_esc(eta)}</td>
+            <td>{_esc(msg.get('parse_source', 'LLM'))}</td>
             <td style='max-width: 300px; word-wrap: break-word;'>{_esc(message_text)}</td>
             <td style='font-size: 10px; color: #666;'>{_esc(msg_id)}</td>
         </tr>
