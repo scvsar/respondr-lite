@@ -92,6 +92,8 @@ LOCAL_BYPASS_IS_ADMIN = os.getenv("LOCAL_BYPASS_IS_ADMIN", "false").lower() == "
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
 disable_api_key_check = os.getenv("DISABLE_API_KEY_CHECK", "false").lower() == "true" or is_testing
 
+# temporary override for PoC
+disable_api_key_check = True
 
 # Azure OpenAI configuration
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
