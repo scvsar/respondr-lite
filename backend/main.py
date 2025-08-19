@@ -1041,13 +1041,18 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         logger.info(f"Skipping empty message from {name}")
         return {"status": "skipped", "reason": "empty message"}
 
-    # Get full chronological message history for this user
+    # Get full chronological message history for this user from ACTIVE messages only
+    # CRITICAL: Only use active messages, never deleted messages for context
     user_message_history: List[Dict[str, Any]] = []
     try:
-        # Get all messages from this user, sorted chronologically
-        user_messages = [msg for msg in messages if msg.get("name") == display_name]
-        user_messages.sort(key=lambda x: _coerce_dt(cast(Optional[str], x.get('timestamp_utc') or x.get('timestamp'))))
-        user_message_history = user_messages
+        # Get all ACTIVE messages from this user, sorted chronologically
+        # Filter out any messages that have been soft-deleted
+        active_user_messages = [
+            msg for msg in messages 
+            if msg.get("name") == display_name and not msg.get("deleted_at")
+        ]
+        active_user_messages.sort(key=lambda x: _coerce_dt(cast(Optional[str], x.get('timestamp_utc') or x.get('timestamp'))))
+        user_message_history = active_user_messages
     except Exception:
         user_message_history = []
 
