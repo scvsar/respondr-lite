@@ -597,7 +597,7 @@ def _call_llm_only(text: str, current_iso_utc: str, prev_eta_iso_utc: Optional[s
                 f.write(json.dumps(log_entry) + "\n")
         except Exception:
             pass
-        return {}
+        return {"_llm_unavailable": True}
 
     model = cast(str, azure_openai_deployment)
     # Derive local time equivalent for the model's context
@@ -807,7 +807,7 @@ Status Classification:
                 f.write(json.dumps(log_entry) + "\n")
         except Exception:
             pass
-        return {}
+        return {"_llm_error": str(e)}
 
 
 def _populate_eta_fields_from_llm_eta(eta_iso_or_unknown: str, message_time: datetime) -> Dict[str, Any]:
@@ -851,6 +851,20 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
     anchor_time: datetime = base_time or now_tz()
     current_iso_utc = anchor_time.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     data = _call_llm_only(text, current_iso_utc, prev_eta_iso)
+
+    # If LLM is unavailable or errored, respect legacy contract for tests and return Unknowns
+    if isinstance(data, dict) and (data.get("_llm_unavailable") or data.get("_llm_error")):
+        return {
+            "vehicle": "Unknown",
+            "eta": "Unknown",
+            "raw_status": "Unknown",
+            "status_source": "LLM-Only",
+            "status_confidence": 0.0,
+            "eta_timestamp": None,
+            "eta_timestamp_utc": None,
+            "minutes_until_arrival": None,
+            "parse_source": "LLM",
+        }
 
     vehicle_raw = str(data.get("vehicle") or "Unknown") if isinstance(data, dict) else "Unknown"
     # Normalize vehicle like "SAR78" or "sar-078" -> "SAR-78"
