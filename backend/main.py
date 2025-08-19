@@ -619,6 +619,8 @@ Context:
 - Vehicles are typically SAR-<number> but users may just use shorthand like "taking 108" or "grabbing 75"
 - Current time is provided in both UTC and local timezone
 - Local timezone: {TIMEZONE}
+- IMPORTANT: When analyzing a user's message, consider their FULL message history provided in the context to understand their current status and maintain consistency
+- IMPORTANT: If a user previously provided an ETA (like "11:00") and now says something like "switching to SAR 78", they are likely updating their vehicle but maintaining the same ETA
 - IMPORTANT: Assume times mentioned in messages are in the local timezone ({TIMEZONE}). Convert to UTC for the final eta_iso.
 - Vehicle types: Personal vehicles (POV, PV, own car, etc.) or numbered SAR units (78, SAR-78, etc.)
 - "10-22" / "1022" means stand down/cancel (NOT a time)
@@ -647,7 +649,10 @@ ETA Calculation:
 - Durations: Add to current local time; for ranges (e.g., 15-20) choose the conservative upper bound
 - Absolute/military times (e.g., 2145): Interpret as local time in {TIMEZONE}
 - Relative updates: Modify previous ETA if provided
-- No time mentioned → "Unknown"
+- CRITICAL: If user says "same ETA", "keeping same ETA", or similar, use their most recent ETA from the message history
+- CRITICAL: If user changes vehicle but doesn't mention new ETA, maintain their previous ETA if they're still responding
+- CRITICAL: Look in the message history context for previous ETAs when the current message doesn't specify a clear new time
+- No time mentioned AND no previous ETA available → "Unknown"
 - Place the final result as ISO-8601 UTC in field "eta_iso" (convert from local to UTC)
 
 Status Classification:
@@ -910,7 +915,19 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
                     logger.debug(f"Deterministic duration ETA applied. text='{text}', parsed_local='{dur_eta.isoformat()}'")
                     eta_fields = _compute_eta_fields(None, dur_eta, anchor_time)
                 else:
-                    eta_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
+                    # Check if user is standing down or cancelling - don't maintain ETA in those cases
+                    standdown_phrases = ["standing down", "stand down", "10-22", "1022", "can't make it", "cancelling", "cancelled", "not responding"]
+                    is_standdown = any(phrase in text.lower() for phrase in standdown_phrases)
+                    
+                    # If no deterministic ETA found and prev_eta_iso is available, maintain previous ETA
+                    # BUT only if user is not standing down
+                    if prev_eta_iso and prev_eta_iso != "Unknown" and not is_standdown:
+                        logger.debug(f"Maintaining previous ETA (no deterministic ETA found). text='{text}', prev_eta_iso='{prev_eta_iso}'")
+                        eta_fields = _populate_eta_fields_from_llm_eta(prev_eta_iso, anchor_time)
+                    else:
+                        if is_standdown:
+                            logger.debug(f"Not maintaining ETA due to stand-down message. text='{text}'")
+                        eta_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
     else:
         temp_fields = _populate_eta_fields_from_llm_eta(eta_iso, anchor_time)
         # If LLM produced an ETA that is in the past and text clearly says PM/AM, try deterministic parse
@@ -927,6 +944,19 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
                 if dur_eta is not None:
                     logger.debug(f"Deterministic duration ETA applied (post-LLM). text='{text}', parsed_local='{dur_eta.isoformat()}'")
                     temp_fields = _compute_eta_fields(None, dur_eta, anchor_time)
+                else:
+                    # Check if user is standing down or cancelling - don't maintain ETA in those cases
+                    standdown_phrases = ["standing down", "stand down", "10-22", "1022", "can't make it", "cancelling", "cancelled", "not responding"]
+                    is_standdown = any(phrase in text.lower() for phrase in standdown_phrases)
+                    
+                    # If no deterministic ETA found and prev_eta_iso is available, maintain previous ETA
+                    # BUT only if user is not standing down
+                    if prev_eta_iso and prev_eta_iso != "Unknown" and not is_standdown:
+                        logger.debug(f"Maintaining previous ETA (post-LLM fallback). text='{text}', prev_eta_iso='{prev_eta_iso}'")
+                        temp_fields = _populate_eta_fields_from_llm_eta(prev_eta_iso, anchor_time)
+                    else:
+                        if is_standdown:
+                            logger.debug(f"Not maintaining ETA due to stand-down message (post-LLM). text='{text}'")
         except Exception:
             pass
         eta_fields = temp_fields
@@ -1011,25 +1041,40 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         logger.info(f"Skipping empty message from {name}")
         return {"status": "skipped", "reason": "empty message"}
 
-    # Previous status context (for AI prompt only)
-    user_previous_status = None
+    # Get full chronological message history for this user
+    user_message_history: List[Dict[str, Any]] = []
     try:
-        for msg in reversed(messages):
-            if msg.get("name") == display_name and msg.get("arrival_status") == "Responding":
-                user_previous_status = "responding"
-                break
+        # Get all messages from this user, sorted chronologically
+        user_messages = [msg for msg in messages if msg.get("name") == display_name]
+        user_messages.sort(key=lambda x: _coerce_dt(cast(Optional[str], x.get('timestamp_utc') or x.get('timestamp'))))
+        user_message_history = user_messages
     except Exception:
-        user_previous_status = None
+        user_message_history = []
 
-    context_message = f"Sender: {display_name}. Message: {text}"
-    if user_previous_status == "responding":
-        context_message += " (Note: This user is already responding and may be updating their ETA)"
+    # Build comprehensive context message with message sequence
+    context_message = f"Sender: {display_name}. Current message: {text}"
+    
+    if user_message_history:
+        # Simplified context - just show the most recent ETA and status for reference
+        latest_eta = "Unknown"
+        latest_vehicle = "Unknown"
+        for msg in reversed(user_message_history):
+            if msg.get("eta") and msg.get("eta") != "Unknown":
+                latest_eta = msg.get("eta", "Unknown")
+                break
+        for msg in reversed(user_message_history):
+            if msg.get("vehicle") and msg.get("vehicle") != "Unknown":
+                latest_vehicle = msg.get("vehicle", "Unknown")
+                break
+        
+        context_message += f"\n\nPrevious status: Last ETA was {latest_eta}, last vehicle was {latest_vehicle}"
+        context_message += f"\nNote: If user is standing down/cancelling, set ETA to 'Unknown'. If no new ETA is mentioned and user is still responding, maintain the previous ETA of {latest_eta}"
 
-    # Previous ETA for relative updates
+    # Previous ETA for relative updates (get the most recent one)
     prev_eta_iso: Optional[str] = None
     try:
-        for msg in reversed(messages):
-            if msg.get("name") == display_name and msg.get("eta_timestamp_utc"):
+        for msg in reversed(user_message_history):
+            if msg.get("eta_timestamp_utc"):
                 prev_eta_iso = msg.get("eta_timestamp_utc")
                 break
     except Exception:
