@@ -1068,12 +1068,18 @@ async def receive_webhook(request: Request, api_key_valid: bool = Depends(valida
         # Simplified context - just show the most recent ETA and status for reference
         latest_eta = "Unknown"
         latest_vehicle = "Unknown"
+        
+        # Find most recent ETA from a non-cancelled message
         for msg in reversed(user_message_history):
-            if msg.get("eta") and msg.get("eta") != "Unknown":
+            if (msg.get("eta") and msg.get("eta") != "Unknown" and 
+                msg.get("arrival_status") != "Cancelled"):
                 latest_eta = msg.get("eta", "Unknown")
                 break
+                
+        # Find most recent vehicle from a non-cancelled message  
         for msg in reversed(user_message_history):
-            if msg.get("vehicle") and msg.get("vehicle") != "Unknown":
+            if (msg.get("vehicle") and msg.get("vehicle") != "Unknown" and
+                msg.get("arrival_status") != "Cancelled"):
                 latest_vehicle = msg.get("vehicle", "Unknown")
                 break
         
