@@ -612,11 +612,16 @@ def _call_llm_only(text: str, current_iso_utc: str, prev_eta_iso_utc: Optional[s
 
 Context:
 - Messages are from SAR responders coordinating by chat
+- The typical response pattern includes whether they are responding, a vehicle type, and an ETA
+- Because the responses are highly variable, you need to consider the meaning of the message and extract the relevant details. For example if someone says "Coming in 99" that clearly means they are responding, and 99 should be interpreted as the vehicle identifier because there's no clear other thing it could be.
+- Vehicles are typically SAR-<number> but users may just use shorthand like "taking 108" or "grabbing 75"
 - Current time is provided in both UTC and local timezone
 - Local timezone: {TIMEZONE}
 - IMPORTANT: Assume times mentioned in messages are in the local timezone ({TIMEZONE}). Convert to UTC for the final eta_iso.
 - Vehicle types: Personal vehicles (POV, PV, own car, etc.) or numbered SAR units (78, SAR-78, etc.)
 - "10-22" / "1022" means stand down/cancel (NOT a time)
+- However a responder might be actually coming at 10:22 AM or 20:22 PM so you'll need to infer from the rest of the message if they are providing a time or a stand-down code. For example "Responding POV ETA 1022" would clearly be arriving at 10:22 not stand down code.
+- It is possible for users to provide incomplete or ambiguous information, so be prepared to make educated guesses based on context
 - Parse ALL time formats: absolute times (0830, 8:30 am), military/compact times (e.g., 2145), durations (e.g., 15 min, 1 hr, 15-20 minutes), and relative phrases
 
 Output JSON schema (no extra keys, no trailing text):
@@ -632,7 +637,7 @@ Vehicle Normalization:
 - Personal vehicle references → "POV"
 - SAR unit numbers (any format) → "SAR-<number>" (e.g., "SAR-78")
 - SAR rig references → "SAR Rig"
-- No vehicle mentioned/unclear → "Unknown"
+- No vehicle mentioned/unclear but they are responding → "POV"
 - NEVER use "Not Responding" as a vehicle type
 
 ETA Calculation:
