@@ -145,6 +145,9 @@ if ($Docker) {
     Write-Host "  2. Frontend (React) on http://localhost:3100" -ForegroundColor Cyan
     Write-Host ""
 
+    taskkill /F /IM python.exe
+    taskkill /F /IM node.exe
+    taskkill /F /IM powershell.exe
     # Ensure Redis for local persistence
     Ensure-Redis | Out-Null
     
