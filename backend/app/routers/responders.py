@@ -267,12 +267,3 @@ async def clear_all_deleted():
     except Exception as e:
         logger.error(f"Failed to clear deleted: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear deleted")
-from typing import List
-from fastapi import APIRouter
-
-router = APIRouter()
-
-@router.get("/api/responders")
-async def get_responders() -> List[dict]:
-    import main  # type: ignore
-    return main.messages
