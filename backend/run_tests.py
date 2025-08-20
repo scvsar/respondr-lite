@@ -23,8 +23,6 @@ def main():
             "--cov-report=term",  # Show coverage in terminal
             tests_dir,
             "--ignore=tests/test_system.py",
-            "--ignore=tests/test_preprod.py",
-            "--ignore=tests/test_webhook.py",
         ]
     except ImportError:
         print("pytest-cov not available, running basic tests...")
@@ -33,8 +31,6 @@ def main():
             "-v",  # Verbose
             tests_dir,
             "--ignore=tests/test_system.py",
-            "--ignore=tests/test_preprod.py",
-            "--ignore=tests/test_webhook.py",
         ]
 
     # Run the tests
