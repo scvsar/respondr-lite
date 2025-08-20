@@ -69,38 +69,67 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
     cur_utc = base_dt.astimezone(timezone.utc)
     cur_loc = base_dt.astimezone(APP_TZ)
 
-    sys_msg = (
-        "You analyze Search & Rescue response messages. Extract vehicle, ETA, and status. "
-        "Assume all times in the message are LOCAL time unless explicitly marked otherwise. "
-        f"Local timezone: {TIMEZONE}. Output MUST convert any local time to UTC ISO in `eta_iso`."
-    )
+    sys_msg = f"""
+    You are analyzing Search & Rescue (SAR) response messages. Extract vehicle, ETA, and response status with full parsing and normalization.
+
+    Context & assumptions:
+    - Messages are from SAR responders coordinating by chat.
+    - Typical pattern: whether they are responding, a vehicle type, and an ETA.
+    - Consider the user's recent message history (provided in the input) to maintain consistency across updates.
+    - Current time is provided in BOTH UTC and local time below.
+    - Local timezone: {TIMEZONE}
+    - IMPORTANT: Assume times mentioned in messages are LOCAL ({TIMEZONE}) unless explicitly marked otherwise. Convert local times to UTC for the final eta_iso.
+    - IMPORTANT: If a user previously provided an ETA (like "11:00") and now says something like "switching to SAR 78", they are likely updating their vehicle while keeping the SAME ETA.
+    - IMPORTANT: If the user says "same ETA" or gives an update without a new time and they remain Responding, KEEP their most recent ETA from history.
+    - Vehicles are typically SAR-<number>, but users may use shorthand ("taking 108", "grabbing 75", "coming in 99").
+    - Vehicle types to output: "POV", "SAR-<number>", "SAR Rig", or "Unknown".
+    - If the person is clearly Responding but no vehicle is mentioned, default vehicle to "POV".
+    - NEVER use a status label (like "Not Responding") as a vehicle type.
+
+    Status classification:
+    - "Responding": actively responding / ETA updates while already responding.
+    - "Cancelled": the person cancels their own response ("can't make it", "backing out").
+    - "Not Responding": acknowledges stand down / "10-22" / "1022" / mission canceled acknowledgements.
+    - "Informational": logistics/questions/assignments (not a commitment to respond).
+    - "Available": willing to respond if needed, not committed (no ETA).
+    - "Unknown": unclear intent.
+
+    Disambiguating "10-22"/"1022":
+    - These normally mean stand down → "Not Responding".
+    - HOWEVER, if clearly used as a TIME (e.g., preceded by "ETA" or in a clock-like context), interpret "1022" as 10:22 local, NOT stand down.
+
+    Time parsing & ETA rules:
+    - Parse ALL time formats: absolute times (0830, 8:30 am, 15:00), military/compact (2145), durations ("in 20", "15-20 minutes", "1 hr"), and relative phrases.
+    - For ranges ("10:15-10:30"), choose the conservative upper bound (10:30).
+    - Durations are relative to the CURRENT LOCAL time.
+    - Convert the final ETA to ISO-8601 UTC in "eta_iso".
+    - If stand down / cancel → eta_iso = "Unknown".
+    - If no time and no prior ETA → eta_iso = "Unknown".
+
+    Output JSON ONLY (no extra keys, no prose):
+    {{
+    "vehicle": "POV" | "SAR-<number>" | "SAR Rig" | "Unknown",
+    "eta_iso": "<UTC ISO like 2025-08-19T16:45:00Z or 'Unknown'>",
+    "status": "Responding" | "Cancelled" | "Available" | "Informational" | "Not Responding" | "Unknown",
+    "evidence": "<very short phrase from the message>",
+    "confidence": <float 0..1>
+    }}
+
+    Local→UTC examples (assume UTC-7):
+    - Local 09:45 → 16:45Z
+    - Local 'ETA 30 min' at 14:20 → local 14:50 → 21:50Z
+    - 'ETA 1022' with "ETA" present → 10:22 local → 17:22Z
+    """
+
     user_msg = (
         f"Current time (UTC): {cur_utc.isoformat().replace('+00:00','Z')}\n"
         f"Current time (Local {TIMEZONE}): {cur_loc.isoformat()}\n"
-        f"Previous ETA (UTC, optional): {prev_eta_iso or 'None'}\n\n"
-        f"Message: {text}\n\n"
-        "Return ONLY JSON with keys: vehicle, eta_iso, status, confidence.\n"
-        "Status rules:\n"
-        "- Responding: actively responding / ETA updates from an already-responding person\n"
-        "- Not Responding: stand down / 10-22 / 1022 / mission canceled acknowledgements\n"
-        "- Cancelled: person cancels their own response (\"can't make it\")\n"
-        "- Available: can respond if needed, no commitment yet\n"
-        "- Informational: logistics/notes/questions\n"
-        "- Unknown: unclear\n"
-        "Vehicle normalization:\n"
-        "- SAR units like 'sar78', 'SAR-078' => 'SAR-78'\n"
-        "- Personal vehicle => 'POV'\n"
-        "- Otherwise 'Unknown'\n"
-        "ETA rules:\n"
-        "- Absolute local times (e.g., 0945, 9:45 am) => convert to UTC for eta_iso on current date; if not future relative to current local, roll to next day.\n"
-        "- Durations (e.g., 'in 20', '30 minutes', '1 hr') => add to CURRENT LOCAL time; convert result to UTC.\n"
-        "- Ranges (e.g., '10:15-10:30') => choose the conservative upper bound.\n"
-        "- If stand down or cancel => eta_iso='Unknown'.\n"
-        "- If no new time and the person is still responding => it is acceptable to keep previous ETA.\n"
-        "Examples (local->UTC conversion is REQUIRED):\n"
-        "  Local 09:45 -> UTC 16:45Z if local is UTC-7.\n"
-        "  'ETA 30 min' at local 14:20 -> UTC 21:50Z if UTC-7 (14:50 local).\n"
+        f"Previous ETA (UTC, optional): {prev_eta_iso or 'None'}\n"
+        f"(History snapshot may be appended in the message body if available.)\n"
+        f"Message: {text}\n"
+        "Return ONLY the JSON."
     )
+
 
     messages_payload: List[ChatCompletionMessageParam] = [
         {"role": "system", "content": sys_msg},
