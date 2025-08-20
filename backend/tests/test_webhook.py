@@ -20,8 +20,12 @@ Prerequisites:
 Note: This is an integration script and should not run during unit tests.
 """
 
+import sys
 import pytest
-pytest.skip("Manual/integration test script; skipped in automated pytest runs", allow_module_level=True)
+
+# Only skip when running under pytest, not when running directly
+if "pytest" in sys.modules and __name__ != "__main__":
+    pytest.skip("Manual/integration test script; skipped in automated pytest runs", allow_module_level=True)
 
 import requests
 import json
