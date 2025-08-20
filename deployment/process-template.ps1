@@ -141,6 +141,7 @@ try {
 # Ensure env var placeholders render as valid YAML even when empty
 $ALLOWED_EMAIL_DOMAINS_PLACEHOLDER = if ($allowedDomains -and $allowedDomains.Trim()) { $allowedDomains } else { '""' }
 $ALLOWED_ADMIN_USERS_PLACEHOLDER   = if ($allowedAdmins -and $allowedAdmins.Trim()) { $allowedAdmins } else { '""' }
+$LEGACY_HOSTNAMES_PLACEHOLDER      = if ($values.ContainsKey('legacyHostnames') -and $values['legacyHostnames']) { $values['legacyHostnames'] } else { '""' }
 
 # Apply replacements for computed placeholders (always replace)
 # Now replace computed placeholders
@@ -148,6 +149,63 @@ $processedContent = $processedContent -replace [regex]::Escape('{{OIDC_TENANT_SE
 $processedContent = $processedContent -replace [regex]::Escape('{{EMAIL_DOMAIN_ARGS}}'),   ($null -ne $emailArgs ? $emailArgs : '')
 $processedContent = $processedContent -replace [regex]::Escape('{{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}'), ($null -ne $ALLOWED_EMAIL_DOMAINS_PLACEHOLDER ? $ALLOWED_EMAIL_DOMAINS_PLACEHOLDER : '')
 $processedContent = $processedContent -replace [regex]::Escape('{{ALLOWED_ADMIN_USERS_PLACEHOLDER}}'),   ($null -ne $ALLOWED_ADMIN_USERS_PLACEHOLDER ? $ALLOWED_ADMIN_USERS_PLACEHOLDER : '')
+$processedContent = $processedContent -replace [regex]::Escape('{{LEGACY_HOSTNAMES_PLACEHOLDER}}'),      ($null -ne $LEGACY_HOSTNAMES_PLACEHOLDER ? $LEGACY_HOSTNAMES_PLACEHOLDER : '')
+
+# Handle legacy redirect hostnames
+$redirectIngressBlock = ''
+$redirectDeploymentBlock = ''
+if ($values.ContainsKey('legacyHostnames') -and $values['legacyHostnames']) {
+    $legacyHosts = ($values['legacyHostnames'] -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+    
+    if ($legacyHosts.Count -gt 0) {
+        # Generate redirect Ingress that routes to existing respondr-service
+        # The application will handle redirect detection based on hostname
+        $hostsList = ($legacyHosts | ForEach-Object { "    - $_" }) -join "`n"
+        $rulesList = ''
+        foreach ($h in $legacyHosts) {
+            $rulesList += @"
+  - host: $h
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: respondr-service
+            port:
+              number: 80
+"@
+        }
+        
+        $redirectIngressBlock = @"
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: respondr-redirect-ingress
+  namespace: $($values['namespace'])
+  annotations:
+    kubernetes.io/ingress.class: azure/application-gateway
+    appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    appgw.ingress.kubernetes.io/use-private-ip: "false"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    appgw.ingress.kubernetes.io/backend-protocol: "http"
+spec:
+  tls:
+  - hosts:
+$hostsList
+    secretName: respondr-redirect-tls-letsencrypt
+  rules:
+$rulesList
+"@
+
+        # No separate deployment needed - application handles redirects
+        $redirectDeploymentBlock = ''
+    }
+}
+
+$processedContent = $processedContent -replace [regex]::Escape('{{REDIRECT_INGRESS_BLOCK}}'), $redirectIngressBlock
+$processedContent = $processedContent -replace [regex]::Escape('{{REDIRECT_DEPLOYMENT_BLOCK}}'), $redirectDeploymentBlock
 
 # Handle OAuth2 conditional sections
 $useOAuth2 = $values['useOAuth2'] -eq 'true'

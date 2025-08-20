@@ -32,7 +32,7 @@ from urllib.parse import quote
 import importlib
 import redis
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from openai import AzureOpenAI
@@ -98,6 +98,33 @@ ENABLE_AI_FINALIZE = os.getenv("ENABLE_AI_FINALIZE", "true").lower() == "true"
 # FastAPI app and global state
 # ----------------------------------------------------------------------------
 app = FastAPI()
+
+# Hostname redirect configuration
+PRIMARY_HOSTNAME = os.getenv("PRIMARY_HOSTNAME", "respondr.scvsar.app")
+LEGACY_HOSTNAMES = os.getenv("LEGACY_HOSTNAMES", "").split(",")
+LEGACY_HOSTNAMES = [h.strip() for h in LEGACY_HOSTNAMES if h.strip()]
+
+@app.middleware("http")
+async def hostname_redirect_middleware(request: Request, call_next):
+    """Redirect legacy hostnames to primary hostname with 301 permanent redirect."""
+    host = request.headers.get("host", "").lower()
+    
+    # Remove port if present for comparison
+    host_without_port = host.split(":")[0]
+    
+    if host_without_port in LEGACY_HOSTNAMES:
+        # Construct the new URL with the primary hostname
+        scheme = "https"  # Always redirect to HTTPS
+        new_url = f"{scheme}://{PRIMARY_HOSTNAME}{request.url.path}"
+        if request.url.query:
+            new_url += f"?{request.url.query}"
+        
+        logger.info(f"Redirecting {host} -> {PRIMARY_HOSTNAME}: {request.url} -> {new_url}")
+        return RedirectResponse(url=new_url, status_code=301)
+    
+    # Not a legacy hostname, continue with normal processing
+    response = await call_next(request)
+    return response
 
 # In-memory message stores; tests will patch these
 messages: List[Dict[str, Any]] = []

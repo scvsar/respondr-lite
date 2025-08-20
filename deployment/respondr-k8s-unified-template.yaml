@@ -71,6 +71,10 @@ spec:
           value: {{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}
         - name: ALLOWED_ADMIN_USERS
           value: {{ALLOWED_ADMIN_USERS_PLACEHOLDER}}
+        - name: PRIMARY_HOSTNAME
+          value: {{HOSTNAME_PLACEHOLDER}}
+        - name: LEGACY_HOSTNAMES
+          value: {{LEGACY_HOSTNAMES_PLACEHOLDER}}
         resources:
           requests:
             memory: "256Mi"
@@ -231,7 +235,6 @@ spec:
   tls:
   - hosts:
     - {{HOSTNAME_PLACEHOLDER}}
-    - respondr.scvsar.app
     secretName: respondr-tls-letsencrypt
   rules:
   - host: {{HOSTNAME_PLACEHOLDER}}
@@ -244,13 +247,7 @@ spec:
             name: respondr-service
             port:
               number: 80
-  - host: respondr.scvsar.app
-    http:
-      paths:
-      - path: /
-        pathType: Prefix
-        backend:
-          service:
-            name: respondr-service
-            port:
-              number: 80
+
+{{REDIRECT_INGRESS_BLOCK}}
+
+{{REDIRECT_DEPLOYMENT_BLOCK}}
