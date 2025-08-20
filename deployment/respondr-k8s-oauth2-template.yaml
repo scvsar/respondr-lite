@@ -91,6 +91,7 @@ spec:
         - --provider-display-name="Microsoft Entra"
         - --oidc-issuer-url=https://login.microsoftonline.com/{{OIDC_TENANT_SEGMENT}}/v2.0
         - --redirect-url=https://{{HOSTNAME_PLACEHOLDER}}/oauth2/callback
+        - --redirect-url=https://respondr.scvsar.app/oauth2/callback
 {{EMAIL_DOMAIN_ARGS}}
         - --upstream=http://localhost:8000
         - --http-address=0.0.0.0:4180
