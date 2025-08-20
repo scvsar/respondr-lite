@@ -1,22 +1,19 @@
-"""LLM processing for SAR message parsing."""
-
 import json
 import logging
 import re
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 from openai import AzureOpenAI
 from openai.types.chat import ChatCompletionMessageParam
 
 from .config import (
     azure_openai_api_key, azure_openai_endpoint, azure_openai_deployment,
-    azure_openai_api_version, DEBUG_FULL_LLM_LOG, disable_api_key_check
+    azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ
 )
-from .utils import extract_eta_from_text_local, extract_duration_eta, compute_eta_fields
+from .utils import extract_eta_from_text_local, extract_duration_eta, compute_eta_fields, now_tz
 
 logger = logging.getLogger(__name__)
 
-# Initialize Azure OpenAI client
 client = None
 if azure_openai_api_key and azure_openai_endpoint:
     try:
@@ -29,305 +26,262 @@ if azure_openai_api_key and azure_openai_endpoint:
         logger.error(f"Failed to initialize Azure OpenAI client: {e}")
 
 
-def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None) -> Dict[str, Any]:
-    """Extract vehicle, ETA, and status details from text using LLM.
-    
-    Args:
-        text: The message text to parse
-        base_time: Base time for ETA calculations (defaults to now)
-        prev_eta_iso: Previous ETA in ISO format for maintaining state
-        
-    Returns:
-        Dict with vehicle, eta, status, timestamps, and confidence info
-    """
-    if not base_time:
-        base_time = datetime.now(timezone.utc)
-    
-    # Check for test client override in main module
-    test_client = None
-    try:
-        import main
-        test_client = getattr(main, 'client', None)
-    except ImportError:
-        pass
-    
-    active_client = test_client if test_client else client
-    
-    if not active_client:
-        # Fallback when LLM is unavailable
-        return {
-            "vehicle": "Unknown",
-            "eta": "Unknown",
-            "raw_status": "Unknown",
-            "arrival_status": "Unknown",  # Add this for webhook compatibility
-            "status_source": "LLM-Only",
-            "status_confidence": 0.0,
-            "eta_timestamp": None,
-            "eta_timestamp_utc": None,
-            "minutes_until_arrival": None,
-            "parse_source": "LLM",
-        }
-    
-    try:
-        # Call the LLM
-        llm_data = _call_llm_only(text, base_time.isoformat(), prev_eta_iso, active_client)
-        
-        # Process LLM response
-        vehicle_raw = str(llm_data.get("vehicle", "Unknown"))
-        
-        # Normalize vehicle names
-        vehicle = _normalize_vehicle_name(vehicle_raw)
-        
-        # Get status and confidence
-        status = str(llm_data.get("status", "Unknown"))
-        confidence = float(llm_data.get("confidence", 0.0))
-        
-        # Process ETA - for LLM-only mode, no fallback parsing
-        eta_iso = llm_data.get("eta_iso", "Unknown")
-        if eta_iso and eta_iso != "Unknown":
-            try:
-                eta_dt = datetime.fromisoformat(eta_iso.replace('Z', '+00:00'))
-                eta_fields = compute_eta_fields(None, eta_dt, base_time)
-            except Exception:
-                logger.warning(f"Invalid ETA ISO format from LLM: {eta_iso}")
-                eta_fields = {
-                    "eta": "Unknown",
-                    "eta_timestamp": None,
-                    "eta_timestamp_utc": None,
-                    "minutes_until_arrival": None
-                }
-        else:
-            eta_fields = {
-                "eta": "Unknown", 
-                "eta_timestamp": None,
-                "eta_timestamp_utc": None,
-                "minutes_until_arrival": None
-            }
-        
-        return {
-            "vehicle": vehicle,
-            "eta": eta_fields.get("eta", "Unknown"),
-            "raw_status": status,
-            "arrival_status": status,  # Add this for webhook compatibility
-            "status_source": "LLM-Only",
-            "status_confidence": confidence,
-            "eta_timestamp": eta_fields.get("eta_timestamp"),
-            "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
-            "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
-            "parse_source": "LLM",
-        }
-        
-    except Exception as e:
-        logger.error(f"LLM extraction failed: {e}")
-        return {
-            "vehicle": "Unknown",
-            "eta": "Unknown",
-            "raw_status": "Unknown",
-            "arrival_status": "Unknown",  # Add this for webhook compatibility
-            "status_source": "LLM-Only",
-            "status_confidence": 0.0,
-            "eta_timestamp": None,
-            "eta_timestamp_utc": None,
-            "minutes_until_arrival": None,
-            "parse_source": "LLM",
-        }
-
-
-def _call_llm_only(text: str, current_iso_utc: str, prev_eta_iso: Optional[str] = None, llm_client = None) -> Dict[str, Any]:
-    """Call the LLM with SAR-specific prompt."""
-    
-    active_client = llm_client if llm_client else client
-    
-    if not active_client:
-        return {"_llm_unavailable": True}
-    
-    if not azure_openai_deployment:
-        return {"_llm_error": "No deployment configured"}
-    
-    # Parse current time to get human-readable format for context
-    try:
-        current_dt = datetime.fromisoformat(current_iso_utc.replace('Z', '+00:00'))
-        current_time_str = current_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
-        current_time_short = current_dt.strftime("%H:%M")
-    except Exception:
-        current_time_str = current_iso_utc
-        current_time_short = "Unknown"
-    
-    # Comprehensive SAR message parsing prompt with detailed examples
-    prompt = f"""You are a SAR (Search and Rescue) message parser. Parse the message and return ONLY valid JSON.
-Current time: {current_time_str} (24-hour format: {current_time_short})
-Previous ETA: {prev_eta_iso or "None"}
-
-Return JSON with fields: vehicle, eta_iso, status, confidence
-
-STATUS DETECTION:
-- 'Responding': Actively responding with intention to arrive
-  Examples: 'Responding POV ETA 08:45', 'POV ETA 0830', 'Headed to Taylor's Landing'
-  IMPORTANT: ETA updates from already responding people stay 'Responding'
-  'Actually I'll be an hour and 10 min', 'Updated ETA 15:30', 'Make that 20 minutes'
-- 'Cancelled': Mission cancelled or person can't respond
-  Examples: 'can't make it', 'backing out', '10-22', 'Mission canceled', 'Subject found'
-- 'Available': Can respond but no firm commitment (initial offer only)
-  Examples: 'I can respond as IMT', 'I can help with planning'
-  NOTE: If someone already responded, ETA updates are 'Responding', not 'Available'
-- 'Informational': Providing information, logistics, questions
-  Examples: 'Key for 74 is in key box', 'Who can respond?', 'checking with Hayden'
-- 'Unknown': Cannot determine clear status
-
-CANCELLATION DETECTION - Return status 'Cancelled':
-- Examples of declining/negative responses:
-  'can't make it', 'cannot make it', 'won't make it', 'not coming', 'backing out'
-  'Ok I can't make it', 'I also can't make it', 'Sorry, backing out'
-- Special codes: '10-22' (or '1022') means mission complete/cancelled
-  'Copied 10-22', 'Copy 10-22', '10-22', '1022 subj found'
-- Mission status: 'Mission canceled', 'Mission cancelled', 'Subject found'
-- Logistics/info only: 'Key for 74 is in key box', 'Who can respond?'
-
-VEHICLE EXTRACTION:
-- SAR units: 'SAR-12', 'SAR 12', 'sar78', 'SAR-60' → format as 'SAR-XX'
-- Personal vehicle: 'POV', 'personal vehicle', 'own car' → 'POV'
-- Unknown/unclear → 'Unknown'
-Examples:
-  'SAR-3 on the way' → 'SAR-3'
-  'Responding sar78' → 'SAR-78'
-  'Driving POV' → 'POV'
-  'I can respond as IMT' → 'Unknown'
-
-ETA EXTRACTION (eta_iso field):
-- Absolute times: Convert to ISO 8601 UTC timestamp
-  '0830' → calculate from current date, return as ISO
-  '1150' → calculate from current date, return as ISO
-  '15:00' → calculate from current date, return as ISO
-- Relative times: Calculate based on current time
-  * '15 minutes', '15min', '15 mins' → add 15 minutes to current time
-  * '30min', '30 minutes' → add 30 minutes to current time
-  * '45 minutes', '45min' → add 45 minutes to current time
-  * '60min', '60 minutes', '1 hour' → add 60 minutes to current time
-  * '90min', '90 minutes' → add 90 minutes to current time
-  * 'hour and 10 min', 'hour and 10 minutes' → add 70 minutes to current time
-  * 'hour and a half', '1.5 hours' → add 90 minutes to current time
-  * '2 hours', '120 minutes' → add 120 minutes to current time
-  * 'in 20', 'be there in 20' → add 20 minutes to current time
-- Unknown/unclear → 'Unknown'
-- If cancelled status → 'Unknown'
-
-Current time {current_time_short}: 'ETA 15 minutes' → add 15 minutes and convert to ISO
-- No time mentioned → 'Unknown'
-- DON'T interpret 'Xmin' as 'X:00' - calculate relative time!
-
-Examples:
-  Current time 14:20, 'ETA 15:00' → '2024-01-01T15:00:00Z' (use current date)
-  Current time 14:20, '30 min out' → '2024-01-01T14:50:00Z' (add 30 min)
-  Current time 12:07, 'ETA 60min' → '2024-01-01T13:07:00Z' (NOT '01:00'!)
-  'POV ETA 0830' → '2024-01-01T08:30:00Z'
-  'Updated eta: arriving 11:30' → '2024-01-01T11:30:00Z'
-
-CONFIDENCE SCORING (0.0-1.0):
-- 0.9-1.0: Clear, unambiguous vehicle and ETA
-- 0.7-0.8: Clear intent, some ambiguity in details
-- 0.5-0.6: Moderate confidence, some interpretation required
-- 0.3-0.4: Low confidence, high ambiguity
-- 0.0-0.2: Very unclear or contradictory
-
-COMPLETE EXAMPLES:
-  'Responding POV ETA 08:45' → {{"vehicle": "POV", "eta_iso": "2024-01-01T08:45:00Z", "status": "Responding", "confidence": 0.9}}
-  'can't make it, sorry' → {{"vehicle": "Unknown", "eta_iso": "Unknown", "status": "Cancelled", "confidence": 0.8}}
-  'I can respond as IMT' → {{"vehicle": "Unknown", "eta_iso": "Unknown", "status": "Available", "confidence": 0.7}}
-  'Key for 74 is in key box' → {{"vehicle": "Unknown", "eta_iso": "Unknown", "status": "Informational", "confidence": 0.9}}
-  '10-22' → {{"vehicle": "Unknown", "eta_iso": "Unknown", "status": "Cancelled", "confidence": 0.9}}
-  'Mission canceled. Subject found' → {{"vehicle": "Unknown", "eta_iso": "Unknown", "status": "Cancelled", "confidence": 1.0}}
-  'Who can respond to Vesper?' → {{"vehicle": "Unknown", "eta_iso": "Unknown", "status": "Informational", "confidence": 0.9}}
-  'SAR-5 ETA 15:45' → {{"vehicle": "SAR-5", "eta_iso": "2024-01-01T15:45:00Z", "status": "Responding", "confidence": 0.9}}
-  'Responding sar78 1150' → {{"vehicle": "SAR-78", "eta_iso": "2024-01-01T11:50:00Z", "status": "Responding", "confidence": 0.9}}
-  'Responding SAR7 ETA 60min' → {{"vehicle": "SAR-7", "eta_iso": "2024-01-01T13:07:00Z", "status": "Responding", "confidence": 0.8}} (if current time is 12:07)
-  'SAR-3 ETA 30min' → {{"vehicle": "SAR-3", "eta_iso": "2024-01-01T14:50:00Z", "status": "Responding", "confidence": 0.8}} (if current time is 14:20)
-  'ETA 45 minutes' → {{"vehicle": "Unknown", "eta_iso": "2024-01-01T15:05:00Z", "status": "Responding", "confidence": 0.7}} (if current time is 14:20)
-  'POV ETA 90min' → {{"vehicle": "POV", "eta_iso": "2024-01-01T15:50:00Z", "status": "Responding", "confidence": 0.8}} (if current time is 14:20)
-  'Actually I'll be an hour and 10 min' (if already responding) → {{"vehicle": "Unknown", "eta_iso": "2024-01-01T15:30:00Z", "status": "Responding", "confidence": 0.7}} (if current time is 14:20)
-  'Updated ETA 20 minutes' (if already responding) → {{"vehicle": "Unknown", "eta_iso": "2024-01-01T14:40:00Z", "status": "Responding", "confidence": 0.8}} (if current time is 14:20)
-  'Make that 30 min' (if already responding) → {{"vehicle": "Unknown", "eta_iso": "2024-01-01T14:50:00Z", "status": "Responding", "confidence": 0.7}} (if current time is 14:20)
-
-MESSAGE: "{text}"
-
-Return ONLY this JSON format:
-{{"vehicle": "value", "eta_iso": "ISO_timestamp_or_Unknown", "status": "value", "confidence": 0.X}}"""
-
-    try:
-        response = active_client.chat.completions.create(
-            model=azure_openai_deployment,
-            messages=[
-                {"role": "system", "content": "You are a SAR message parser. Return only valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            max_completion_tokens=4096
-        )
-        
-        content = response.choices[0].message.content
-        if not content:
-            return {"_llm_error": "Empty response"}
-            
-        return json.loads(content.strip())
-        
-    except Exception as e:
-        logger.error(f"LLM call failed: {e}")
-        return {"_llm_error": str(e)}
-
-
 def _normalize_vehicle_name(vehicle_raw: str) -> str:
-    """Normalize vehicle names to standard format."""
-    vehicle_clean = vehicle_raw.strip()
-    
-    # Match SAR vehicles like "SAR78", "sar-078" -> "SAR-78"
-    m = re.match(r"^\s*sar[\s-]?0*(\d{1,3})\s*$", vehicle_clean, re.I)
+    s = (vehicle_raw or "").strip()
+    m = re.match(r"^\s*sar[\s-]?0*(\d{1,3})\s*$", s, re.I)
     if m:
         return f"SAR-{int(m.group(1))}"
-    
-    # Handle special cases
-    if vehicle_clean.upper() in {"POV", "SAR RIG"}:
-        return vehicle_clean.upper().replace("SAR RIG", "SAR Rig")
-    
-    return vehicle_clean if vehicle_clean else "Unknown"
+    if s.upper() in {"POV", "SAR RIG"}:
+        return s.upper().replace("SAR RIG", "SAR Rig")
+    return s if s else "Unknown"
 
 
-def _process_eta(eta_iso: str, text: str, base_time: datetime, prev_eta_iso: Optional[str]) -> Dict[str, Any]:
-    """Process ETA information with fallbacks."""
-    
-    # If LLM provided valid ETA
+def _is_standdown(text: str) -> bool:
+    s = (text or "").lower()
+    phrases = [
+        "standing down", "stand down", "10-22", "1022",
+        "can't make it", "cannot make it", "won't make it",
+        "cancelling", "canceled", "cancelled", "not responding",
+        "returning", "turning around", "mission canceled", "mission cancelled",
+        "subject found"
+    ]
+    return any(p in s for p in phrases)
+
+
+def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
+    kw: Dict[str, Any] = {"max_completion_tokens": 768, "temperature": 1, "top_p": 1, "presence_penalty": 0, "frequency_penalty": 0}
+    if re.search(r"gpt-5-(nano|mini)", model_name or "", re.I):
+        kw["verbosity"] = "low"           # some models support this
+        kw["reasoning_effort"] = "low"    # some models support this
+    elif re.search(r"(gpt-5(?!-(nano|mini))|o3|gpt-4\.1)", model_name or "", re.I):
+        kw["reasoning_effort"] = "medium"
+    return kw
+
+
+def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None) -> Dict[str, Any]:
+    c = llm_client or client
+    if not c:
+        return {"_llm_unavailable": True}
+    if not azure_openai_deployment:
+        return {"_llm_error": "No deployment configured"}
+    assert azure_openai_deployment is not None
+
+    cur_utc = base_dt.astimezone(timezone.utc)
+    cur_loc = base_dt.astimezone(APP_TZ)
+
+    sys_msg = (
+        "You analyze Search & Rescue response messages. Extract vehicle, ETA, and status. "
+        "Assume all times in the message are LOCAL time unless explicitly marked otherwise. "
+        f"Local timezone: {TIMEZONE}. Output MUST convert any local time to UTC ISO in `eta_iso`."
+    )
+    user_msg = (
+        f"Current time (UTC): {cur_utc.isoformat().replace('+00:00','Z')}\n"
+        f"Current time (Local {TIMEZONE}): {cur_loc.isoformat()}\n"
+        f"Previous ETA (UTC, optional): {prev_eta_iso or 'None'}\n\n"
+        f"Message: {text}\n\n"
+        "Return ONLY JSON with keys: vehicle, eta_iso, status, confidence.\n"
+        "Status rules:\n"
+        "- Responding: actively responding / ETA updates from an already-responding person\n"
+        "- Not Responding: stand down / 10-22 / 1022 / mission canceled acknowledgements\n"
+        "- Cancelled: person cancels their own response (\"can't make it\")\n"
+        "- Available: can respond if needed, no commitment yet\n"
+        "- Informational: logistics/notes/questions\n"
+        "- Unknown: unclear\n"
+        "Vehicle normalization:\n"
+        "- SAR units like 'sar78', 'SAR-078' => 'SAR-78'\n"
+        "- Personal vehicle => 'POV'\n"
+        "- Otherwise 'Unknown'\n"
+        "ETA rules:\n"
+        "- Absolute local times (e.g., 0945, 9:45 am) => convert to UTC for eta_iso on current date; if not future relative to current local, roll to next day.\n"
+        "- Durations (e.g., 'in 20', '30 minutes', '1 hr') => add to CURRENT LOCAL time; convert result to UTC.\n"
+        "- Ranges (e.g., '10:15-10:30') => choose the conservative upper bound.\n"
+        "- If stand down or cancel => eta_iso='Unknown'.\n"
+        "- If no new time and the person is still responding => it is acceptable to keep previous ETA.\n"
+        "Examples (local->UTC conversion is REQUIRED):\n"
+        "  Local 09:45 -> UTC 16:45Z if local is UTC-7.\n"
+        "  'ETA 30 min' at local 14:20 -> UTC 21:50Z if UTC-7 (14:50 local).\n"
+    )
+
+    messages_payload: List[ChatCompletionMessageParam] = [
+        {"role": "system", "content": sys_msg},
+        {"role": "user", "content": user_msg},
+    ]
+
+    def _try_call(kwargs: Dict[str, Any], with_json_format: bool) -> Optional[str]:
+        try:
+            assert azure_openai_deployment is not None
+            if with_json_format:
+                resp = c.chat.completions.create(
+                    model=azure_openai_deployment,
+                    messages=messages_payload,
+                    response_format={"type": "json_object"},
+                    **kwargs
+                )
+            else:
+                resp = c.chat.completions.create(
+                    model=azure_openai_deployment,
+                    messages=messages_payload,
+                    **kwargs
+                )
+            return (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            etxt = str(e).lower()
+            # prune unsupported knobs and retry upstream
+            for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"):
+                if k in kwargs and (k.replace("_", " ") in etxt or "unknown" in etxt):
+                    kwargs.pop(k, None)
+            if "max tokens" in etxt or "output limit" in etxt or "too long" in etxt:
+                kwargs["max_tomakens"] = min(2048, max(kwargs.get("max_completion_tokens", 768) * 2, 1024))
+            return None
+
+    kwargs = _select_kwargs_for_model(azure_openai_deployment)
+
+    content = _try_call(dict(kwargs), with_json_format=True)
+    if not content:
+        content = _try_call(dict(kwargs), with_json_format=False)
+    if not content or not content.strip():
+        # last-ditch compact retry
+        messages_retry: List[ChatCompletionMessageParam] = [
+            {"role": "system", "content": "Return ONLY valid compact JSON per schema."},
+            {"role": "user", "content": f"{user_msg}\nReturn only JSON."},
+        ]
+        try:
+            resp = c.chat.completions.create(
+                model=azure_openai_deployment,
+                messages=messages_retry,
+                response_format={"type": "json_object"},
+                max_completion_tokens=min(2048, max(kwargs.get("max_completion_tokens", 768), 1024)),
+            )
+            content = (resp.choices[0].message.content or "").strip()
+        except Exception as e:
+            logger.error(f"Final LLM retry failed: {e}")
+            return {"_llm_error": str(e)}
+
+    try:
+        return json.loads(content) if content else {"_llm_error": "empty"}
+    except Exception:
+        m = re.search(r"\{.*\}", content or "", flags=re.S)
+        if not m:
+            return {"_llm_error": "non-json"}
+        try:
+            return json.loads(m.group(0))
+        except Exception as e:
+            return {"_llm_error": f"json-parse-failed: {e}"}
+
+
+def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, prev_eta_iso: Optional[str]) -> Tuple[Dict[str, Any], str]:
+    source = "LLM"
+    eta_iso = str(llm_data.get("eta_iso") or "Unknown")
+
     if eta_iso and eta_iso != "Unknown":
         try:
-            eta_dt = datetime.fromisoformat(eta_iso.replace('Z', '+00:00'))
-            return compute_eta_fields(None, eta_dt, base_time)
+            dt = datetime.fromisoformat(eta_iso.replace("Z", "+00:00"))
+            fields = compute_eta_fields(None, dt, base_dt)
         except Exception:
-            logger.warning(f"Invalid ETA ISO format: {eta_iso}")
-    
-    # Try deterministic parsing for explicit times
-    det_eta = extract_eta_from_text_local(text, base_time)
-    if det_eta:
-        return compute_eta_fields(None, det_eta, base_time)
-    
-    # Try duration-based parsing
-    dur_eta = extract_duration_eta(text, base_time)
-    if dur_eta:
-        return compute_eta_fields(None, dur_eta, base_time)
-    
-    # Check for stand-down messages
-    standdown_phrases = ["standing down", "stand down", "10-22", "1022", 
-                        "can't make it", "cancelling", "cancelled", "not responding"]
-    is_standdown = any(phrase in text.lower() for phrase in standdown_phrases)
-    
-    # Maintain previous ETA if not standing down
-    if prev_eta_iso and prev_eta_iso != "Unknown" and not is_standdown:
+            fields = {"eta": "Unknown", "eta_timestamp": None, "eta_timestamp_utc": None, "minutes_until_arrival": None}
+    else:
+        fields = {"eta": "Unknown", "eta_timestamp": None, "eta_timestamp_utc": None, "minutes_until_arrival": None}
+
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+        # alt hh:mm keys
+        for k in ("eta", "eta_hhmm", "eta_text"):
+            v = llm_data.get(k)
+            if isinstance(v, str) and re.fullmatch(r"\d{1,2}:\d{2}", v.strip()):
+                fields = compute_eta_fields(v.strip(), None, base_dt)
+                source = "Deterministic"
+                break
+
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+        det = extract_eta_from_text_local(text, base_dt)
+        if det:
+            fields = compute_eta_fields(None, det, base_dt)
+            source = "Deterministic"
+
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+        dur = extract_duration_eta(text, base_dt)
+        if dur:
+            fields = compute_eta_fields(None, dur, base_dt)
+            source = "Deterministic"
+
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+        if prev_eta_iso and prev_eta_iso != "Unknown" and not _is_standdown(text):
+            try:
+                prev_dt = datetime.fromisoformat(prev_eta_iso.replace("Z", "+00:00"))
+                fields = compute_eta_fields(None, prev_dt, base_dt)
+                source = "Deterministic"
+            except Exception:
+                pass
+
+    # override if model returned a past time but the text clearly specifies AM/PM
+    try:
+        mins = fields.get("minutes_until_arrival")
+        if isinstance(mins, int) and mins <= -5 and re.search(r"(?i)\b(am|pm)\b", text or ""):
+            det = extract_eta_from_text_local(text, base_dt)
+            if det:
+                fields = compute_eta_fields(None, det, base_dt)
+                source = "Deterministic"
+    except Exception:
+        pass
+
+    return fields, source
+
+
+def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None) -> Dict[str, Any]:
+    anchor = base_time or now_tz()
+
+    # Allow tests to inject main.client
+    active_client = None
+    try:
+        import main as _main
+        active_client = getattr(_main, "client", None)
+    except ImportError:
+        active_client = client
+
+    llm_data = _call_llm_only(text, anchor, prev_eta_iso, active_client)
+
+    # Enhanced debugging for LLM responses
+    logger.info(f"LLM DEBUG - Input text: '{text}'")
+    logger.info(f"LLM DEBUG - Raw response: {llm_data}")
+
+    if isinstance(llm_data, dict) and (llm_data.get("_llm_unavailable") or llm_data.get("_llm_error")):
+        logger.warning(f"LLM unavailable or error: {llm_data}")
+        return {
+            "vehicle": "Unknown",
+            "eta": "Unknown",
+            "raw_status": "Unknown",
+            "arrival_status": "Unknown",
+            "status_source": "LLM-Only",
+            "status_confidence": 0.0,
+            "eta_timestamp": None,
+            "eta_timestamp_utc": None,
+            "minutes_until_arrival": None,
+            "parse_source": "LLM",
+        }
+
+    vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or "Unknown"))
+    status = str(llm_data.get("status") or "Unknown")
+    try:
+        confidence = float(llm_data.get("confidence") or 0.0)
+    except Exception:
+        confidence = 0.0
+
+    eta_fields, eta_source = _derive_eta_fields(text, llm_data, anchor, prev_eta_iso)
+
+    if DEBUG_FULL_LLM_LOG:
         try:
-            prev_dt = datetime.fromisoformat(prev_eta_iso.replace('Z', '+00:00'))
-            return compute_eta_fields(None, prev_dt, base_time)
+            logger.info(f"LLM raw: {llm_data}")
         except Exception:
             pass
-    
-    # Default to unknown
+
     return {
-        "eta": "Unknown",
-        "eta_timestamp": None,
-        "eta_timestamp_utc": None,
-        "minutes_until_arrival": None
+        "vehicle": vehicle,
+        "eta": eta_fields.get("eta", "Unknown"),
+        "raw_status": status,
+        "arrival_status": status,  # webhook may flip to "Arrived" based on minutes
+        "status_source": "LLM-Only",
+        "status_confidence": confidence,
+        "eta_timestamp": eta_fields.get("eta_timestamp"),
+        "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
+        "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
+        "parse_source": eta_source,
     }
