@@ -233,3 +233,5 @@ _attic/test_*.txt
 
 preprod_test*.json
 prod_responders.json
+groupme_*_messages.json
+*.ipynb
