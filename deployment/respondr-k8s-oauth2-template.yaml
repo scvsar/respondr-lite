@@ -218,7 +218,8 @@ spec:
   tls:
   - hosts:
     - {{HOSTNAME_PLACEHOLDER}}
-  secretName: {{APP_NAME}}-tls-letsencrypt
+    - respondr.scvsar.app
+    secretName: {{APP_NAME}}-tls-letsencrypt
   rules:
   - host: {{HOSTNAME_PLACEHOLDER}}
     http:
@@ -227,6 +228,16 @@ spec:
         pathType: Prefix
         backend:
           service:
-      name: {{APP_NAME}}-service
+            name: {{APP_NAME}}-service
+            port:
+              number: 80
+  - host: respondr.scvsar.app
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{APP_NAME}}-service
             port:
               number: 80
