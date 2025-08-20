@@ -79,7 +79,7 @@ spec:
             port: 8000
           initialDelaySeconds: 5
           periodSeconds: 5
-  imagePullPolicy: Always
+        imagePullPolicy: Always
 
       # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
       {{OAUTH2_CONTAINER_START}}- name: oauth2-proxy
@@ -89,7 +89,7 @@ spec:
         args:
         - --provider=oidc
         - --provider-display-name="Microsoft Entra"
-  - --oidc-issuer-url=https://login.microsoftonline.com/{{OIDC_TENANT_SEGMENT}}/v2.0
+        - --oidc-issuer-url=https://login.microsoftonline.com/{{OIDC_TENANT_SEGMENT}}/v2.0
         - --redirect-url=https://{{HOSTNAME_PLACEHOLDER}}/oauth2/callback
         - --redirect-url=https://respondr.scvsar.app/oauth2/callback
 {{EMAIL_DOMAIN_ARGS}}
