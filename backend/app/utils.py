@@ -8,6 +8,7 @@ import html
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+import uuid
 
 from .config import APP_TZ, is_testing, now_tz
 
@@ -184,3 +185,42 @@ def extract_duration_eta(text: str, base_time: datetime) -> Optional[datetime]:
     except Exception:
         return None
     return None
+
+def convert_to_groupme_format(processed_messages):
+    """
+    Convert processed responder messages back to original GroupMe webhook schema format.
+    
+    Args:
+        processed_messages: List of processed message dictionaries
+        
+    Returns:
+        List of messages in GroupMe webhook format
+    """
+    groupme_messages = []
+    
+    for msg in processed_messages:
+        # Convert timestamp to Unix timestamp (integer)
+        created_at = None
+        if msg.get('timestamp_utc'):
+            dt = datetime.fromisoformat(msg['timestamp_utc'].replace('Z', '+00:00'))
+            created_at = int(dt.timestamp())
+        
+        # Map processed message fields to GroupMe schema
+        groupme_msg = {
+            "attachments": [],  # Default empty array
+            "avatar_url": None,  # Not available in processed data
+            "created_at": created_at,
+            "group_id": msg.get('group_id'),
+            "id": msg.get('id'),
+            "name": msg.get('name'),
+            "sender_id": msg.get('user_id'),  # Map user_id to sender_id
+            "sender_type": "user",  # Default to user type
+            "source_guid": str(uuid.uuid4()),  # Generate new source_guid
+            "system": False,  # Default to False
+            "text": msg.get('text'),
+            "user_id": msg.get('user_id')
+        }
+        
+        groupme_messages.append(groupme_msg)
+    
+    return groupme_messages
