@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """Responders API endpoints for managing SAR response messages."""
 
 import logging
@@ -268,7 +267,6 @@ async def clear_all_deleted():
     except Exception as e:
         logger.error(f"Failed to clear deleted: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear deleted")
-=======
 from typing import List
 from fastapi import APIRouter
 
@@ -278,4 +276,3 @@ router = APIRouter()
 async def get_responders() -> List[dict]:
     import main  # type: ignore
     return main.messages
->>>>>>> ef84adee5db2588b7c1441dfc10679fb2b09f3e0
