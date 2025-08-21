@@ -1,0 +1,29 @@
+[
+  {
+    "id": "test-001",
+    "text": "Test message 1",
+    "timestamp": "2025-08-21T10:01:25.015246",
+    "parsed": {
+      "name": "Test User 1",
+      "eta": "10 min"
+    }
+  },
+  {
+    "id": "test-002",
+    "text": "Test message 2",
+    "timestamp": "2025-08-21T10:01:25.015246",
+    "parsed": {
+      "name": "Test User 2",
+      "eta": "15 min"
+    }
+  },
+  {
+    "id": "fallback-test-1755795685",
+    "text": "Fallback test message",
+    "timestamp": "2025-08-21T10:01:25.019961",
+    "parsed": {
+      "name": "Fallback Test",
+      "eta": "now"
+    }
+  }
+]

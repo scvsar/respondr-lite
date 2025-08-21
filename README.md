@@ -236,6 +236,7 @@ Automated tests run on PRs, and on merge to `main` an image is built and pushed 
 
 What runs
 - PRs to main: Backend tests with a uv virtualenv (no deploy)
+ - PRs to main: Backend tests using a Python virtual environment (no deploy)
 - Push to main: Build Docker image, login to ACR, push `latest` and commit SHA tags
 
 Setup (recommended: OIDC, no client secret)
@@ -263,6 +264,8 @@ Minimal required secrets
 How the workflow works
 - Tests job (PRs and pushes):
   - Installs uv, creates `.venv`, installs `backend/requirements.txt`
+ - Tests job (PRs and pushes):
+   - Creates a Python virtual environment (`.venv`) and installs `backend/requirements.txt`
   - Sets `WEBHOOK_API_KEY=test-key` and runs `pytest` for `backend` while ignoring `backend/test_system.py`
 - Build job (push to main only):
   - Logs into Azure via OIDC or AZURE_CREDENTIALS
