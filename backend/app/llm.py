@@ -135,7 +135,7 @@ def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
     return kw
 
 
-def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None) -> Dict[str, Any]:
+def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None, debug: bool = False) -> Dict[str, Any]:
     c = llm_client or client
     if not c:
         return {"_llm_unavailable": True}
@@ -212,6 +212,10 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
         {"role": "system", "content": sys_msg},
         {"role": "user", "content": user_msg},
     ]
+    debug_info: Dict[str, Any] = {}
+    if debug:
+        debug_info["sys_prompt"] = sys_msg
+        debug_info["user_prompt"] = user_msg
 
     def _try_call(kwargs: Dict[str, Any], with_json_format: bool) -> Optional[str]:
         try:
@@ -264,15 +268,36 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
             return {"_llm_error": str(e)}
 
     try:
-        return json.loads(content) if content else {"_llm_error": "empty"}
+        parsed = json.loads(content) if content else {"_llm_error": "empty"}
+        if debug and isinstance(parsed, dict):
+            # Attach flattened debug fields as strings for easier consumption
+            parsed["_debug_sys_prompt"] = debug_info.get("sys_prompt", "")
+            parsed["_debug_user_prompt"] = debug_info.get("user_prompt", "")
+            parsed["_debug_raw_response"] = content
+        return parsed
     except Exception:
         m = re.search(r"\{.*\}", content or "", flags=re.S)
         if not m:
-            return {"_llm_error": "non-json"}
+            res = {"_llm_error": "non-json"}
+            if debug:
+                res["_debug_sys_prompt"] = debug_info.get("sys_prompt", "")
+                res["_debug_user_prompt"] = debug_info.get("user_prompt", "")
+                res["_debug_raw_response"] = content
+            return res
         try:
-            return json.loads(m.group(0))
+            parsed = json.loads(m.group(0))
+            if debug and isinstance(parsed, dict):
+                parsed["_debug_sys_prompt"] = debug_info.get("sys_prompt", "")
+                parsed["_debug_user_prompt"] = debug_info.get("user_prompt", "")
+                parsed["_debug_raw_response"] = content
+            return parsed
         except Exception as e:
-            return {"_llm_error": f"json-parse-failed: {e}"}
+            res = {"_llm_error": f"json-parse-failed: {e}"}
+            if debug:
+                res["_debug_sys_prompt"] = debug_info.get("sys_prompt", "")
+                res["_debug_user_prompt"] = debug_info.get("user_prompt", "")
+                res["_debug_raw_response"] = content
+            return res
 
 
 def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, prev_eta_iso: Optional[str], status: str) -> Tuple[Dict[str, Any], str]:
@@ -346,7 +371,7 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
 
 
 
-def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None) -> Dict[str, Any]:
+def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
     # Allow tests to inject main.client
@@ -357,7 +382,7 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
     except ImportError:
         active_client = client
 
-    llm_data = _call_llm_only(text, anchor, prev_eta_iso, active_client)
+    llm_data = _call_llm_only(text, anchor, prev_eta_iso, active_client, debug=debug)
 
     # Enhanced debugging for LLM responses
     logger.debug(f"LLM DEBUG - Input text: '{text}'")
@@ -425,7 +450,7 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
 
     evidence = str(llm_data.get("evidence") or "")
 
-    return {
+    result = {
         "vehicle": vehicle,
         "eta": eta_fields.get("eta", "Unknown"),
         "raw_status": status,
@@ -439,3 +464,18 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
         "parse_evidence": evidence,
         # "rules_applied": rules_applied,  # optional, very helpful in /api/parse-debug
     }
+    # Attach LLM debug info on request (flattened)
+    if debug and isinstance(llm_data, dict):
+        llm_debug = {
+            "sys_prompt": str(llm_data.get("_debug_sys_prompt", "")),
+            "user_prompt": str(llm_data.get("_debug_user_prompt", "")),
+            "raw_response": str(llm_data.get("_debug_raw_response", "")),
+        }
+        result["llm_debug"] = llm_debug
+        # Optionally include the raw llm_data sans large fields
+        safe_raw = dict(llm_data)
+        for k in ["_debug_sys_prompt", "_debug_user_prompt", "_debug_raw_response"]:
+            if k in safe_raw:
+                safe_raw.pop(k, None)
+        result["llm_raw"] = safe_raw
+    return result
