@@ -106,21 +106,3 @@ def get_deleted_dashboard():
     """Serve the deleted messages dashboard HTML."""
     messages = get_deleted_messages()
     return HTMLResponse(content=generate_dashboard_html(messages, "Deleted Messages Dashboard"))
-
-
-@router.get("/")
-def redirect_to_dashboard():
-    """Root endpoint redirects to dashboard."""
-    return {"message": "Respondr API", "dashboard": "/dashboard"}
-
-
-@router.get("/scvsar-logo.png")
-def get_logo():
-    """Serve the SCVSAR logo if it exists."""
-    logo_path = Path("static/scvsar-logo.png")
-    if logo_path.exists():
-        return FileResponse(logo_path)
-    else:
-        # Return a placeholder or 404
-        from fastapi import HTTPException
-        raise HTTPException(status_code=404, detail="Logo not found")

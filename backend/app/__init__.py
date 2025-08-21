@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import RedirectResponse
 
 from .config import PRIMARY_HOSTNAME, LEGACY_HOSTNAMES
-from .routers import webhook, responders, dashboard, acr, user
+from .routers import webhook, responders, dashboard, acr, user, frontend
 
 logger = logging.getLogger(__name__)
 
@@ -37,3 +37,10 @@ app.include_router(responders.router)
 app.include_router(dashboard.router)
 app.include_router(acr.router)
 app.include_router(user.router)
+app.include_router(frontend.router)
+
+# Mount static files for frontend
+frontend.mount_static_files(app)
+
+# Add SPA catch-all route (must be last)
+frontend.add_spa_catch_all(app)
