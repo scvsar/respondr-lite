@@ -100,7 +100,7 @@ class ResponderUpdate(BaseModel):
 
 
 class BulkDeleteRequest(BaseModel):
-    message_ids: List[str]
+    ids: List[str]  # Frontend sends 'ids', not 'message_ids'
 
 
 class UndeleteRequest(BaseModel):
@@ -322,7 +322,7 @@ async def delete_responder(msg_id: str, _: bool = Depends(require_admin_access))
 async def bulk_delete_responders(request: BulkDeleteRequest, _: bool = Depends(require_admin_access)):
     """Bulk delete multiple responder messages."""
     try:
-        deleted_count = bulk_delete_messages(request.message_ids)
+        deleted_count = bulk_delete_messages(request.ids)
         return {"status": "deleted", "count": deleted_count}
         
     except Exception as e:
