@@ -6,10 +6,6 @@ from typing import Any, Dict, List
 # In-memory message store for test compatibility
 messages: List[Dict[str, Any]] = []
 
-# Variables used by internal ACR webhook tests
-ACR_WEBHOOK_TOKEN = None
-K8S_NAMESPACE = "default"
-K8S_DEPLOYMENT = "respondr"
 
 __all__ = [
     "app",
