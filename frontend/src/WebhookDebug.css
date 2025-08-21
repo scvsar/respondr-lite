@@ -57,6 +57,13 @@ textarea.input {
   overflow: hidden;
   line-height: 1.4;
   min-height: 38px; /* comfortable single-line height */
+  max-height: none; /* allow full expansion */
+}
+
+/* Ensure expanding textareas can span width without clipping inside grid */
+.form-field.span-2 textarea.input {
+  width: 100%;
+  display: block;
 }
 
 .row { display:flex; gap: 8px; align-items: center; }
