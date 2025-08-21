@@ -42,13 +42,21 @@ export default function WebhookDebug() {
   const [maxTokens, setMaxTokens] = useState(''); // numeric string; empty means default
   const sysRef = useRef(null);
   const userRef = useRef(null);
+  const overridesDetailsRef = useRef(null);
 
   const autoResize = useCallback((el) => {
     if (!el) return;
-    // Reset height to let it shrink, then set to scrollHeight
+    
+    // Reset height to allow shrink, then expand to content
     el.style.height = 'auto';
-    el.style.height = `${el.scrollHeight}px`;
+    const nextHeight = el.scrollHeight;
+    el.style.height = `${nextHeight}px`;
   }, []);
+
+  // Simple resize on input - no debouncing, just immediate resize
+  const handleInput = useCallback((el) => {
+    requestAnimationFrame(() => autoResize(el));
+  }, [autoResize]);
 
   const base = useMemo(() => {
     const host = typeof window!== 'undefined' ? window.location.host : '';
@@ -126,12 +134,28 @@ export default function WebhookDebug() {
         setSysPrompt(j.sys_prompt || '');
         setUserPrompt(j.user_prompt || '');
         // Do NOT auto-enable overrides; leave control to the user
+        // Trigger resize after setting prompts
+        setTimeout(() => {
+          if (sysRef.current) autoResize(sysRef.current);
+          if (userRef.current) autoResize(userRef.current);
+        }, 100);
       } catch {}
     };
     init();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // When the overrides panel is toggled open, re-measure and expand
+  const onOverridesToggle = useCallback(() => {
+    if (overridesDetailsRef.current && overridesDetailsRef.current.open) {
+      // allow layout settle
+      setTimeout(() => {
+        if (sysRef.current) autoResize(sysRef.current);
+        if (userRef.current) autoResize(userRef.current);
+      }, 0);
+    }
+  }, [autoResize]);
 
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
@@ -209,6 +233,11 @@ export default function WebhookDebug() {
       const j = await r.json();
       setSysPrompt(j.sys_prompt || '');
       setUserPrompt(j.user_prompt || '');
+      // Manually trigger resize after setting the prompts
+      setTimeout(() => {
+        if (sysRef.current) autoResize(sysRef.current);
+        if (userRef.current) autoResize(userRef.current);
+      }, 50);
     } catch (e) {
       setError(`Failed to load default prompts: ${e.message || e}`);
     } finally {
@@ -267,7 +296,7 @@ export default function WebhookDebug() {
                   <input className="input" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="if required" />
                 </label>
               </div>
-              <details className="card-details">
+              <details className="card-details" ref={overridesDetailsRef} onToggle={onOverridesToggle}>
                 <summary>Prompt Overrides</summary>
                 <div className="form-grid">
                   <div className="form-field span-2">
@@ -316,23 +345,28 @@ export default function WebhookDebug() {
                       ref={sysRef}
                       className="input"
                       rows={1}
-                      style={{ overflow: 'hidden' }}
+                      style={{ overflow: 'hidden', willChange: 'height' }}
                       value={sysPrompt}
-                      onChange={e=>{ setSysPrompt(e.target.value); autoResize(e.target); }}
+                      onChange={e=>setSysPrompt(e.target.value)}
+                      onInput={e=>handleInput(e.target)}
                       disabled={!overrideEnabled}
                     />
                   </label>
                   <label className="form-field span-2">
                     <span className="lbl">User Prompt</span>
-                    <textarea
-                      ref={userRef}
-                      className="input"
-                      rows={1}
-                      style={{ overflow: 'hidden' }}
-                      value={userPrompt}
-                      onChange={e=>{ setUserPrompt(e.target.value); autoResize(e.target); }}
-                      disabled={!overrideEnabled}
-                    />
+                      <textarea
+                        ref={userRef}
+                        className="input"
+                        rows={1}
+                        style={{ overflow: 'hidden', willChange: 'height' }}
+                        value={userPrompt}
+                        onChange={e => {
+                          setUserPrompt(e.target.value);
+                          handleInput(e.target); // Fallback: ensure resize on change
+                        }}
+                        onInput={e => handleInput(e.target)}
+                        disabled={!overrideEnabled}
+                      />
                   </label>
                 </div>
               </details>
