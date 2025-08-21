@@ -7,6 +7,7 @@
 
 param(
     [switch]$Full,
+    [switch]$Dev,
     [switch]$Docker,
     [switch]$Test,
     [switch]$Build,
@@ -17,17 +18,19 @@ if ($Help) {
     Write-Host "Respondr Local Development Helper" -ForegroundColor Green
     Write-Host ""
     Write-Host "Usage:" -ForegroundColor Yellow
-    Write-Host "  .\dev-local.ps1           # Backend only (FastAPI)" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Full     # Backend + Frontend" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Docker   # Docker Compose" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Test     # Run webhook tests" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Full -Build  # Build frontend and serve via backend (no CRA dev server)" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1              # Backend only (FastAPI). If frontend\\build exists, it's served at / on :8000" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Full        # Backend on :8000, production-style SPA if built" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Full -Dev   # Backend + CRA dev server (frontend on :3100)" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Docker      # Docker Compose" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Test        # Run webhook tests" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Build       # Build frontend bundle (used by backend static mount on :8000)" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Full -Build # Build + start backend on :8000 (no CRA dev server unless -Dev)" -ForegroundColor White
     Write-Host ""
     Write-Host "Access URLs:" -ForegroundColor Yellow
     Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
-    Write-Host "  Frontend: http://localhost:3100 (if -Full without -Build)" -ForegroundColor Cyan
-    Write-Host "            http://localhost:8000 (if -Build)" -ForegroundColor Cyan
+    Write-Host "  Frontend: http://localhost:8000 (production-style, serves frontend\\build if present)" -ForegroundColor Cyan
+    Write-Host "            http://localhost:3100 (only when -Dev is used)" -ForegroundColor Cyan
     exit 0
 }
 
@@ -169,21 +172,21 @@ if ($Docker) {
     }
     
 } elseif ($Full) {
-    Write-Host "Starting Full Stack (Backend + Frontend)..." -ForegroundColor Blue
+    Write-Host "Starting Full Stack..." -ForegroundColor Blue
     Write-Host ""
     if ($Build) {
-        Write-Host "Mode: Build + Serve via Backend" -ForegroundColor Yellow
+        Write-Host "Mode: Build + Serve via Backend on :8000" -ForegroundColor Yellow
         Write-Host "  • Backend (FastAPI) will serve the built SPA on http://localhost:8000" -ForegroundColor Cyan
+    }
+    if ($Dev) {
+        Write-Host "Mode: Dev UI enabled — CRA dev server will run on :3100" -ForegroundColor Yellow
     } else {
-        Write-Host "This will open two terminals:" -ForegroundColor Yellow
-        Write-Host "  1. Backend (FastAPI) on http://localhost:8000" -ForegroundColor Cyan
-        Write-Host "  2. Frontend (React) on http://localhost:3100" -ForegroundColor Cyan
+        Write-Host "Mode: Production-style UI on :8000 (serves existing frontend\\build if present)" -ForegroundColor Yellow
     }
     Write-Host ""
 
-    taskkill /F /IM python.exe
-    taskkill /F /IM node.exe
-    taskkill /F /IM powershell.exe
+    taskkill /F /IM python.exe 2>$null | Out-Null
+    taskkill /F /IM node.exe 2>$null | Out-Null
     # Ensure Redis for local persistence
     Ensure-Redis | Out-Null
     
@@ -212,20 +215,20 @@ if ($Docker) {
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
     
-    if (-not $Build) {
+    if ($Dev) {
         # Start frontend in new terminal (CRA dev server)
         # - Auto-install dependencies if react-scripts is missing
         # - Escape `$ so env var is set in the child
         Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; if (!(Test-Path 'node_modules\\.bin\\react-scripts') -and !(Test-Path 'node_modules\\react-scripts')) { Write-Host 'Installing frontend dependencies (npm ci)…' -ForegroundColor Yellow; npm ci }; Write-Host 'Starting Frontend on :3100...' -ForegroundColor Blue; `$env:PORT=3100; npm start"
         
-        Write-Host "Both services starting in separate terminals..." -ForegroundColor Green
+        Write-Host "Backend and Frontend dev server starting in separate terminals..." -ForegroundColor Green
         Write-Host ""
         Write-Host "Access URLs:" -ForegroundColor Yellow
-        Write-Host "  • Frontend: http://localhost:3100" -ForegroundColor Cyan
+        Write-Host "  • Frontend (Dev): http://localhost:3100" -ForegroundColor Cyan
         Write-Host "  • Backend: http://localhost:8000" -ForegroundColor Cyan
         Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
     } else {
-        Write-Host "Backend starting; open the app at http://localhost:8000 (served from frontend\\build)" -ForegroundColor Green
+        Write-Host "Backend starting; open the app at http://localhost:8000 (serves frontend\\build if present)" -ForegroundColor Green
         Write-Host ""
         Write-Host "Access URLs:" -ForegroundColor Yellow
         Write-Host "  • App + API: http://localhost:8000" -ForegroundColor Cyan
@@ -241,6 +244,7 @@ if ($Docker) {
     Write-Host "  • API: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  • Docs: http://localhost:8000/docs" -ForegroundColor Cyan
     Write-Host "  • Webhook: http://localhost:8000/webhook" -ForegroundColor Cyan
+    Write-Host "  • UI: http://localhost:8000 (if frontend\\build exists; use -Build to create it)" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "For testing, run in another terminal:" -ForegroundColor Yellow
     Write-Host "  .\dev-local.ps1 -Test" -ForegroundColor White
