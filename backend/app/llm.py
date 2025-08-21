@@ -208,7 +208,8 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
 
 
 def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None, debug: bool = False,
-                   sys_prompt_override: Optional[str] = None, user_prompt_override: Optional[str] = None) -> Dict[str, Any]:
+                   sys_prompt_override: Optional[str] = None, user_prompt_override: Optional[str] = None,
+                   verbosity_override: Optional[str] = None, reasoning_effort_override: Optional[str] = None) -> Dict[str, Any]:
     c = llm_client or client
     if not c:
         return {"_llm_unavailable": True}
@@ -262,6 +263,15 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
             return None
 
     kwargs = _select_kwargs_for_model(azure_openai_deployment)
+    # Apply optional overrides if provided and valid
+    if verbosity_override:
+        v = str(verbosity_override).lower().strip()
+        if v in ("low", "medium", "high"):
+            kwargs["verbosity"] = v
+    if reasoning_effort_override:
+        r = str(reasoning_effort_override).lower().strip()
+        if r in ("minimal", "low", "medium", "high"):
+            kwargs["reasoning_effort"] = r
 
     content = _try_call(dict(kwargs), with_json_format=True)
     if not content:
@@ -395,6 +405,8 @@ def extract_details_from_text(
     debug: bool = False,
     sys_prompt_override: Optional[str] = None,
     user_prompt_override: Optional[str] = None,
+    verbosity_override: Optional[str] = None,
+    reasoning_effort_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
@@ -414,6 +426,8 @@ def extract_details_from_text(
         debug=debug,
         sys_prompt_override=sys_prompt_override,
         user_prompt_override=user_prompt_override,
+    verbosity_override=verbosity_override,
+    reasoning_effort_override=reasoning_effort_override,
     )
 
     # Enhanced debugging for LLM responses

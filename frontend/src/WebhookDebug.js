@@ -37,6 +37,8 @@ export default function WebhookDebug() {
   const [groups, setGroups] = useState([]);
   const [fullEditEnabled, setFullEditEnabled] = useState(false);
   const [fullPayloadText, setFullPayloadText] = useState(() => JSON.stringify(defaultPayload(), null, 2));
+  const [verbosity, setVerbosity] = useState(''); // '', 'low', 'medium', 'high'
+  const [reasoning, setReasoning] = useState(''); // '', 'minimal', 'low', 'medium', 'high'
 
   const base = useMemo(() => {
     const host = typeof window!== 'undefined' ? window.location.host : '';
@@ -132,6 +134,8 @@ export default function WebhookDebug() {
       if (overrideEnabled) {
         if (sysPrompt.trim()) body.debug_sys_prompt = sysPrompt;
         if (userPrompt.trim()) body.debug_user_prompt = userPrompt;
+  if (verbosity) body.debug_verbosity = verbosity;
+  if (reasoning) body.debug_reasoning = reasoning;
       }
   const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
       const r = await fetch(url, {
@@ -228,7 +232,7 @@ export default function WebhookDebug() {
                   <input className="input" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="if required" />
                 </label>
               </div>
-              <details className="card-details">
+              <details open className="card-details">
                 <summary>Prompt Overrides</summary>
                 <div className="form-grid">
                   <div className="form-field span-2">
@@ -240,6 +244,25 @@ export default function WebhookDebug() {
                       </div>
                     </div>
                   </div>
+                  <label className="form-field">
+                    <span className="lbl">Verbosity</span>
+                    <select className="input" value={verbosity} onChange={e=>setVerbosity(e.target.value)} disabled={!overrideEnabled}>
+                      <option value="">(model default)</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
+          <label className="form-field">
+                    <span className="lbl">Reasoning level</span>
+                    <select className="input" value={reasoning} onChange={e=>setReasoning(e.target.value)} disabled={!overrideEnabled}>
+                      <option value="">(model default)</option>
+            <option value="minimal">minimal</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </label>
                   <label className="form-field span-2">
                     <span className="lbl">System Prompt</span>
                     <textarea className="input" rows={8} value={sysPrompt} onChange={e=>setSysPrompt(e.target.value)} disabled={!overrideEnabled} />
