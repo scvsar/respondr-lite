@@ -9,7 +9,7 @@ from pydantic import BaseModel
 import uuid
 
 from ..config import webhook_api_key, disable_api_key_check, APP_TZ, GROUP_ID_TO_TEAM
-from ..llm import extract_details_from_text
+from ..llm import extract_details_from_text, build_prompts
 from ..utils import parse_datetime_like
 from ..storage import add_message, get_messages
 
@@ -22,6 +22,9 @@ class WebhookMessage(BaseModel):
     text: str
     created_at: int
     group_id: Optional[str] = None
+    # Admin-only debug extras (optional)
+    debug_sys_prompt: Optional[str] = None
+    debug_user_prompt: Optional[str] = None
 
 
 class ParseDebugRequest(BaseModel):
@@ -114,11 +117,36 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             enriched_text = f"History: {snapshot}. Current: {message.text}"
 
         # Extract details using LLM with history snapshot and previous ETA
+        # Include prompt overrides only for admin users in debug mode
+        sys_override = None
+        user_override = None
+        if debug and (message.debug_sys_prompt is not None or message.debug_user_prompt is not None):
+            try:
+                from .user import is_admin
+                user_email = (
+                    request.headers.get("X-Auth-Request-Email")
+                    or request.headers.get("X-Auth-Request-User")
+                    or request.headers.get("x-forwarded-email")
+                    or request.headers.get("X-User")
+                ) if request else None
+                if is_admin(user_email):
+                    sys_override = message.debug_sys_prompt
+                    user_override = message.debug_user_prompt
+                else:
+                    # ignore overrides for non-admin
+                    sys_override = None
+                    user_override = None
+            except Exception:
+                sys_override = None
+                user_override = None
+
         parsed = extract_details_from_text(
             enriched_text,
             base_time=message_dt,
             prev_eta_iso=prev_eta_iso,
             debug=debug,
+            sys_prompt_override=sys_override,
+            user_prompt_override=user_override,
         )
         
         # Create message object
@@ -179,6 +207,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     "base_time": message_dt.isoformat(),
                     "group_id": group_id,
                     "team": team,
+                    "sys_prompt_override": message.debug_sys_prompt,
+                    "user_prompt_override": message.debug_user_prompt,
                 },
                 "parsed": parsed,
                 "stored_message": new_message,
@@ -188,6 +218,117 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
     except Exception as e:
         logger.error(f"Webhook processing failed: {e}")
         raise HTTPException(status_code=500, detail="Processing failed")
+
+
+@router.get("/api/debug/default-prompts")
+async def get_default_prompts(request: Request, text: str, created_at: Optional[int] = None, prev_eta_iso: Optional[str] = None):
+    """Return the default system and user prompts the server would use for a given input.
+    Helpful for the UI to prefill editable prompts.
+    """
+    # Admin-only safeguard
+    try:
+        from .user import is_admin
+        user_email = (
+            request.headers.get("X-Auth-Request-Email")
+            or request.headers.get("X-Auth-Request-User")
+            or request.headers.get("x-forwarded-email")
+            or request.headers.get("X-User")
+        ) if request else None
+        if not is_admin(user_email):
+            raise HTTPException(status_code=403, detail="Debug access requires admin")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Debug access requires admin")
+    
+    base = parse_datetime_like(created_at) if created_at else datetime.now(APP_TZ)
+    if base is None:
+        base = datetime.now(APP_TZ)
+    sys_p, user_p = build_prompts(text or "", base, prev_eta_iso)
+    return {"sys_prompt": sys_p, "user_prompt": user_p}
+
+
+@router.get("/api/config/groups")
+async def get_config_groups(request: Request):
+    """Return configured Group IDs and their team names. Admin-only."""
+    try:
+        from .user import is_admin
+        user_email = (
+            request.headers.get("X-Auth-Request-Email")
+            or request.headers.get("X-Auth-Request-User")
+            or request.headers.get("x-forwarded-email")
+            or request.headers.get("X-User")
+        ) if request else None
+        if not is_admin(user_email):
+            raise HTTPException(status_code=403, detail="Admin only")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    try:
+        items = [{"group_id": gid, "team": GROUP_ID_TO_TEAM.get(gid, "Unknown")} for gid in sorted(GROUP_ID_TO_TEAM.keys())]
+        return {"groups": items}
+    except Exception as e:
+        logger.error(f"Failed to list groups: {e}")
+        raise HTTPException(status_code=500, detail="Unable to list groups")
+
+
+@router.post("/api/debug/webhook-raw")
+async def webhook_raw(request: Request, payload: Dict[str, Any]):
+    """Accept a raw GroupMe-style JSON and route it through webhook processing. Admin-only."""
+    try:
+        from .user import is_admin
+        user_email = (
+            request.headers.get("X-Auth-Request-Email")
+            or request.headers.get("X-Auth-Request-User")
+            or request.headers.get("x-forwarded-email")
+            or request.headers.get("X-User")
+        ) if request else None
+        if not is_admin(user_email):
+            raise HTTPException(status_code=403, detail="Admin only")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=403, detail="Admin only")
+
+    try:
+        # Extract fields from typical GroupMe message structure
+        name = str(payload.get("name") or payload.get("sender", "")).strip() or "Unknown"
+        text = str(payload.get("text") or "").strip()
+        created_at_raw = payload.get("created_at")
+        created_at: int
+        if created_at_raw is None:
+            created_at = int(datetime.now(APP_TZ).timestamp())
+        else:
+            try:
+                created_at = int(created_at_raw)  # epoch seconds
+            except Exception:
+                # allow ISO strings
+                dt = parse_datetime_like(created_at_raw) or datetime.now(APP_TZ)
+                created_at = int(dt.timestamp())
+        group_id = str(payload.get("group_id") or "unknown")
+
+        # Optional debug overrides if present at top-level
+        debug_sys_prompt = payload.get("debug_sys_prompt")
+        debug_user_prompt = payload.get("debug_user_prompt")
+
+        msg = WebhookMessage(
+            name=name,
+            text=text,
+            created_at=created_at,
+            group_id=group_id,
+            debug_sys_prompt=debug_sys_prompt,
+            debug_user_prompt=debug_user_prompt,
+        )
+        # Reuse main handler with debug=True to return rich info
+        res = await webhook_handler(msg, request, debug=True)
+        return res
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"webhook-raw failed: {e}")
+        raise HTTPException(status_code=400, detail="Invalid raw payload")
 
 
 @router.post("/api/parse-debug")
