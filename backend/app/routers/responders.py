@@ -7,12 +7,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..config import APP_TZ
+from ..config import APP_TZ, GROUP_ID_TO_TEAM
 from ..utils import parse_datetime_like, compute_eta_fields
 from ..storage import (
     get_messages, add_message, update_message, delete_message, 
     get_deleted_messages, undelete_message, permanently_delete_message,
-    clear_all_messages, clear_all_deleted_messages, bulk_delete_messages
+    clear_all_messages, clear_all_deleted_messages, bulk_delete_messages,
+    get_storage_info
 )
 
 logger = logging.getLogger(__name__)
@@ -146,6 +147,10 @@ async def create_responder(data: Dict[str, Any]):
         import uuid
         msg_id = str(uuid.uuid4())
         
+        # Determine team from group_id
+        group_id = data.get("group_id", "manual")
+        team = GROUP_ID_TO_TEAM.get(group_id, "Manual") if group_id != "manual" else "Manual"
+        
         # Create message
         message = {
             "id": msg_id,
@@ -161,7 +166,8 @@ async def create_responder(data: Dict[str, Any]):
             "raw_status": data.get("status", "Unknown"),
             "status_source": "Manual",
             "status_confidence": 1.0,
-            "group_id": data.get("group_id", "manual"),
+            "team": team,
+            "group_id": group_id,
             "created_at": int(timestamp.timestamp()),
         }
         
@@ -325,3 +331,15 @@ async def clear_all_deleted():
     except Exception as e:
         logger.error(f"Failed to clear deleted: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear deleted")
+
+
+@router.get("/api/storage-info")
+async def get_storage_status():
+    """Get current storage backend status and configuration."""
+    try:
+        storage_info = get_storage_info()
+        return storage_info
+        
+    except Exception as e:
+        logger.error(f"Failed to get storage info: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get storage info")

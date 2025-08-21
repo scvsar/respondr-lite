@@ -12,7 +12,7 @@ from pathlib import Path
 # Configuration
 WEBHOOK_URL = "http://localhost:8000/webhook"
 TEST_MESSAGES_FILE = "groupme_test_messages.json"
-DELAY_BETWEEN_MESSAGES = 1.0  # seconds
+DELAY_BETWEEN_MESSAGES = 0.10  # seconds
 TIMEOUT = 30  # seconds
 
 def load_test_messages():
