@@ -5,6 +5,7 @@ import Logout from './Logout';
 import MobileView from './MobileView';
 import Profile from './Profile';
 import StatusTabs from './StatusTabs';
+import WebhookDebug from './WebhookDebug';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -658,6 +659,7 @@ function MainApp() {
                 const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
                 window.location.href = url; 
               }}>Switch Account</div>
+              <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
               <div className="menu-item" onClick={()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
@@ -856,6 +858,7 @@ function App() {
           </AuthGate>
         } />
         <Route path="/logout" element={<Logout />} />
+  <Route path="/debug/webhook" element={<AuthGate><WebhookDebug /></AuthGate>} />
       </Routes>
     </Router>
   );

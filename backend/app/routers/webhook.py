@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
@@ -45,7 +45,7 @@ def verify_api_key(api_key: Optional[str] = None):
 
 
 @router.post("/webhook")
-async def webhook_handler(message: WebhookMessage):
+async def webhook_handler(message: WebhookMessage, debug: bool = Query(default=False)):
     """Handle incoming webhook messages from GroupMe."""
     try:
         # Parse timestamp
@@ -114,7 +114,12 @@ async def webhook_handler(message: WebhookMessage):
             enriched_text = f"History: {snapshot}. Current: {message.text}"
 
         # Extract details using LLM with history snapshot and previous ETA
-        parsed = extract_details_from_text(enriched_text, base_time=message_dt, prev_eta_iso=prev_eta_iso)
+        parsed = extract_details_from_text(
+            enriched_text,
+            base_time=message_dt,
+            prev_eta_iso=prev_eta_iso,
+            debug=debug,
+        )
         
         # Create message object
         minutes = parsed.get("minutes_until_arrival")
@@ -147,7 +152,22 @@ async def webhook_handler(message: WebhookMessage):
             f"Processed webhook message from {message.name}: {parsed['vehicle']} ETA {parsed['eta']}"
             + (f" (prev_eta carried)" if prev_eta_iso else "")
         )
-        
+
+        if debug:
+            return {
+                "status": "ok",
+                "inputs": {
+                    "enriched_text": enriched_text,
+                    "original_text": message.text,
+                    "prev_eta_iso": prev_eta_iso,
+                    "base_time": message_dt.isoformat(),
+                    "group_id": group_id,
+                    "team": team,
+                },
+                "parsed": parsed,
+                "stored_message": new_message,
+            }
+
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Webhook processing failed: {e}")
