@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 from pydantic import BaseModel
 import uuid
 
-from ..config import webhook_api_key, disable_api_key_check, APP_TZ
+from ..config import webhook_api_key, disable_api_key_check, APP_TZ, GROUP_ID_TO_TEAM
 from ..llm import extract_details_from_text
 from ..utils import parse_datetime_like
 from ..storage import add_message
@@ -54,6 +54,10 @@ async def webhook_handler(message: WebhookMessage):
         # Extract details using LLM
         parsed = extract_details_from_text(message.text, base_time=message_dt)
         
+        # Determine team from group_id
+        group_id = message.group_id or "unknown"
+        team = GROUP_ID_TO_TEAM.get(group_id, "Unknown")
+        
         # Create message object
         new_message = {
             "id": str(uuid.uuid4()),
@@ -69,7 +73,8 @@ async def webhook_handler(message: WebhookMessage):
             "raw_status": parsed["raw_status"],
             "status_source": parsed["status_source"],
             "status_confidence": parsed["status_confidence"],
-            "group_id": message.group_id or "unknown",
+            "team": team,
+            "group_id": group_id,
             "created_at": message.created_at,
         }
         
