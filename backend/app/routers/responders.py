@@ -1,7 +1,7 @@
 """Responders API endpoints for managing SAR response messages."""
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
@@ -50,22 +50,80 @@ async def get_responders():
 
 @router.get("/api/current-status")
 async def get_current_status():
-    """Get current status summary of all responders."""
+    """Get current status per person (latest message per person with priority logic)."""
     try:
         messages = get_messages()
         
-        total = len(messages)
-        responding = len([m for m in messages if m.get("arrival_status") == "Responding"])
-        arrived = len([m for m in messages if m.get("arrival_status") == "Arrived"])
-        overdue = len([m for m in messages if m.get("arrival_status") == "Overdue"])
+        def _coerce_dt(s: Optional[str]) -> datetime:
+            """Coerce various timestamp strings to a timezone-aware UTC datetime for stable sorting."""
+            if not s:
+                return datetime.min.replace(tzinfo=timezone.utc)
+            try:
+                return datetime.fromisoformat(str(s).replace('Z', '+00:00')).astimezone(timezone.utc)
+            except Exception:
+                try:
+                    # Legacy testing format: naive local time -> assume APP_TZ and convert to UTC
+                    dt_local = datetime.strptime(str(s), '%Y-%m-%d %H:%M:%S').replace(tzinfo=APP_TZ)
+                    return dt_local.astimezone(timezone.utc)
+                except Exception:
+                    return datetime.min.replace(tzinfo=timezone.utc)
         
-        return {
-            "total_responders": total,
-            "responding": responding,
-            "arrived": arrived,
-            "overdue": overdue,
-            "last_updated": datetime.now(APP_TZ).isoformat()
-        }
+        latest_by_person = {}
+        sorted_messages = sorted(messages, key=lambda x: _coerce_dt(x.get('timestamp_utc') or x.get('timestamp')))
+        
+        for msg in sorted_messages:
+            name = (msg.get('name') or '').strip()
+            if not name:
+                continue
+                
+            arrival_status = msg.get('arrival_status', 'Unknown')
+            eta = msg.get('eta', 'Unknown')
+            text = (msg.get('text') or '').lower()
+            
+            # Priority logic from monolith
+            priority = 0
+            if arrival_status == 'Cancelled' or "can't make it" in text or 'cannot make it' in text:
+                priority = 100
+            elif arrival_status == 'Not Responding':
+                priority = 10
+            elif arrival_status == 'Responding' and eta != 'Unknown':
+                priority = 80
+            elif arrival_status == 'Responding':
+                priority = 60
+            elif eta != 'Unknown':
+                priority = 70
+            elif arrival_status == 'Available':
+                priority = 40
+            elif arrival_status == 'Informational':
+                priority = 15
+            else:
+                priority = 20
+            
+            current_entry = latest_by_person.get(name)
+            if current_entry is None:
+                latest_by_person[name] = dict(msg)
+                latest_by_person[name]['_priority'] = priority
+            else:
+                current_ts = _coerce_dt(current_entry.get('timestamp_utc') or current_entry.get('timestamp'))
+                new_ts = _coerce_dt(msg.get('timestamp_utc') or msg.get('timestamp'))
+                if new_ts >= current_ts:
+                    latest_by_person[name] = dict(msg)
+                    latest_by_person[name]['_priority'] = priority
+                elif new_ts == current_ts and priority > current_entry.get('_priority', 0):
+                    latest_by_person[name] = dict(msg)
+                    latest_by_person[name]['_priority'] = priority
+        
+        # Convert to result list and remove priority field
+        result = []
+        for person_data in latest_by_person.values():
+            person_data.pop('_priority', None)
+            result.append(person_data)
+        
+        # Sort by timestamp descending
+        result.sort(key=lambda x: _coerce_dt(x.get('timestamp_utc') or x.get('timestamp')), reverse=True)
+        
+        return result
+        
     except Exception as e:
         logger.error(f"Failed to get current status: {e}")
         raise HTTPException(status_code=500, detail="Failed to get status")

@@ -28,12 +28,91 @@ if azure_openai_api_key and azure_openai_endpoint:
 
 def _normalize_vehicle_name(vehicle_raw: str) -> str:
     s = (vehicle_raw or "").strip()
+
+    # clamp weird LLM outputs like "SAR-1022"
     m = re.match(r"^\s*sar[\s-]?0*(\d{1,3})\s*$", s, re.I)
     if m:
-        return f"SAR-{int(m.group(1))}"
+        num = int(m.group(1))
+        if 1 <= num <= MAX_SAR_UNIT:
+            return f"SAR-{num}"
+        return "Unknown"
+
+    # If the model tried to bake the code into vehicle (e.g., "SAR-1022")
+    if re.search(r"\b10\s*-?\s*22\b|\b1022\b", s.lower()):
+        return "Unknown"
+
     if s.upper() in {"POV", "SAR RIG"}:
         return s.upper().replace("SAR RIG", "SAR Rig")
+
     return s if s else "Unknown"
+
+
+
+MAX_SAR_UNIT = 199  # clamp plausible SAR unit range
+
+def _has_eta_intent(text: str) -> bool:
+    s = (text or "").lower()
+
+    # very strong positive signals
+    positive = [
+        " eta", "eta ", "responding", "en route", "enroute", "on my way", "omw",
+        "arriving", "be there", "be at", "headed to", "headed for", "coming in",
+        "coming", "will arrive", "will be there", "will be at"
+    ]
+    if any(p in s for p in positive):
+        return True
+
+    # time range like "10:15-10:30" (upper-bound ETA pattern)
+    if re.search(r"\b\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}\b", s):
+        return True
+
+    # bare time often used with names (e.g., "Linda 10:15-10:30")
+    # treat as ETA intent if message is mostly name + time and lacks negative cues
+    if re.search(r"\b\d{1,2}:\d{2}\b", s) and not _has_non_eta_time_context(s):
+        return True
+
+    return False
+
+
+def _has_non_eta_time_context(s: str) -> bool:
+    # negative cues around times: "left 0230", "last seen 08:10", "lkp 0930", etc.
+    # check a small window (e.g., within 12 chars before the time token)
+    # This function expects lowercased input.
+    for m in re.finditer(r"\b((?:[01]?\d|2[0-3]):\d{2}|[01]\d[0-5]\d)\b", s):
+        start = max(0, m.start() - 12)
+        ctx = s[start:m.start()]
+        if any(k in ctx for k in ["left", "last seen", "ls", "lkp", "departed", "reported", "call recvd", "call received"]):
+            return True
+    # Also guard the compact 4-digit times which are more error-prone
+    for m in re.finditer(r"\b([01]\d[0-5]\d)\b", s):
+        start = max(0, m.start() - 12)
+        ctx = s[start:m.start()]
+        if any(k in ctx for k in ["left", "last seen", "ls", "lkp", "departed", "reported", "call recvd", "call received"]):
+            return True
+    return False
+
+
+def _looks_like_code_1022(text: str) -> bool:
+    s = (text or "").lower()
+    # 10-22 or 10 22 is STAND-DOWN code
+    if re.search(r"\b10\s*-\s*22\b", s) or re.search(r"\b10\s+22\b", s):
+        return True
+    # bare 1022 is code UNLESS clearly in time context (eta, 'at', or has colon '10:22')
+    if re.search(r"\b1022\b", s):
+        if re.search(r"\beta[ :]\b|\bat\b|\barriv", s) or re.search(r"\b10:22\b", s):
+            return False
+        return True
+    return False
+
+
+def _contains_ics_role(text: str) -> bool:
+    s = (text or "").lower()
+    # light heuristic: common ICS/IMT words
+    roles = [" ic ", " ic,", " ic.", " ops chief", " operations chief", "planning", "logistics", "pio", "safety", "icp "]
+    # also handle "SAR6 IC" (IC at the end)
+    if re.search(r"\b(ic|icp)\b", s):
+        return True
+    return any(r in s for r in roles)
 
 
 def _is_standdown(text: str) -> bool:
@@ -198,10 +277,19 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
             return {"_llm_error": f"json-parse-failed: {e}"}
 
 
-def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, prev_eta_iso: Optional[str]) -> Tuple[Dict[str, Any], str]:
+def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, prev_eta_iso: Optional[str], status: str) -> Tuple[Dict[str, Any], str]:
     source = "LLM"
-    eta_iso = str(llm_data.get("eta_iso") or "Unknown")
 
+    # If stand-down/cancel, never keep/parse ETA
+    if _looks_like_code_1022(text) or _is_standdown(text):
+        return {
+            "eta": "Unknown",
+            "eta_timestamp": None,
+            "eta_timestamp_utc": None,
+            "minutes_until_arrival": None
+        }, "Rule"
+
+    eta_iso = str(llm_data.get("eta_iso") or "Unknown")
     if eta_iso and eta_iso != "Unknown":
         try:
             dt = datetime.fromisoformat(eta_iso.replace("Z", "+00:00"))
@@ -211,7 +299,10 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
     else:
         fields = {"eta": "Unknown", "eta_timestamp": None, "eta_timestamp_utc": None, "minutes_until_arrival": None}
 
-    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+    # only run deterministic parsing if ETA intent (or model says Responding)
+    eta_intent = _has_eta_intent(text) or status == "Responding"
+
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp") and eta_intent and not _has_non_eta_time_context((text or "").lower()):
         # alt hh:mm keys
         for k in ("eta", "eta_hhmm", "eta_text"):
             v = llm_data.get(k)
@@ -220,20 +311,21 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
                 source = "Deterministic"
                 break
 
-    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp") and eta_intent and not _has_non_eta_time_context((text or "").lower()):
         det = extract_eta_from_text_local(text, base_dt)
         if det:
             fields = compute_eta_fields(None, det, base_dt)
             source = "Deterministic"
 
-    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
+    if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp") and eta_intent:
         dur = extract_duration_eta(text, base_dt)
         if dur:
             fields = compute_eta_fields(None, dur, base_dt)
             source = "Deterministic"
 
     if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
-        if prev_eta_iso and prev_eta_iso != "Unknown" and not _is_standdown(text):
+        # maintain previous ETA if still responding and not standdown
+        if prev_eta_iso and prev_eta_iso != "Unknown" and status == "Responding":
             try:
                 prev_dt = datetime.fromisoformat(prev_eta_iso.replace("Z", "+00:00"))
                 fields = compute_eta_fields(None, prev_dt, base_dt)
@@ -241,7 +333,7 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
             except Exception:
                 pass
 
-    # override if model returned a past time but the text clearly specifies AM/PM
+    # override if model produced past ETA but text contains explicit AM/PM (likely mis-read)
     try:
         mins = fields.get("minutes_until_arrival")
         if isinstance(mins, int) and mins <= -5 and re.search(r"(?i)\b(am|pm)\b", text or ""):
@@ -253,6 +345,7 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
         pass
 
     return fields, source
+
 
 
 def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None) -> Dict[str, Any]:
@@ -288,13 +381,31 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
         }
 
     vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or "Unknown"))
-    status = str(llm_data.get("status") or "Unknown")
+    status = str(llm_data.get("status") or "Unknown").strip()
     try:
         confidence = float(llm_data.get("confidence") or 0.0)
     except Exception:
         confidence = 0.0
 
-    eta_fields, eta_source = _derive_eta_fields(text, llm_data, anchor, prev_eta_iso)
+    # Force status to Not Responding on stand-down code phrases
+    if _looks_like_code_1022(text) or _is_standdown(text):
+        status = "Not Responding"
+
+    # ICS role heuristic: treat as Informational if no ETA intent
+    if _contains_ics_role(text) and not _has_eta_intent(text):
+        status = "Informational"
+
+    eta_fields, eta_source = _derive_eta_fields(text, llm_data, anchor, prev_eta_iso, status)
+
+    # If Not Responding/Cancelled, ensure ETA is cleared regardless of LLM
+    if status in ("Not Responding", "Cancelled"):
+        eta_fields = {
+            "eta": "Unknown",
+            "eta_timestamp": None,
+            "eta_timestamp_utc": None,
+            "minutes_until_arrival": None
+        }
+        eta_source = "Rule"
 
     if DEBUG_FULL_LLM_LOG:
         try:

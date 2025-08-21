@@ -47,12 +47,13 @@ const StatusTabs = ({
     try {
       setCurrentStatusError(null);
       setCurrentStatusLoading(true);
-  const response = await fetch(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
+      const response = await fetch(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      const json = await response.json();
-      setCurrentStatusData(json);
+      const currentStatus = await response.json();
+      
+      setCurrentStatusData(currentStatus);
     } catch (err) {
       console.error('Failed to fetch current status:', err);
       setCurrentStatusError(err.message);
