@@ -3,11 +3,11 @@
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..config import APP_TZ, GROUP_ID_TO_TEAM
+from ..config import APP_TZ, GROUP_ID_TO_TEAM, allowed_email_domains, allowed_admin_users, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing
 from ..utils import parse_datetime_like, compute_eta_fields
 from ..storage import (
     get_messages, add_message, update_message, delete_message, 
@@ -18,6 +18,78 @@ from ..storage import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+def is_email_domain_allowed(email: str) -> bool:
+    """Check if email domain is in allowed domains list."""
+    if is_testing and email.endswith("@example.com"):
+        return True
+    try:
+        if not email or "@" not in email:
+            return False
+        domain = email.split("@")[-1].strip().lower()
+        return domain in [d.lower() for d in allowed_email_domains]
+    except Exception:
+        return False
+
+
+def is_admin(email: Optional[str]) -> bool:
+    """Check if user email is in admin users list."""
+    if is_testing:
+        return True
+    if ALLOW_LOCAL_AUTH_BYPASS and LOCAL_BYPASS_IS_ADMIN:
+        return True
+    if not email:
+        return False
+    try:
+        return email.strip().lower() in [u.lower() for u in allowed_admin_users]
+    except Exception:
+        return False
+
+
+def require_admin_access(request: Request) -> bool:
+    """Dependency that requires admin access for the endpoint."""
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    
+    if not user_email:
+        if ALLOW_LOCAL_AUTH_BYPASS and not is_testing:
+            # Local development bypass
+            return True
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    if not is_email_domain_allowed(user_email):
+        raise HTTPException(status_code=403, detail="Access denied: domain not authorized")
+    
+    if not is_admin(user_email):
+        raise HTTPException(status_code=403, detail="Access denied: admin privileges required")
+    
+    return True
+
+
+def require_authenticated_access(request: Request) -> bool:
+    """Dependency that requires authenticated access (any valid user)."""
+    user_email = (
+        request.headers.get("X-Auth-Request-Email")
+        or request.headers.get("X-Auth-Request-User")
+        or request.headers.get("x-forwarded-email")
+        or request.headers.get("X-User")
+    )
+    
+    if not user_email:
+        if ALLOW_LOCAL_AUTH_BYPASS and not is_testing:
+            # Local development bypass
+            return True
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    
+    if not is_email_domain_allowed(user_email):
+        raise HTTPException(status_code=403, detail="Access denied: domain not authorized")
+    
+    return True
 
 
 class ResponderUpdate(BaseModel):
@@ -39,7 +111,7 @@ class UndeleteRequest(BaseModel):
 
 
 @router.get("/api/responders")
-async def get_responders():
+async def get_responders(_: bool = Depends(require_authenticated_access)):
     """Get all active responder messages."""
     try:
         messages = get_messages()
@@ -50,7 +122,7 @@ async def get_responders():
 
 
 @router.get("/api/current-status")
-async def get_current_status():
+async def get_current_status(_: bool = Depends(require_authenticated_access)):
     """Get current status per person (latest message per person with priority logic)."""
     try:
         messages = get_messages()
@@ -131,7 +203,7 @@ async def get_current_status():
 
 
 @router.post("/api/responders")
-async def create_responder(data: Dict[str, Any]):
+async def create_responder(data: Dict[str, Any], _: bool = Depends(require_admin_access)):
     """Create a new responder message manually."""
     try:
         # Process the input data
@@ -182,7 +254,7 @@ async def create_responder(data: Dict[str, Any]):
 
 
 @router.put("/api/responders/{msg_id}")
-async def update_responder(msg_id: str, update: ResponderUpdate):
+async def update_responder(msg_id: str, update: ResponderUpdate, _: bool = Depends(require_admin_access)):
     """Update an existing responder message."""
     try:
         # Prepare updates
@@ -230,7 +302,7 @@ async def update_responder(msg_id: str, update: ResponderUpdate):
 
 
 @router.delete("/api/responders/{msg_id}")
-async def delete_responder(msg_id: str):
+async def delete_responder(msg_id: str, _: bool = Depends(require_admin_access)):
     """Soft delete a responder message."""
     try:
         success = delete_message(msg_id)
@@ -247,7 +319,7 @@ async def delete_responder(msg_id: str):
 
 
 @router.post("/api/responders/bulk-delete")
-async def bulk_delete_responders(request: BulkDeleteRequest):
+async def bulk_delete_responders(request: BulkDeleteRequest, _: bool = Depends(require_admin_access)):
     """Bulk delete multiple responder messages."""
     try:
         deleted_count = bulk_delete_messages(request.message_ids)
@@ -259,7 +331,7 @@ async def bulk_delete_responders(request: BulkDeleteRequest):
 
 
 @router.post("/api/clear-all")
-async def clear_all_responders():
+async def clear_all_responders(_: bool = Depends(require_admin_access)):
     """Clear all active responders (soft delete)."""
     try:
         deleted_count = clear_all_messages()
@@ -271,7 +343,7 @@ async def clear_all_responders():
 
 
 @router.get("/api/deleted-responders")
-async def get_deleted_responders():
+async def get_deleted_responders(_: bool = Depends(require_admin_access)):
     """Get all soft-deleted responder messages."""
     try:
         return get_deleted_messages()
@@ -281,7 +353,7 @@ async def get_deleted_responders():
 
 
 @router.post("/api/deleted-responders/undelete")
-async def undelete_responder(request: UndeleteRequest):
+async def undelete_responder(request: UndeleteRequest, _: bool = Depends(require_admin_access)):
     """Restore a deleted responder message."""
     try:
         success = undelete_message(request.message_id)
@@ -305,7 +377,7 @@ async def undelete_responder(request: UndeleteRequest):
 
 
 @router.delete("/api/deleted-responders/{msg_id}")
-async def permanently_delete_responder(msg_id: str):
+async def permanently_delete_responder(msg_id: str, _: bool = Depends(require_admin_access)):
     """Permanently delete a responder message."""
     try:
         success = permanently_delete_message(msg_id)
@@ -322,7 +394,7 @@ async def permanently_delete_responder(msg_id: str):
 
 
 @router.post("/api/deleted-responders/clear-all")
-async def clear_all_deleted():
+async def clear_all_deleted(_: bool = Depends(require_admin_access)):
     """Permanently delete all soft-deleted messages."""
     try:
         deleted_count = clear_all_deleted_messages()
