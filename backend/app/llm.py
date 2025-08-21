@@ -8,7 +8,8 @@ from openai.types.chat import ChatCompletionMessageParam
 
 from .config import (
     azure_openai_api_key, azure_openai_endpoint, azure_openai_deployment,
-    azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ
+    azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ,
+    DEFAULT_MAX_COMPLETION_TOKENS, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_CAP
 )
 from .utils import extract_eta_from_text_local, extract_duration_eta, compute_eta_fields, now_tz
 
@@ -126,7 +127,13 @@ def _is_standdown(text: str) -> bool:
 
 
 def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
-    kw: Dict[str, Any] = {"max_completion_tokens": 768, "temperature": 1, "top_p": 1, "presence_penalty": 0, "frequency_penalty": 0}
+    kw: Dict[str, Any] = {
+        "max_completion_tokens": int(DEFAULT_MAX_COMPLETION_TOKENS or 768),
+        "temperature": 1,
+        "top_p": 1,
+        "presence_penalty": 0,
+        "frequency_penalty": 0,
+    }
     if re.search(r"gpt-5-(nano|mini)", model_name or "", re.I):
         kw["verbosity"] = "low"           # some models support this
         kw["reasoning_effort"] = "low"    # some models support this
@@ -209,7 +216,8 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
 
 def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None, debug: bool = False,
                    sys_prompt_override: Optional[str] = None, user_prompt_override: Optional[str] = None,
-                   verbosity_override: Optional[str] = None, reasoning_effort_override: Optional[str] = None) -> Dict[str, Any]:
+                   verbosity_override: Optional[str] = None, reasoning_effort_override: Optional[str] = None,
+                   max_tokens_override: Optional[int] = None) -> Dict[str, Any]:
     c = llm_client or client
     if not c:
         return {"_llm_unavailable": True}
@@ -259,7 +267,12 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                 if k in kwargs and (k.replace("_", " ") in etxt or "unknown" in etxt):
                     kwargs.pop(k, None)
             if "max tokens" in etxt or "output limit" in etxt or "too long" in etxt:
-                kwargs["max_completion_tokens"] = min(2048, max(int(kwargs.get("max_completion_tokens", 768)) * 2, 1024))
+                current = int(kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS))
+                # Increase but clamp to cap; ensure at least a floor (e.g., 1024) when escalating
+                kwargs["max_completion_tokens"] = min(
+                    int(MAX_COMPLETION_TOKENS_CAP),
+                    max(current * 2, max(int(MIN_COMPLETION_TOKENS), 1024))
+                )
             return None
 
     kwargs = _select_kwargs_for_model(azure_openai_deployment)
@@ -272,6 +285,12 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
         r = str(reasoning_effort_override).lower().strip()
         if r in ("minimal", "low", "medium", "high"):
             kwargs["reasoning_effort"] = r
+    if isinstance(max_tokens_override, int) and max_tokens_override > 0:
+        # Clamp to configured safe range; align with existing retry cap
+        kwargs["max_completion_tokens"] = max(
+            int(MIN_COMPLETION_TOKENS),
+            min(int(MAX_COMPLETION_TOKENS_CAP), int(max_tokens_override))
+        )
 
     content = _try_call(dict(kwargs), with_json_format=True)
     if not content:
@@ -287,7 +306,10 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                 model=azure_openai_deployment,
                 messages=messages_retry,
                 response_format={"type": "json_object"},
-                max_completion_tokens=min(2048, max(kwargs.get("max_completion_tokens", 768), 1024)),
+                max_completion_tokens=min(
+                    int(MAX_COMPLETION_TOKENS_CAP),
+                    max(int(kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS)), max(int(MIN_COMPLETION_TOKENS), 1024))
+                ),
             )
             content = (resp.choices[0].message.content or "").strip()
         except Exception as e:
@@ -407,6 +429,7 @@ def extract_details_from_text(
     user_prompt_override: Optional[str] = None,
     verbosity_override: Optional[str] = None,
     reasoning_effort_override: Optional[str] = None,
+    max_tokens_override: Optional[int] = None,
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
@@ -428,6 +451,7 @@ def extract_details_from_text(
         user_prompt_override=user_prompt_override,
     verbosity_override=verbosity_override,
     reasoning_effort_override=reasoning_effort_override,
+    max_tokens_override=max_tokens_override,
     )
 
     # Enhanced debugging for LLM responses

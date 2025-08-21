@@ -27,6 +27,7 @@ class WebhookMessage(BaseModel):
     debug_user_prompt: Optional[str] = None
     debug_verbosity: Optional[str] = None  # "low" | "medium" | "high"
     debug_reasoning: Optional[str] = None  # "low" | "medium" | "high"
+    debug_max_tokens: Optional[int] = None  # override max_completion_tokens
 
 
 class ParseDebugRequest(BaseModel):
@@ -122,7 +123,13 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         # Include prompt overrides only for admin users in debug mode
         sys_override = None
         user_override = None
-        if debug and (message.debug_sys_prompt is not None or message.debug_user_prompt is not None or message.debug_verbosity is not None or message.debug_reasoning is not None):
+        if debug and (
+            message.debug_sys_prompt is not None
+            or message.debug_user_prompt is not None
+            or message.debug_verbosity is not None
+            or message.debug_reasoning is not None
+            or message.debug_max_tokens is not None
+        ):
             try:
                 from .user import is_admin
                 user_email = (
@@ -136,20 +143,24 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     user_override = message.debug_user_prompt
                     verbosity_override = message.debug_verbosity
                     reasoning_override = message.debug_reasoning
+                    max_tokens_override = message.debug_max_tokens
                 else:
                     # ignore overrides for non-admin
                     sys_override = None
                     user_override = None
                     verbosity_override = None
                     reasoning_override = None
+                    max_tokens_override = None
             except Exception:
                 sys_override = None
                 user_override = None
                 verbosity_override = None
                 reasoning_override = None
+                max_tokens_override = None
         else:
             verbosity_override = None
             reasoning_override = None
+            max_tokens_override = None
 
         parsed = extract_details_from_text(
             enriched_text,
@@ -160,6 +171,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             user_prompt_override=user_override,
             verbosity_override=verbosity_override,
             reasoning_effort_override=reasoning_override,
+            max_tokens_override=max_tokens_override,
         )
         
         # Create message object
@@ -224,6 +236,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     "user_prompt_override": message.debug_user_prompt,
                     "verbosity_override": message.debug_verbosity,
                     "reasoning_override": message.debug_reasoning,
+                    "max_tokens_override": message.debug_max_tokens,
                 },
                 "parsed": parsed,
                 "stored_message": new_message,
@@ -232,7 +245,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Webhook processing failed: {e}")
-        raise HTTPException(status_code=500, detail="Processing failed")
+    raise HTTPException(status_code=500, detail="Processing failed")
 
 
 @router.get("/api/debug/default-prompts")
@@ -329,6 +342,7 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
         debug_user_prompt = payload.get("debug_user_prompt")
         debug_verbosity = payload.get("debug_verbosity")
         debug_reasoning = payload.get("debug_reasoning")
+        debug_max_tokens = payload.get("debug_max_tokens")
 
         msg = WebhookMessage(
             name=name,
@@ -339,6 +353,7 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
             debug_user_prompt=debug_user_prompt,
             debug_verbosity=debug_verbosity,
             debug_reasoning=debug_reasoning,
+            debug_max_tokens=debug_max_tokens,
         )
         # Reuse main handler with debug=True to return rich info
         return await webhook_handler(msg, request, debug=True)

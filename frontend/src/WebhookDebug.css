@@ -51,6 +51,14 @@
 .input:focus { outline: none; border-color: var(--dbg-accent); box-shadow: 0 0 0 2px rgba(86,182,194,0.2); }
 .input::placeholder { color: #6b7280; }
 
+/* Make resizable textareas expand to content without scrollbars */
+textarea.input {
+  resize: none;
+  overflow: hidden;
+  line-height: 1.4;
+  min-height: 38px; /* comfortable single-line height */
+}
+
 .row { display:flex; gap: 8px; align-items: center; }
 .row-col { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 @media (max-width: 900px) { .row-col { grid-template-columns: 1fr; } }
