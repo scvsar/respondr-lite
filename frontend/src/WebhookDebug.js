@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import './WebhookDebug.css';
 
 const defaultPayload = () => ({
@@ -39,6 +39,16 @@ export default function WebhookDebug() {
   const [fullPayloadText, setFullPayloadText] = useState(() => JSON.stringify(defaultPayload(), null, 2));
   const [verbosity, setVerbosity] = useState(''); // '', 'low', 'medium', 'high'
   const [reasoning, setReasoning] = useState(''); // '', 'minimal', 'low', 'medium', 'high'
+  const [maxTokens, setMaxTokens] = useState(''); // numeric string; empty means default
+  const sysRef = useRef(null);
+  const userRef = useRef(null);
+
+  const autoResize = useCallback((el) => {
+    if (!el) return;
+    // Reset height to let it shrink, then set to scrollHeight
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
 
   const base = useMemo(() => {
     const host = typeof window!== 'undefined' ? window.location.host : '';
@@ -101,6 +111,28 @@ export default function WebhookDebug() {
     return () => { cancelled = true; };
   }, [base, fetchWithFallback]);
 
+  // Load default prompts once on mount so fields are pre-populated (button can be used to reload later)
+  useEffect(() => {
+    let cancelled = false;
+    const init = async () => {
+      try {
+        const params = new URLSearchParams();
+        params.set('text', payload.text || '');
+        if (payload.created_at) params.set('created_at', String(payload.created_at));
+        const r = await fetchWithFallback(`/api/debug/default-prompts?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (cancelled) return;
+        setSysPrompt(j.sys_prompt || '');
+        setUserPrompt(j.user_prompt || '');
+        // Do NOT auto-enable overrides; leave control to the user
+      } catch {}
+    };
+    init();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
   const updateField = (k, v) => setPayload(p => ({ ...p, [k]: v }));
@@ -136,6 +168,10 @@ export default function WebhookDebug() {
         if (userPrompt.trim()) body.debug_user_prompt = userPrompt;
   if (verbosity) body.debug_verbosity = verbosity;
   if (reasoning) body.debug_reasoning = reasoning;
+        if (String(maxTokens).trim()) {
+          const n = Number(maxTokens);
+          if (!Number.isNaN(n) && n > 0) body.debug_max_tokens = n;
+        }
       }
   const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
       const r = await fetch(url, {
@@ -173,7 +209,6 @@ export default function WebhookDebug() {
       const j = await r.json();
       setSysPrompt(j.sys_prompt || '');
       setUserPrompt(j.user_prompt || '');
-      setOverrideEnabled(true);
     } catch (e) {
       setError(`Failed to load default prompts: ${e.message || e}`);
     } finally {
@@ -232,7 +267,7 @@ export default function WebhookDebug() {
                   <input className="input" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="if required" />
                 </label>
               </div>
-              <details open className="card-details">
+              <details className="card-details">
                 <summary>Prompt Overrides</summary>
                 <div className="form-grid">
                   <div className="form-field span-2">
@@ -263,13 +298,41 @@ export default function WebhookDebug() {
                       <option value="high">high</option>
                     </select>
                   </label>
+                  <label className="form-field">
+                    <span className="lbl">Max completion tokens</span>
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      placeholder="(model default)"
+                      value={maxTokens}
+                      onChange={e=>setMaxTokens(e.target.value)}
+                      disabled={!overrideEnabled}
+                    />
+                  </label>
                   <label className="form-field span-2">
                     <span className="lbl">System Prompt</span>
-                    <textarea className="input" rows={8} value={sysPrompt} onChange={e=>setSysPrompt(e.target.value)} disabled={!overrideEnabled} />
+                    <textarea
+                      ref={sysRef}
+                      className="input"
+                      rows={1}
+                      style={{ overflow: 'hidden' }}
+                      value={sysPrompt}
+                      onChange={e=>{ setSysPrompt(e.target.value); autoResize(e.target); }}
+                      disabled={!overrideEnabled}
+                    />
                   </label>
                   <label className="form-field span-2">
                     <span className="lbl">User Prompt</span>
-                    <textarea className="input" rows={6} value={userPrompt} onChange={e=>setUserPrompt(e.target.value)} disabled={!overrideEnabled} />
+                    <textarea
+                      ref={userRef}
+                      className="input"
+                      rows={1}
+                      style={{ overflow: 'hidden' }}
+                      value={userPrompt}
+                      onChange={e=>{ setUserPrompt(e.target.value); autoResize(e.target); }}
+                      disabled={!overrideEnabled}
+                    />
                   </label>
                 </div>
               </details>

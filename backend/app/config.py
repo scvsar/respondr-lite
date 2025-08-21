@@ -98,6 +98,14 @@ azure_openai_api_version = os.getenv("AZURE_OPENAI_API_VERSION")
 DEBUG_LOG_HEADERS = os.getenv("DEBUG_LOG_HEADERS", "false").lower() == "true"
 DEBUG_FULL_LLM_LOG = os.getenv("DEBUG_FULL_LLM_LOG", "").lower() in ("1", "true", "yes")
 
+# LLM token configuration (defaults with env overrides)
+# Default number of completion tokens to request from the model, unless overridden per-request
+DEFAULT_MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "768"))
+# Minimum allowed when clamping user overrides or internal adjustments
+MIN_COMPLETION_TOKENS = int(os.getenv("MIN_COMPLETION_TOKENS", "128"))
+# Upper cap for retries and overrides to avoid runaway costs
+MAX_COMPLETION_TOKENS_CAP = int(os.getenv("MAX_COMPLETION_TOKENS_CAP", "2048"))
+
 # ACR webhook configuration
 ACR_WEBHOOK_TOKEN = os.getenv("ACR_WEBHOOK_TOKEN")
 K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "respondr")
