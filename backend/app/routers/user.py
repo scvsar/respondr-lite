@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Request
 from typing import List, Optional
 
-from ..config import allowed_email_domains, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, is_testing
+from ..config import allowed_email_domains, allowed_admin_users, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing
 import logging
 from urllib.parse import quote
 from fastapi.responses import JSONResponse
@@ -20,6 +20,20 @@ def is_email_domain_allowed(email: str) -> bool:
             return False
         domain = email.split("@")[-1].strip().lower()
         return domain in [d.lower() for d in allowed_email_domains]
+    except Exception:
+        return False
+
+
+def is_admin(email: Optional[str]) -> bool:
+    """Check if user email is in admin users list."""
+    if is_testing:
+        return True
+    if ALLOW_LOCAL_AUTH_BYPASS and LOCAL_BYPASS_IS_ADMIN:
+        return True
+    if not email:
+        return False
+    try:
+        return email.strip().lower() in [u.lower() for u in allowed_admin_users]
     except Exception:
         return False
 
@@ -79,11 +93,15 @@ def get_user_info(request: Request) -> JSONResponse:
 
     # Clean up groups list
     groups = [g.strip() for g in user_groups if g.strip()] if user_groups else []
+    
+    # Check admin status
+    admin_flag = is_admin(email)
 
     return JSONResponse(content={
         "authenticated": authenticated,
         "email": email,
         "name": display_name,
         "groups": groups,
+        "is_admin": admin_flag,
         "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
     })
