@@ -40,8 +40,28 @@ export default function WebhookDebug() {
 
   const base = useMemo(() => {
     const host = typeof window!== 'undefined' ? window.location.host : '';
+    // Treat common dev ports as frontend-only, pointing API to localhost:8000
+    if (/localhost:(3000|3100|5173)$/i.test(host)) return 'http://localhost:8000';
     return host.endsWith(':3100') ? 'http://localhost:8000' : '';
   }, []);
+
+  const fetchWithFallback = useCallback(async (path, init) => {
+    const urls = [];
+    urls.push(`${base}${path}`);
+    if (!base) urls.push(`http://localhost:8000${path}`);
+    let last;
+    for (const u of urls) {
+      try {
+        const r = await fetch(u, init);
+        if (r.ok) return r;
+        last = r;
+      } catch (e) {
+        last = e;
+      }
+    }
+    if (last instanceof Response) throw new Error(`HTTP ${last.status}`);
+    throw last || new Error('Request failed');
+  }, [base]);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,15 +89,15 @@ export default function WebhookDebug() {
     let cancelled = false;
     const loadGroups = async () => {
       try {
-        const r = await fetch(`${base}/api/config/groups`, { headers: { 'Accept': 'application/json' } });
-        if (!r.ok) return; // likely non-admin
+    const r = await fetchWithFallback(`/api/config/groups`, { headers: { 'Accept': 'application/json' } });
+    if (!r.ok) return; // likely non-admin
         const j = await r.json();
         if (!cancelled) setGroups(j.groups || []);
       } catch {}
     };
     loadGroups();
     return () => { cancelled = true; };
-  }, [base]);
+  }, [base, fetchWithFallback]);
 
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
@@ -144,8 +164,8 @@ export default function WebhookDebug() {
       const params = new URLSearchParams();
       params.set('text', payload.text || '');
       if (payload.created_at) params.set('created_at', String(payload.created_at));
-      const r = await fetch(`${base}/api/debug/default-prompts?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const r = await fetchWithFallback(`/api/debug/default-prompts?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const j = await r.json();
       setSysPrompt(j.sys_prompt || '');
       setUserPrompt(j.user_prompt || '');
@@ -211,13 +231,15 @@ export default function WebhookDebug() {
               <details className="card-details">
                 <summary>Prompt Overrides</summary>
                 <div className="form-grid">
-                  <label className="form-field span-2">
-                    <span className="lbl">Enable overrides</span>
-                    <div className="row">
-                      <input type="checkbox" checked={overrideEnabled} onChange={e=>setOverrideEnabled(e.target.checked)} />
-                      <button className="btn sub" onClick={loadDefaultPrompts} disabled={loadingPrompts}>{loadingPrompts?'Loading…':'Load defaults'}</button>
+                  <div className="form-field span-2">
+                    <div className="row" style={{alignItems:'center', justifyContent:'space-between'}}>
+                      <span className="lbl">Controls</span>
+                      <div className="row" style={{gap:'0.5rem'}}>
+                        <button className="btn sub" onClick={loadDefaultPrompts} disabled={loadingPrompts}>{loadingPrompts?'Loading…':'Load defaults'}</button>
+                        <button className="btn" onClick={()=>setOverrideEnabled(v=>!v)} aria-pressed={overrideEnabled}>{overrideEnabled?'Disable overrides':'Enable overrides'}</button>
+                      </div>
                     </div>
-                  </label>
+                  </div>
                   <label className="form-field span-2">
                     <span className="lbl">System Prompt</span>
                     <textarea className="input" rows={8} value={sysPrompt} onChange={e=>setSysPrompt(e.target.value)} disabled={!overrideEnabled} />
