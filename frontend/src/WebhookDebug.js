@@ -1,4 +1,5 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import './WebhookDebug.css';
 
 const defaultPayload = () => ({
   attachments: [],
@@ -28,6 +29,7 @@ export default function WebhookDebug() {
   const [responders, setResponders] = useState(null);
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(null);
+  const [copied, setCopied] = useState(null); // which block copied
 
   const base = useMemo(() => {
     const host = typeof window!== 'undefined' ? window.location.host : '';
@@ -59,6 +61,14 @@ export default function WebhookDebug() {
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
   const updateField = (k, v) => setPayload(p => ({ ...p, [k]: v }));
+
+  const copy = useCallback(async (text, key) => {
+    try {
+      await navigator.clipboard.writeText(typeof text === 'string' ? text : pretty(text));
+      setCopied(key);
+      setTimeout(() => setCopied(null), 1500);
+    } catch {}
+  }, []);
 
   const postWebhook = async () => {
     setSending(true); setError(null); setResult(null);
@@ -94,117 +104,155 @@ export default function WebhookDebug() {
   };
 
   const now = () => updateField('created_at', Math.floor(Date.now()/1000));
-  const newIds = () => updateField('id', crypto.randomUUID());
   const reset = () => { setPayload(defaultPayload()); setResult(null); setError(null); };
 
   return (
     <div className="debug-wrap">
-      <h2>Webhook Debugger</h2>
+      <div className="page-header">
+        <div className="title">Webhook Debugger</div>
+        <div className="subtitle">Post test messages to <code className="mono">/webhook?debug=true</code> and inspect prompts, parsing, and storage.</div>
+      </div>
       {authError && (
-        <div className="error" role="alert" style={{marginBottom:12}}>{authError}</div>
+        <div className="alert error" role="alert">{authError}</div>
       )}
       {(!user || !user.is_admin) && (
-        <p className="small">You must be an admin to use this page.</p>
+        <p className="helper-text">You must be an admin to use this page.</p>
       )}
-      <p>Craft a message and post to <code>/webhook?debug=true</code>. The response will include the LLM prompt, raw response, parsed fields, and the stored message.</p>
 
-      <div className="grid2">
-        <div>
+      <div className="section-grid">
+        <div className="panel">
           {user?.is_admin ? (
             <>
-          <label className="lbl">Name</label>
-          <input className="input" value={payload.name} onChange={e=>updateField('name', e.target.value)} />
-          <label className="lbl">Group ID</label>
-          <input className="input" value={payload.group_id} onChange={e=>updateField('group_id', e.target.value)} />
-          <label className="lbl">Message</label>
-          <textarea className="input" rows={3} value={payload.text} onChange={e=>updateField('text', e.target.value)} />
-          <div className="row">
-            <label className="lbl">Created At (unix seconds)</label>
-            <input className="input" type="number" value={payload.created_at} onChange={e=>updateField('created_at', Number(e.target.value||0))} />
-            <button className="btn" onClick={now}>Now</button>
-          </div>
-          <div className="row">
-            <label className="lbl">API Key (optional)</label>
-            <input className="input" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="if required" />
-          </div>
-          <div className="row">
-            <button className="btn" onClick={postWebhook} disabled={sending}>{sending? 'Sending…':'Post to /webhook'}</button>
-            <button className="btn" onClick={reset}>Reset</button>
-          </div>
-          <div className="small">Full example payload</div>
-          <pre className="code" aria-label="example-json">{jsonText}</pre>
+              <div className="panel-title">Compose Test Message</div>
+              <div className="form-grid">
+                <label className="form-field">
+                  <span className="lbl">Name</span>
+                  <input className="input" value={payload.name} onChange={e=>updateField('name', e.target.value)} />
+                </label>
+                <label className="form-field">
+                  <span className="lbl">Group ID</span>
+                  <input className="input" value={payload.group_id} onChange={e=>updateField('group_id', e.target.value)} />
+                </label>
+                <label className="form-field span-2">
+                  <span className="lbl">Message</span>
+                  <textarea className="input" rows={3} value={payload.text} onChange={e=>updateField('text', e.target.value)} />
+                </label>
+                <label className="form-field">
+                  <span className="lbl">Created At (unix seconds)</span>
+                  <div className="row">
+                    <input className="input" type="number" value={payload.created_at} onChange={e=>updateField('created_at', Number(e.target.value||0))} />
+                    <button className="btn" onClick={now}>Now</button>
+                  </div>
+                </label>
+                <label className="form-field">
+                  <span className="lbl">API Key (optional)</span>
+                  <input className="input" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="if required" />
+                </label>
+              </div>
+              <div className="actions-row">
+                <button className="btn primary" onClick={postWebhook} disabled={sending}>{sending? 'Sending…':'Post to /webhook'}</button>
+                <button className="btn" onClick={reset}>Reset</button>
+              </div>
+
+              <div className="code-card">
+                <div className="code-card-head">
+                  <div className="code-title">Full example payload</div>
+                  <button className="btn sub" onClick={()=>copy(jsonText,'example')}>{copied==='example'?'Copied':'Copy'}</button>
+                </div>
+                <pre className="code-terminal" aria-label="example-json">{jsonText}</pre>
+              </div>
             </>
           ) : (
-            <div className="small">Sign in as an admin to use the debugger.</div>
+            <div className="helper-text">Sign in as an admin to use the debugger.</div>
           )}
         </div>
-        <div>
-          <h3>Result</h3>
-          {error && <div className="error">{error}</div>}
+
+        <div className="panel">
+          <div className="panel-title">Result</div>
+          {error && <div className="alert error">{error}</div>}
           {user?.is_admin && result && (
-            <div className="result">
-              <details open>
+            <div className="result-stack">
+              <details open className="card-details">
                 <summary>Inputs</summary>
-                <pre className="code">{pretty(result.inputs)}</pre>
+                <div className="code-card tight">
+                  <div className="code-card-head">
+                    <div className="code-title">Request Inputs</div>
+                    <button className="btn sub" onClick={()=>copy(result.inputs,'inputs')}>{copied==='inputs'?'Copied':'Copy'}</button>
+                  </div>
+                  <pre className="code-terminal">{pretty(result.inputs)}</pre>
+                </div>
               </details>
-              <details open>
+              <details open className="card-details">
                 <summary>Parsed</summary>
-                <pre className="code">{pretty(result.parsed)}</pre>
+                <div className="code-card tight">
+                  <div className="code-card-head">
+                    <div className="code-title">Parsed Output</div>
+                    <button className="btn sub" onClick={()=>copy(result.parsed,'parsed')}>{copied==='parsed'?'Copied':'Copy'}</button>
+                  </div>
+                  <pre className="code-terminal">{pretty(result.parsed)}</pre>
+                </div>
               </details>
               {result.parsed?.llm_debug && (
-                <details>
+                <details className="card-details">
                   <summary>LLM Prompt</summary>
                   <div className="row-col">
-                    <div>
-                      <div className="small">System</div>
-                      <pre className="code">{result.parsed.llm_debug.sys_prompt}</pre>
+                    <div className="code-card tight">
+                      <div className="code-card-head">
+                        <div className="code-title">System</div>
+                        <button className="btn sub" onClick={()=>copy(result.parsed.llm_debug.sys_prompt,'sys')}>{copied==='sys'?'Copied':'Copy'}</button>
+                      </div>
+                      <pre className="code-terminal">{result.parsed.llm_debug.sys_prompt}</pre>
                     </div>
-                    <div>
-                      <div className="small">User</div>
-                      <pre className="code">{result.parsed.llm_debug.user_prompt}</pre>
+                    <div className="code-card tight">
+                      <div className="code-card-head">
+                        <div className="code-title">User</div>
+                        <button className="btn sub" onClick={()=>copy(result.parsed.llm_debug.user_prompt,'user')}>{copied==='user'?'Copied':'Copy'}</button>
+                      </div>
+                      <pre className="code-terminal">{result.parsed.llm_debug.user_prompt}</pre>
                     </div>
                   </div>
                 </details>
               )}
               {result.parsed?.llm_debug?.raw_response && (
-                <details>
+                <details className="card-details">
                   <summary>LLM Raw Response</summary>
-                  <pre className="code">{result.parsed.llm_debug.raw_response}</pre>
+                  <div className="code-card tight">
+                    <div className="code-card-head">
+                      <div className="code-title">Raw</div>
+                      <button className="btn sub" onClick={()=>copy(result.parsed.llm_debug.raw_response,'raw')}>{copied==='raw'?'Copied':'Copy'}</button>
+                    </div>
+                    <pre className="code-terminal">{result.parsed.llm_debug.raw_response}</pre>
+                  </div>
                 </details>
               )}
-              <details>
+              <details className="card-details">
                 <summary>Stored Message</summary>
-                <pre className="code">{pretty(result.stored_message)}</pre>
+                <div className="code-card tight">
+                  <div className="code-card-head">
+                    <div className="code-title">Database Row</div>
+                    <button className="btn sub" onClick={()=>copy(result.stored_message,'stored')}>{copied==='stored'?'Copied':'Copy'}</button>
+                  </div>
+                  <pre className="code-terminal">{pretty(result.stored_message)}</pre>
+                </div>
               </details>
             </div>
           )}
           {user?.is_admin && responders && (
-            <div className="result">
-              <details>
+            <div className="result-stack">
+              <details className="card-details">
                 <summary>Current Responders ({responders.length})</summary>
-                <pre className="code">{pretty(responders)}</pre>
+                <div className="code-card tight">
+                  <div className="code-card-head">
+                    <div className="code-title">Snapshot</div>
+                    <button className="btn sub" onClick={()=>copy(responders,'responders')}>{copied==='responders'?'Copied':'Copy'}</button>
+                  </div>
+                  <pre className="code-terminal">{pretty(responders)}</pre>
+                </div>
               </details>
             </div>
           )}
         </div>
       </div>
-
-      <style>{`
-        .debug-wrap { padding: 16px; }
-        .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-        .lbl { display:block; font-weight:600; margin-top:8px; }
-        .input { width:100%; padding:8px; box-sizing: border-box; margin-bottom:8px; }
-        .row { display:flex; gap:8px; align-items:center; }
-        .row-col { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-        .btn { padding:8px 12px; }
-  .code { background:#111; color:#0f0; padding:8px; border-radius:4px; max-height:280px; overflow:auto; white-space: pre-wrap; }
-        .error { color:#b00; font-weight:600; }
-        .small { color:#666; font-size: 12px; margin-top:8px; }
-        h3 { margin-top:0; }
-        details { margin-bottom: 8px; }
-        summary { cursor: pointer; }
-        @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
-      `}</style>
     </div>
   );
 }
