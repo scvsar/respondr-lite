@@ -1,25 +1,25 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{APP_NAME}}-deployment
+  name: respondr-deployment
   namespace: {{NAMESPACE_PLACEHOLDER}}
   labels:
-    app: {{APP_NAME}}
+    app: respondr
 spec:
   replicas: {{REPLICAS_PLACEHOLDER}}
   selector:
     matchLabels:
-      app: {{APP_NAME}}
+      app: respondr
   template:
     metadata:
       labels:
-        app: {{APP_NAME}}
+        app: respondr
         azure.workload.identity/use: "true"  # Required for workload identity
     spec:
-      serviceAccountName: {{APP_NAME}}-sa
+      serviceAccountName: respondr-sa
       containers:
       # Main application container
-      - name: {{APP_NAME}}
+      - name: respondr
         image: {{ACR_IMAGE_PLACEHOLDER}}
         imagePullPolicy: Always
         ports:
@@ -28,49 +28,69 @@ spec:
         - name: ACR_WEBHOOK_TOKEN
           valueFrom:
             secretKeyRef:
-              name: {{APP_NAME}}-secrets
+              name: respondr-secrets
               key: ACR_WEBHOOK_TOKEN
         - name: K8S_NAMESPACE
           value: {{NAMESPACE_PLACEHOLDER}}
         - name: K8S_DEPLOYMENT
-          value: {{APP_NAME}}-deployment
+          value: respondr-deployment
         - name: ACR_REPOSITORY
-          value: {{APP_NAME}}
+          value: respondr
         - name: AZURE_OPENAI_API_KEY
           valueFrom:
             secretKeyRef:
-              name: {{APP_NAME}}-secrets
+              name: respondr-secrets
               key: AZURE_OPENAI_API_KEY
         - name: AZURE_OPENAI_ENDPOINT
           valueFrom:
             secretKeyRef:
-              name: {{APP_NAME}}-secrets
+              name: respondr-secrets
               key: AZURE_OPENAI_ENDPOINT
         - name: AZURE_OPENAI_DEPLOYMENT
           valueFrom:
             secretKeyRef:
-              name: {{APP_NAME}}-secrets
+              name: respondr-secrets
               key: AZURE_OPENAI_DEPLOYMENT
         - name: AZURE_OPENAI_API_VERSION
           valueFrom:
             secretKeyRef:
-              name: {{APP_NAME}}-secrets
+              name: respondr-secrets
               key: AZURE_OPENAI_API_VERSION
         - name: WEBHOOK_API_KEY
           valueFrom:
             secretKeyRef:
-              name: {{APP_NAME}}-secrets
+              name: respondr-secrets
               key: WEBHOOK_API_KEY
+        # Storage Configuration
+        - name: STORAGE_BACKEND
+          value: {{STORAGE_BACKEND_PLACEHOLDER}}
+        - name: STORAGE_FALLBACK
+          value: {{STORAGE_FALLBACK_PLACEHOLDER}}
+        # Redis Configuration (when using redis backend)
         - name: REDIS_HOST
-          value: redis-service
+          value: {{REDIS_HOST_PLACEHOLDER}}
         - name: REDIS_PORT
-          value: "6379"
+          value: {{REDIS_PORT_PLACEHOLDER}}
         - name: REDIS_DB
-          value: "0"
+          value: {{REDIS_DB_PLACEHOLDER}}
+        # Azure Storage Configuration (when using azure_table backend)
+        - name: AZURE_STORAGE_CONNECTION_STRING
+          value: "DefaultEndpointsProtocol=https;AccountName={{AZURE_STORAGE_ACCOUNT_NAME_PLACEHOLDER}};AccountKey={{AZURE_STORAGE_ACCOUNT_KEY_PLACEHOLDER}};EndpointSuffix=core.windows.net"
+        - name: AZURE_TABLE_NAME
+          value: {{AZURE_STORAGE_TABLE_NAME_PLACEHOLDER}}
+        - name: AZURE_STORAGE_ACCOUNT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: respondr-secrets
+              key: AZURE_STORAGE_ACCOUNT_KEY
         - name: ALLOWED_EMAIL_DOMAINS
           value: {{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}
         - name: ALLOWED_ADMIN_USERS
           value: {{ALLOWED_ADMIN_USERS_PLACEHOLDER}}
+        - name: PRIMARY_HOSTNAME
+          value: {{HOSTNAME_PLACEHOLDER}}
+        - name: LEGACY_HOSTNAMES
+          value: {{LEGACY_HOSTNAMES_PLACEHOLDER}}
         resources:
           requests:
             memory: "256Mi"
@@ -90,6 +110,8 @@ spec:
             port: 8000
           initialDelaySeconds: 5
           periodSeconds: 5
+  # (imagePullPolicy set per-container above)
+
       # OAuth2 Proxy sidecar container (conditional - will be removed if ENABLE_OAUTH2=false)
       {{OAUTH2_CONTAINER_START}}- name: oauth2-proxy
         image: quay.io/oauth2-proxy/oauth2-proxy:v7.5.1
@@ -159,7 +181,7 @@ spec:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: {{APP_NAME}}-sa
+  name: respondr-sa
   namespace: {{NAMESPACE_PLACEHOLDER}}
   annotations:
     azure.workload.identity/client-id: {{CLIENT_ID_PLACEHOLDER}}
@@ -169,10 +191,10 @@ metadata:
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{APP_NAME}}-service
+  name: respondr-service
   namespace: {{NAMESPACE_PLACEHOLDER}}
   labels:
-    app: {{APP_NAME}}
+    app: respondr
 spec:
   type: ClusterIP
   sessionAffinity: ClientIP
@@ -183,13 +205,13 @@ spec:
   # Port configuration changes based on OAuth2 mode
   {{SERVICE_PORT_CONFIG}}
   selector:
-    app: {{APP_NAME}}
+    app: respondr
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{APP_NAME}}-deployment-manager
+  name: respondr-deployment-manager
   namespace: {{NAMESPACE_PLACEHOLDER}}
 rules:
 - apiGroups: ["apps"]
@@ -200,22 +222,22 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{APP_NAME}}-deployment-manager-binding
+  name: respondr-deployment-manager-binding
   namespace: {{NAMESPACE_PLACEHOLDER}}
 subjects:
 - kind: ServiceAccount
-  name: {{APP_NAME}}-sa
+  name: respondr-sa
   namespace: {{NAMESPACE_PLACEHOLDER}}
 roleRef:
   kind: Role
-  name: {{APP_NAME}}-deployment-manager
+  name: respondr-deployment-manager
   apiGroup: rbac.authorization.k8s.io
 
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{APP_NAME}}-ingress
+  name: respondr-ingress
   namespace: {{NAMESPACE_PLACEHOLDER}}
   annotations:
     kubernetes.io/ingress.class: azure/application-gateway
@@ -229,7 +251,7 @@ spec:
   tls:
   - hosts:
     - {{HOSTNAME_PLACEHOLDER}}
-    secretName: {{APP_NAME}}-tls-letsencrypt
+    secretName: respondr-tls-letsencrypt
   rules:
   - host: {{HOSTNAME_PLACEHOLDER}}
     http:
@@ -238,6 +260,10 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: {{APP_NAME}}-service
+            name: respondr-service
             port:
               number: 80
+
+{{REDIRECT_INGRESS_BLOCK}}
+
+{{REDIRECT_DEPLOYMENT_BLOCK}}
