@@ -75,19 +75,17 @@ def _has_eta_intent(text: str) -> bool:
 
 
 def _has_non_eta_time_context(s: str) -> bool:
-    # negative cues around times: "left 0230", "last seen 08:10", "lkp 0930", etc.
-    # check a small window (e.g., within 12 chars before the time token)
-    # This function expects lowercased input.
-    for m in re.finditer(r"\b((?:[01]?\d|2[0-3]):\d{2}|[01]\d[0-5]\d)\b", s):
+    s = s.lower()
+    FOUR_DIGIT = r"(?:(?:[01]\d|2[0-3])[0-5]\d)"
+    COLON_TIME = r"(?:(?:[01]?\d|2[0-3]):[0-5]\d)"
+
+    # Any time token preceded by negative cues within 12 chars → not an ETA
+    neg_cues = ["left", "last seen", "ls", "lkp", "departed", "reported", "call recvd", "call received"]
+
+    for m in re.finditer(rf"\b({COLON_TIME}|{FOUR_DIGIT})\b", s):
         start = max(0, m.start() - 12)
         ctx = s[start:m.start()]
-        if any(k in ctx for k in ["left", "last seen", "ls", "lkp", "departed", "reported", "call recvd", "call received"]):
-            return True
-    # Also guard the compact 4-digit times which are more error-prone
-    for m in re.finditer(r"\b([01]\d[0-5]\d)\b", s):
-        start = max(0, m.start() - 12)
-        ctx = s[start:m.start()]
-        if any(k in ctx for k in ["left", "last seen", "ls", "lkp", "departed", "reported", "call recvd", "call received"]):
+        if any(k in ctx for k in neg_cues):
             return True
     return False
 
@@ -132,7 +130,7 @@ def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
     if re.search(r"gpt-5-(nano|mini)", model_name or "", re.I):
         kw["verbosity"] = "low"           # some models support this
         kw["reasoning_effort"] = "low"    # some models support this
-    elif re.search(r"(gpt-5(?!-(nano|mini))|o3|gpt-4\.1)", model_name or "", re.I):
+    elif re.search(r"(gpt-5(?!-(nano|mini))|o3|gpt-4\.1|gpt-4o)", model_name or "", re.I):
         kw["reasoning_effort"] = "medium"
     return kw
 
@@ -239,7 +237,7 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                 if k in kwargs and (k.replace("_", " ") in etxt or "unknown" in etxt):
                     kwargs.pop(k, None)
             if "max tokens" in etxt or "output limit" in etxt or "too long" in etxt:
-                kwargs["max_tomakens"] = min(2048, max(kwargs.get("max_completion_tokens", 768) * 2, 1024))
+                kwargs["max_completion_tokens"] = min(2048, max(int(kwargs.get("max_completion_tokens", 768)) * 2, 1024))
             return None
 
     kwargs = _select_kwargs_for_model(azure_openai_deployment)
@@ -362,8 +360,8 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
     llm_data = _call_llm_only(text, anchor, prev_eta_iso, active_client)
 
     # Enhanced debugging for LLM responses
-    logger.info(f"LLM DEBUG - Input text: '{text}'")
-    logger.info(f"LLM DEBUG - Raw response: {llm_data}")
+    logger.debug(f"LLM DEBUG - Input text: '{text}'")
+    logger.debug(f"LLM DEBUG - Raw response: {llm_data}")
 
     if isinstance(llm_data, dict) and (llm_data.get("_llm_unavailable") or llm_data.get("_llm_error")):
         logger.warning(f"LLM unavailable or error: {llm_data}")
@@ -381,7 +379,11 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
         }
 
     vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or "Unknown"))
-    status = str(llm_data.get("status") or "Unknown").strip()
+    orig_status = str(llm_data.get("status") or "Unknown").strip()
+    status = orig_status
+    status_source = "LLM"
+    rules_applied: List[str] = []
+    
     try:
         confidence = float(llm_data.get("confidence") or 0.0)
     except Exception:
@@ -390,10 +392,18 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
     # Force status to Not Responding on stand-down code phrases
     if _looks_like_code_1022(text) or _is_standdown(text):
         status = "Not Responding"
+        rules_applied.append("standdown")
+        vehicle = "Unknown"  # prevent POV/SAR-* in stand-down acks
 
     # ICS role heuristic: treat as Informational if no ETA intent
     if _contains_ics_role(text) and not _has_eta_intent(text):
         status = "Informational"
+        rules_applied.append("ics")
+        if vehicle.startswith("SAR-"):
+            vehicle = "Unknown"
+
+    if status != orig_status and rules_applied:
+        status_source = "Rule"
 
     eta_fields, eta_source = _derive_eta_fields(text, llm_data, anchor, prev_eta_iso, status)
 
@@ -409,19 +419,23 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
 
     if DEBUG_FULL_LLM_LOG:
         try:
-            logger.info(f"LLM raw: {llm_data}")
+            logger.debug(f"LLM raw: {llm_data}")
         except Exception:
             pass
+
+    evidence = str(llm_data.get("evidence") or "")
 
     return {
         "vehicle": vehicle,
         "eta": eta_fields.get("eta", "Unknown"),
         "raw_status": status,
         "arrival_status": status,  # webhook may flip to "Arrived" based on minutes
-        "status_source": "LLM-Only",
+        "status_source": status_source,
         "status_confidence": confidence,
         "eta_timestamp": eta_fields.get("eta_timestamp"),
         "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
         "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
         "parse_source": eta_source,
+        "parse_evidence": evidence,
+        # "rules_applied": rules_applied,  # optional, very helpful in /api/parse-debug
     }
