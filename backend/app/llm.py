@@ -135,14 +135,11 @@ def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
     return kw
 
 
-def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None, debug: bool = False) -> Dict[str, Any]:
-    c = llm_client or client
-    if not c:
-        return {"_llm_unavailable": True}
-    if not azure_openai_deployment:
-        return {"_llm_error": "No deployment configured"}
-    assert azure_openai_deployment is not None
+def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> Tuple[str, str]:
+    """Build the system and user prompts for the LLM based on inputs.
 
+    Returns (sys_prompt, user_prompt).
+    """
     cur_utc = base_dt.astimezone(timezone.utc)
     cur_loc = base_dt.astimezone(APP_TZ)
 
@@ -206,6 +203,26 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
         f"Message: {text}\n"
         "Return ONLY the JSON."
     )
+
+    return sys_msg, user_msg
+
+
+def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None, debug: bool = False,
+                   sys_prompt_override: Optional[str] = None, user_prompt_override: Optional[str] = None) -> Dict[str, Any]:
+    c = llm_client or client
+    if not c:
+        return {"_llm_unavailable": True}
+    if not azure_openai_deployment:
+        return {"_llm_error": "No deployment configured"}
+    assert azure_openai_deployment is not None
+
+    if sys_prompt_override is not None or user_prompt_override is not None:
+        # Use overrides, falling back to built defaults for any missing part
+        _sys, _user = build_prompts(text, base_dt, prev_eta_iso)
+        sys_msg = sys_prompt_override if sys_prompt_override is not None else _sys
+        user_msg = user_prompt_override if user_prompt_override is not None else _user
+    else:
+        sys_msg, user_msg = build_prompts(text, base_dt, prev_eta_iso)
 
 
     messages_payload: List[ChatCompletionMessageParam] = [
@@ -371,7 +388,14 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
 
 
 
-def extract_details_from_text(text: str, base_time: Optional[datetime] = None, prev_eta_iso: Optional[str] = None, debug: bool = False) -> Dict[str, Any]:
+def extract_details_from_text(
+    text: str,
+    base_time: Optional[datetime] = None,
+    prev_eta_iso: Optional[str] = None,
+    debug: bool = False,
+    sys_prompt_override: Optional[str] = None,
+    user_prompt_override: Optional[str] = None,
+) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
     # Allow tests to inject main.client
@@ -382,7 +406,15 @@ def extract_details_from_text(text: str, base_time: Optional[datetime] = None, p
     except ImportError:
         active_client = client
 
-    llm_data = _call_llm_only(text, anchor, prev_eta_iso, active_client, debug=debug)
+    llm_data = _call_llm_only(
+        text,
+        anchor,
+        prev_eta_iso,
+        active_client,
+        debug=debug,
+        sys_prompt_override=sys_prompt_override,
+        user_prompt_override=user_prompt_override,
+    )
 
     # Enhanced debugging for LLM responses
     logger.debug(f"LLM DEBUG - Input text: '{text}'")

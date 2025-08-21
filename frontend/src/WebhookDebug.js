@@ -30,6 +30,13 @@ export default function WebhookDebug() {
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState(null);
   const [copied, setCopied] = useState(null); // which block copied
+  const [overrideEnabled, setOverrideEnabled] = useState(false);
+  const [sysPrompt, setSysPrompt] = useState('');
+  const [userPrompt, setUserPrompt] = useState('');
+  const [loadingPrompts, setLoadingPrompts] = useState(false);
+  const [groups, setGroups] = useState([]);
+  const [fullEditEnabled, setFullEditEnabled] = useState(false);
+  const [fullPayloadText, setFullPayloadText] = useState(() => JSON.stringify(defaultPayload(), null, 2));
 
   const base = useMemo(() => {
     const host = typeof window!== 'undefined' ? window.location.host : '';
@@ -58,6 +65,20 @@ export default function WebhookDebug() {
     return () => { cancelled = true; };
   }, [base]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const loadGroups = async () => {
+      try {
+        const r = await fetch(`${base}/api/config/groups`, { headers: { 'Accept': 'application/json' } });
+        if (!r.ok) return; // likely non-admin
+        const j = await r.json();
+        if (!cancelled) setGroups(j.groups || []);
+      } catch {}
+    };
+    loadGroups();
+    return () => { cancelled = true; };
+  }, [base]);
+
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
   const updateField = (k, v) => setPayload(p => ({ ...p, [k]: v }));
@@ -74,12 +95,24 @@ export default function WebhookDebug() {
     setSending(true); setError(null); setResult(null);
     try {
       // Backend webhook expects { name, text, created_at, group_id }
+      let source = payload;
+      if (fullEditEnabled) {
+        try {
+          source = JSON.parse(fullPayloadText);
+        } catch (e) {
+          throw new Error('Full payload JSON is invalid');
+        }
+      }
       const body = {
-        name: payload.name,
-        text: payload.text,
-        created_at: payload.created_at,
-        group_id: payload.group_id,
+        name: source.name,
+        text: source.text,
+        created_at: source.created_at,
+        group_id: source.group_id,
       };
+      if (overrideEnabled) {
+        if (sysPrompt.trim()) body.debug_sys_prompt = sysPrompt;
+        if (userPrompt.trim()) body.debug_user_prompt = userPrompt;
+      }
   const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
       const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -105,6 +138,24 @@ export default function WebhookDebug() {
 
   const now = () => updateField('created_at', Math.floor(Date.now()/1000));
   const reset = () => { setPayload(defaultPayload()); setResult(null); setError(null); };
+  const loadDefaultPrompts = async () => {
+    setLoadingPrompts(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('text', payload.text || '');
+      if (payload.created_at) params.set('created_at', String(payload.created_at));
+      const r = await fetch(`${base}/api/debug/default-prompts?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const j = await r.json();
+      setSysPrompt(j.sys_prompt || '');
+      setUserPrompt(j.user_prompt || '');
+      setOverrideEnabled(true);
+    } catch (e) {
+      setError(`Failed to load default prompts: ${e.message || e}`);
+    } finally {
+      setLoadingPrompts(false);
+    }
+  };
 
   return (
     <div className="debug-wrap">
@@ -131,7 +182,15 @@ export default function WebhookDebug() {
                 </label>
                 <label className="form-field">
                   <span className="lbl">Group ID</span>
-                  <input className="input" value={payload.group_id} onChange={e=>updateField('group_id', e.target.value)} />
+                  {groups && groups.length > 0 ? (
+                    <select className="input" value={payload.group_id} onChange={e=>updateField('group_id', e.target.value)}>
+                      {groups.map(g => (
+                        <option key={g.group_id} value={g.group_id}>{g.group_id} — {g.team}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input className="input" value={payload.group_id} onChange={e=>updateField('group_id', e.target.value)} />
+                  )}
                 </label>
                 <label className="form-field span-2">
                   <span className="lbl">Message</span>
@@ -149,6 +208,26 @@ export default function WebhookDebug() {
                   <input className="input" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="if required" />
                 </label>
               </div>
+              <details className="card-details">
+                <summary>Prompt Overrides</summary>
+                <div className="form-grid">
+                  <label className="form-field span-2">
+                    <span className="lbl">Enable overrides</span>
+                    <div className="row">
+                      <input type="checkbox" checked={overrideEnabled} onChange={e=>setOverrideEnabled(e.target.checked)} />
+                      <button className="btn sub" onClick={loadDefaultPrompts} disabled={loadingPrompts}>{loadingPrompts?'Loading…':'Load defaults'}</button>
+                    </div>
+                  </label>
+                  <label className="form-field span-2">
+                    <span className="lbl">System Prompt</span>
+                    <textarea className="input" rows={8} value={sysPrompt} onChange={e=>setSysPrompt(e.target.value)} disabled={!overrideEnabled} />
+                  </label>
+                  <label className="form-field span-2">
+                    <span className="lbl">User Prompt</span>
+                    <textarea className="input" rows={6} value={userPrompt} onChange={e=>setUserPrompt(e.target.value)} disabled={!overrideEnabled} />
+                  </label>
+                </div>
+              </details>
               <div className="actions-row">
                 <button className="btn primary" onClick={postWebhook} disabled={sending}>{sending? 'Sending…':'Post to /webhook'}</button>
                 <button className="btn" onClick={reset}>Reset</button>
@@ -157,9 +236,31 @@ export default function WebhookDebug() {
               <div className="code-card">
                 <div className="code-card-head">
                   <div className="code-title">Full example payload</div>
-                  <button className="btn sub" onClick={()=>copy(jsonText,'example')}>{copied==='example'?'Copied':'Copy'}</button>
+                  <button className="btn sub" onClick={()=>copy(fullEditEnabled ? fullPayloadText : jsonText,'example')}>{copied==='example'?'Copied':'Copy'}</button>
+                  <label style={{marginLeft:'auto', display:'flex', alignItems:'center', gap: '0.5rem'}}>
+                    <input
+                      type="checkbox"
+                      checked={fullEditEnabled}
+                      onChange={(e)=>{
+                        const checked = e.target.checked;
+                        setFullEditEnabled(checked);
+                        if (checked) setFullPayloadText(JSON.stringify(payload, null, 2));
+                      }}
+                    />
+                    <span className="lbl" style={{opacity:0.8}}>Edit</span>
+                  </label>
                 </div>
-                <pre className="code-terminal" aria-label="example-json">{jsonText}</pre>
+                {fullEditEnabled ? (
+                  <textarea
+                    className="input"
+                    rows={12}
+                    value={fullPayloadText}
+                    onChange={e=>setFullPayloadText(e.target.value)}
+                    style={{fontFamily:'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace'}}
+                  />
+                ) : (
+                  <pre className="code-terminal" aria-label="example-json">{jsonText}</pre>
+                )}
               </div>
             </>
           ) : (
