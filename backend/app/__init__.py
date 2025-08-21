@@ -1,6 +1,7 @@
 import os
 import logging
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from .config import PRIMARY_HOSTNAME, LEGACY_HOSTNAMES
@@ -9,6 +10,21 @@ from .routers import webhook, responders, dashboard, acr, user, frontend
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+# Enable CORS for local dev (CRA on :3100)
+_allow_dev_cors = True  # safe default for local runs; can tighten with env if needed
+if _allow_dev_cors:
+    origins = [
+        "http://localhost:3100",
+        "http://127.0.0.1:3100",
+    ]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"]
+    )
 
 @app.middleware("http")
 async def hostname_redirect_middleware(request: Request, call_next):

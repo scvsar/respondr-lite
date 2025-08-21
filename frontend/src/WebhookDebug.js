@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 
 const defaultPayload = () => ({
   attachments: [],
@@ -26,6 +26,35 @@ export default function WebhookDebug() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [responders, setResponders] = useState(null);
+  const [user, setUser] = useState(null);
+  const [authError, setAuthError] = useState(null);
+
+  const base = useMemo(() => {
+    const host = typeof window!== 'undefined' ? window.location.host : '';
+    return host.endsWith(':3100') ? 'http://localhost:8000' : '';
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const r = await fetch(`${base}/api/user`, { headers: { 'Accept': 'application/json' } });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = await r.json();
+        if (cancelled) return;
+        setUser(j);
+        if (!j.authenticated) {
+          setAuthError('You must be signed in to access this page.');
+        } else if (!j.is_admin) {
+          setAuthError('Access denied: admin only.');
+        }
+      } catch (e) {
+        if (!cancelled) setAuthError('Unable to verify sign-in.');
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [base]);
 
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
@@ -41,9 +70,7 @@ export default function WebhookDebug() {
         created_at: payload.created_at,
         group_id: payload.group_id,
       };
-      const host = typeof window!== 'undefined' ? window.location.host : '';
-      const base = host.endsWith(':3100') ? 'http://localhost:8000' : '';
-      const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
+  const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
       const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -56,7 +83,7 @@ export default function WebhookDebug() {
 
       // fetch responders snapshot
       try {
-        const rr = await fetch(`${base}/api/responders`, { headers: { 'Accept': 'application/json' } });
+  const rr = await fetch(`${base}/api/responders`, { headers: { 'Accept': 'application/json' } });
         if (rr.ok) setResponders(await rr.json());
       } catch {}
     } catch (e) {
@@ -73,10 +100,18 @@ export default function WebhookDebug() {
   return (
     <div className="debug-wrap">
       <h2>Webhook Debugger</h2>
+      {authError && (
+        <div className="error" role="alert" style={{marginBottom:12}}>{authError}</div>
+      )}
+      {(!user || !user.is_admin) && (
+        <p className="small">You must be an admin to use this page.</p>
+      )}
       <p>Craft a message and post to <code>/webhook?debug=true</code>. The response will include the LLM prompt, raw response, parsed fields, and the stored message.</p>
 
       <div className="grid2">
         <div>
+          {user?.is_admin ? (
+            <>
           <label className="lbl">Name</label>
           <input className="input" value={payload.name} onChange={e=>updateField('name', e.target.value)} />
           <label className="lbl">Group ID</label>
@@ -98,11 +133,15 @@ export default function WebhookDebug() {
           </div>
           <div className="small">Full example payload</div>
           <pre className="code" aria-label="example-json">{jsonText}</pre>
+            </>
+          ) : (
+            <div className="small">Sign in as an admin to use the debugger.</div>
+          )}
         </div>
         <div>
           <h3>Result</h3>
           {error && <div className="error">{error}</div>}
-          {result && (
+          {user?.is_admin && result && (
             <div className="result">
               <details open>
                 <summary>Inputs</summary>
@@ -139,7 +178,7 @@ export default function WebhookDebug() {
               </details>
             </div>
           )}
-          {responders && (
+          {user?.is_admin && responders && (
             <div className="result">
               <details>
                 <summary>Current Responders ({responders.length})</summary>

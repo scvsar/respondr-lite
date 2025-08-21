@@ -659,7 +659,9 @@ function MainApp() {
                 const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
                 window.location.href = url; 
               }}>Switch Account</div>
-              <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
+              {isAdmin && (
+                <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
+              )}
               <div className="menu-item" onClick={()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;

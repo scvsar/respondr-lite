@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
@@ -45,7 +45,7 @@ def verify_api_key(api_key: Optional[str] = None):
 
 
 @router.post("/webhook")
-async def webhook_handler(message: WebhookMessage, debug: bool = Query(default=False)):
+async def webhook_handler(message: WebhookMessage, request: Request, debug: bool = Query(default=False)):
     """Handle incoming webhook messages from GroupMe."""
     try:
         # Parse timestamp
@@ -154,6 +154,22 @@ async def webhook_handler(message: WebhookMessage, debug: bool = Query(default=F
         )
 
         if debug:
+            # Admin-only: require authenticated admin for debug payloads
+            try:
+                from .user import is_admin  # local import to avoid circulars at module load
+                user_email = (
+                    request.headers.get("X-Auth-Request-Email")
+                    or request.headers.get("X-Auth-Request-User")
+                    or request.headers.get("x-forwarded-email")
+                    or request.headers.get("X-User")
+                ) if request else None
+                if not is_admin(user_email):
+                    raise HTTPException(status_code=403, detail="Debug access requires admin")
+            except HTTPException:
+                raise
+            except Exception:
+                # Fail closed if we can't determine auth
+                raise HTTPException(status_code=403, detail="Debug access requires admin")
             return {
                 "status": "ok",
                 "inputs": {
