@@ -25,6 +25,8 @@ class WebhookMessage(BaseModel):
     # Admin-only debug extras (optional)
     debug_sys_prompt: Optional[str] = None
     debug_user_prompt: Optional[str] = None
+    debug_verbosity: Optional[str] = None  # "low" | "medium" | "high"
+    debug_reasoning: Optional[str] = None  # "low" | "medium" | "high"
 
 
 class ParseDebugRequest(BaseModel):
@@ -120,7 +122,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         # Include prompt overrides only for admin users in debug mode
         sys_override = None
         user_override = None
-        if debug and (message.debug_sys_prompt is not None or message.debug_user_prompt is not None):
+        if debug and (message.debug_sys_prompt is not None or message.debug_user_prompt is not None or message.debug_verbosity is not None or message.debug_reasoning is not None):
             try:
                 from .user import is_admin
                 user_email = (
@@ -132,13 +134,22 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                 if is_admin(user_email):
                     sys_override = message.debug_sys_prompt
                     user_override = message.debug_user_prompt
+                    verbosity_override = message.debug_verbosity
+                    reasoning_override = message.debug_reasoning
                 else:
                     # ignore overrides for non-admin
                     sys_override = None
                     user_override = None
+                    verbosity_override = None
+                    reasoning_override = None
             except Exception:
                 sys_override = None
                 user_override = None
+                verbosity_override = None
+                reasoning_override = None
+        else:
+            verbosity_override = None
+            reasoning_override = None
 
         parsed = extract_details_from_text(
             enriched_text,
@@ -147,6 +158,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             debug=debug,
             sys_prompt_override=sys_override,
             user_prompt_override=user_override,
+            verbosity_override=verbosity_override,
+            reasoning_effort_override=reasoning_override,
         )
         
         # Create message object
@@ -209,6 +222,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     "team": team,
                     "sys_prompt_override": message.debug_sys_prompt,
                     "user_prompt_override": message.debug_user_prompt,
+                    "verbosity_override": message.debug_verbosity,
+                    "reasoning_override": message.debug_reasoning,
                 },
                 "parsed": parsed,
                 "stored_message": new_message,
@@ -277,6 +292,7 @@ async def get_config_groups(request: Request):
 @router.post("/api/debug/webhook-raw")
 async def webhook_raw(request: Request, payload: Dict[str, Any]):
     """Accept a raw GroupMe-style JSON and route it through webhook processing. Admin-only."""
+    # Admin-only guard
     try:
         from .user import is_admin
         user_email = (
@@ -297,7 +313,6 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
         name = str(payload.get("name") or payload.get("sender", "")).strip() or "Unknown"
         text = str(payload.get("text") or "").strip()
         created_at_raw = payload.get("created_at")
-        created_at: int
         if created_at_raw is None:
             created_at = int(datetime.now(APP_TZ).timestamp())
         else:
@@ -312,6 +327,8 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
         # Optional debug overrides if present at top-level
         debug_sys_prompt = payload.get("debug_sys_prompt")
         debug_user_prompt = payload.get("debug_user_prompt")
+        debug_verbosity = payload.get("debug_verbosity")
+        debug_reasoning = payload.get("debug_reasoning")
 
         msg = WebhookMessage(
             name=name,
@@ -320,10 +337,11 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
             group_id=group_id,
             debug_sys_prompt=debug_sys_prompt,
             debug_user_prompt=debug_user_prompt,
+            debug_verbosity=debug_verbosity,
+            debug_reasoning=debug_reasoning,
         )
         # Reuse main handler with debug=True to return rich info
-        res = await webhook_handler(msg, request, debug=True)
-        return res
+        return await webhook_handler(msg, request, debug=True)
     except HTTPException:
         raise
     except Exception as e:
