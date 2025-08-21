@@ -25,6 +25,7 @@ export default function WebhookDebug() {
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [responders, setResponders] = useState(null);
 
   const jsonText = useMemo(() => pretty(payload), [payload]);
 
@@ -40,7 +41,9 @@ export default function WebhookDebug() {
         created_at: payload.created_at,
         group_id: payload.group_id,
       };
-      const url = '/webhook?debug=true' + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
+      const host = typeof window!== 'undefined' ? window.location.host : '';
+      const base = host.endsWith(':3100') ? 'http://localhost:8000' : '';
+      const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
       const r = await fetch(url, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -50,6 +53,12 @@ export default function WebhookDebug() {
       try { data = JSON.parse(text); } catch { data = { raw: text }; }
       if (!r.ok) throw new Error(data?.detail || `HTTP ${r.status}`);
       setResult(data);
+
+      // fetch responders snapshot
+      try {
+        const rr = await fetch(`${base}/api/responders`, { headers: { 'Accept': 'application/json' } });
+        if (rr.ok) setResponders(await rr.json());
+      } catch {}
     } catch (e) {
       setError(String(e.message || e));
     } finally {
@@ -130,6 +139,14 @@ export default function WebhookDebug() {
               </details>
             </div>
           )}
+          {responders && (
+            <div className="result">
+              <details>
+                <summary>Current Responders ({responders.length})</summary>
+                <pre className="code">{pretty(responders)}</pre>
+              </details>
+            </div>
+          )}
         </div>
       </div>
 
@@ -141,7 +158,7 @@ export default function WebhookDebug() {
         .row { display:flex; gap:8px; align-items:center; }
         .row-col { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
         .btn { padding:8px 12px; }
-        .code { background:#111; color:#0f0; padding:8px; border-radius:4px; max-height:280px; overflow:auto; }
+  .code { background:#111; color:#0f0; padding:8px; border-radius:4px; max-height:280px; overflow:auto; white-space: pre-wrap; }
         .error { color:#b00; font-weight:600; }
         .small { color:#666; font-size: 12px; margin-top:8px; }
         h3 { margin-top:0; }
