@@ -61,12 +61,28 @@ spec:
             secretKeyRef:
               name: respondr-secrets
               key: WEBHOOK_API_KEY
+        # Storage Configuration
+        - name: STORAGE_BACKEND
+          value: {{STORAGE_BACKEND_PLACEHOLDER}}
+        - name: STORAGE_FALLBACK
+          value: {{STORAGE_FALLBACK_PLACEHOLDER}}
+        # Redis Configuration (when using redis backend)
         - name: REDIS_HOST
-          value: redis-service
+          value: {{REDIS_HOST_PLACEHOLDER}}
         - name: REDIS_PORT
-          value: "6379"
+          value: {{REDIS_PORT_PLACEHOLDER}}
         - name: REDIS_DB
-          value: "0"
+          value: {{REDIS_DB_PLACEHOLDER}}
+        # Azure Storage Configuration (when using azure_table backend)
+        - name: AZURE_STORAGE_CONNECTION_STRING
+          value: "DefaultEndpointsProtocol=https;AccountName={{AZURE_STORAGE_ACCOUNT_NAME_PLACEHOLDER}};AccountKey={{AZURE_STORAGE_ACCOUNT_KEY_PLACEHOLDER}};EndpointSuffix=core.windows.net"
+        - name: AZURE_TABLE_NAME
+          value: {{AZURE_STORAGE_TABLE_NAME_PLACEHOLDER}}
+        - name: AZURE_STORAGE_ACCOUNT_KEY
+          valueFrom:
+            secretKeyRef:
+              name: respondr-secrets
+              key: AZURE_STORAGE_ACCOUNT_KEY
         - name: ALLOWED_EMAIL_DOMAINS
           value: {{ALLOWED_EMAIL_DOMAINS_PLACEHOLDER}}
         - name: ALLOWED_ADMIN_USERS

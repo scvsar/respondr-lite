@@ -47,12 +47,13 @@ const StatusTabs = ({
     try {
       setCurrentStatusError(null);
       setCurrentStatusLoading(true);
-  const response = await fetch(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
+      const response = await fetch(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      const json = await response.json();
-      setCurrentStatusData(json);
+      const currentStatus = await response.json();
+      
+      setCurrentStatusData(currentStatus);
     } catch (err) {
       console.error('Failed to fetch current status:', err);
       setCurrentStatusError(err.message);
@@ -297,8 +298,8 @@ const StatusTabs = ({
                       />
                     </td>
                   )}
-                  <td className="col-time" title={formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}>
-                    {formatTimestampDirect(useUTC ? entry.timestamp_utc : entry.timestamp)}
+                  <td className="col-time" title={formatTimestampDirect(entry.timestamp_utc || entry.timestamp, useUTC)}>
+                    {formatTimestampDirect(entry.timestamp_utc || entry.timestamp, useUTC)}
                   </td>
                   <td>{entry.name}</td>
                   <td>{unitOf(entry)}</td>
@@ -306,7 +307,7 @@ const StatusTabs = ({
                     <div className="msg">{entry.text}</div>
                   </td>
                   <td>{resolveVehicle(entry)}</td>
-                  <td title={etaDisplay(entry)}>{etaDisplay(entry)}</td>
+                  <td title={etaDisplay(entry, useUTC)}>{etaDisplay(entry, useUTC)}</td>
                   <td>
                     <span className={`status-pill ${pillClass}`} aria-label={`Status: ${s}`}>
                       {s}

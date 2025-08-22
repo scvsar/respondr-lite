@@ -11,9 +11,11 @@ python-dotenv
 aiofiles
 requests
 redis>=4.0.0
+azure-data-tables>=12.4.0
 pytest
 pytest-asyncio
 httpx
 pytest-cov
 kubernetes>=29.0.0
 tzdata>=2024.1
+azure-data-tables

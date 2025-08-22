@@ -5,6 +5,7 @@ import Logout from './Logout';
 import MobileView from './MobileView';
 import Profile from './Profile';
 import StatusTabs from './StatusTabs';
+import WebhookDebug from './WebhookDebug';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -297,34 +298,32 @@ function MainApp() {
   };
   const pad2 = (n) => String(n).padStart(2, '0');
   
-  // Simple function to format ISO timestamp as MM/DD/YYYY HH:MM:SS preserving original timezone
-  const formatTimestampDirect = (isoString) => {
+  // Format timestamp with timezone awareness
+  const formatTimestampDirect = (isoString, isUtc = false) => {
     if (!isoString) return '—';
     try {
-      // For PST/PDT timestamps (e.g., "2025-08-09T12:00:00-08:00"), 
-      // we want to show the time exactly as it appears in the timestamp
-      // without any timezone conversion
+      const d = parseTs(isoString);
+      if (!d) return '—';
       
-      if (typeof isoString === 'string' && isoString.includes('T')) {
-        // Extract date and time parts directly from the ISO string
-        const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-        if (match) {
-          const [, year, month, day, hour, minute, second] = match;
-          return `${month}/${day}/${year} ${hour}:${minute}:${second}`;
-        }
+      if (isUtc) {
+        // Display UTC time
+        const y = d.getUTCFullYear();
+        const M = d.getUTCMonth() + 1;
+        const D = d.getUTCDate();
+        const h = d.getUTCHours();
+        const m = d.getUTCMinutes();
+        const s = d.getUTCSeconds();
+        return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+      } else {
+        // Display local time
+        const y = d.getFullYear();
+        const M = d.getMonth() + 1;
+        const D = d.getDate();
+        const h = d.getHours();
+        const m = d.getMinutes();
+        const s = d.getSeconds();
+        return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
       }
-      
-      // Fallback to Date parsing if string format doesn't match
-      const d = new Date(isoString);
-      if (isNaN(d.getTime())) return '—';
-      
-      const M = d.getMonth() + 1;
-      const D = d.getDate();
-      const y = d.getFullYear();
-      const h = d.getHours();
-      const m = d.getMinutes();
-      const s = d.getSeconds();
-      return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
     } catch {
       return '—';
     }
@@ -398,14 +397,15 @@ function MainApp() {
     const days = Math.floor(hrs / 24);
     return `${days}d ago`;
   }, [lastUpdated, nowTick]);
-  const etaDisplay = (entry) => {
+  const etaDisplay = (entry, utcFlag = useUTC) => {
     if (!entry) return 'Unknown';
     
-    // Use the appropriate timestamp based on UTC setting
-    const timestampToUse = useUTC ? entry.eta_timestamp_utc : entry.eta_timestamp;
+    // Always use UTC timestamp from backend and convert based on useUTC setting
+    const utcTimestamp = entry.eta_timestamp_utc;
     
-    if (timestampToUse) {
-      return formatTimestampDirect(timestampToUse);
+    if (utcTimestamp) {
+      // Convert UTC timestamp to appropriate display format
+      return formatTimestampDirect(utcTimestamp, utcFlag);
     }
     
     // Fallback to raw ETA string if no timestamp
@@ -484,8 +484,9 @@ function MainApp() {
   const exportCsv = () => {
     const rows = ['Time,Name,Team,Message,Vehicle,ETA,Status'];
     sorted.forEach(r => {
-      const ts = formatTimestampDirect(useUTC ? r.timestamp_utc : r.timestamp);
-      const etaStr = etaDisplay(r);
+      // Always use UTC timestamps and convert based on useUTC setting
+      const ts = formatTimestampDirect(r.timestamp_utc || r.timestamp, useUTC);
+      const etaStr = etaDisplay(r, useUTC);
       const row = [ts, r.name, unitOf(r), (r.text||'').replace(/"/g,'""'), resolveVehicle(r), etaStr, statusOf(r)];
       rows.push(row.map(v => /[",\n]/.test(String(v)) ? '"'+String(v)+'"' : String(v)).join(','));
     });
@@ -658,6 +659,9 @@ function MainApp() {
                 const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
                 window.location.href = url; 
               }}>Switch Account</div>
+              {isAdmin && (
+                <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
+              )}
               <div className="menu-item" onClick={()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
@@ -856,6 +860,7 @@ function App() {
           </AuthGate>
         } />
         <Route path="/logout" element={<Logout />} />
+  <Route path="/debug/webhook" element={<AuthGate><WebhookDebug /></AuthGate>} />
       </Routes>
     </Router>
   );

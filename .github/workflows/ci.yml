@@ -49,7 +49,8 @@ jobs:
           WEBHOOK_API_KEY: test-key
         run: |
           source .venv/bin/activate
-          pytest -q backend/tests --ignore=backend/tests/test_system.py
+          cd backend
+          python run_tests.py
 
   test-frontend:
     name: Frontend tests
