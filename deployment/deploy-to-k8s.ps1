@@ -335,7 +335,8 @@ if (-not $DryRun) {
         exit 1
     }
     # Verify secret exists (defensive)
-    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+    $null = kubectl get secret respondr-secrets -n $Namespace -o name
+    if ($LASTEXITCODE -ne 0) {
         Write-Error "Secret 'respondr-secrets' not found in namespace '$Namespace' after apply"
         exit 1
     }
@@ -365,7 +366,8 @@ if (-not $DryRun) {
 Write-Host "Deploying application..." -ForegroundColor Yellow
 if (-not $DryRun) {
     # Preflight: ensure secret still exists before deploying
-    if (-not (kubectl get secret respondr-secrets -n $Namespace -o name 2>$null)) {
+    $null = kubectl get secret respondr-secrets -n $Namespace -o name
+    if ($LASTEXITCODE -ne 0) {
         Write-Error "Blocking deployment: required secret 'respondr-secrets' missing in namespace '$Namespace'"
         exit 1
     }
@@ -498,3 +500,8 @@ if ($UseOAuth2) {
 }
 Write-Host "✅ Let's Encrypt SSL/TLS certificates with automatic renewal" -ForegroundColor Green
 Write-Host "✅ Dedicated namespace isolation" -ForegroundColor Green
+
+
+
+
+

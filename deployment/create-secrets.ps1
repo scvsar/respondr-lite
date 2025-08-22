@@ -32,7 +32,10 @@ param(
     [string]$ApiVersion = "2024-12-01-preview",
 
     [Parameter(Mandatory=$false)]
-    [string]$Namespace = "respondr"
+    [string]$Namespace = "respondr",
+
+    [Parameter(Mandatory=$false)]
+    [string]$AppName = "respondr"
 )
 
 Write-Host "Respondr - Creating Kubernetes Secrets File" -ForegroundColor Green
@@ -179,12 +182,12 @@ try {
     # Insert ACR webhook token
     $secretsContent = $secretsContent -replace 'YOUR_SECURE_RANDOM_TOKEN_HERE', $acrWebhookToken
 
-    # Namespace placeholder (optional, backward compatible if absent)
+    # Replace namespace and appName placeholders if present
     if ($secretsContent -match '\{\{NAMESPACE_PLACEHOLDER\}\}') {
         $secretsContent = $secretsContent -replace '\{\{NAMESPACE_PLACEHOLDER\}\}', $Namespace
-    } elseif ($secretsContent -notmatch 'namespace:') {
-        # If no namespace field present, append one under metadata to ensure scoping
-        $secretsContent = $secretsContent -replace 'metadata:\s*\n\s*name: respondr-secrets', "metadata`n  name: respondr-secrets`n  namespace: $Namespace"
+    }
+    if ($secretsContent -match '\{\{APP_NAME\}\}') {
+        $secretsContent = $secretsContent -replace '\{\{APP_NAME\}\}', $AppName
     }
     
     # Write the updated content

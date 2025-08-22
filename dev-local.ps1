@@ -7,8 +7,10 @@
 
 param(
     [switch]$Full,
+    [switch]$Dev,
     [switch]$Docker,
     [switch]$Test,
+    [switch]$Build,
     [switch]$Help
 )
 
@@ -16,15 +18,19 @@ if ($Help) {
     Write-Host "Respondr Local Development Helper" -ForegroundColor Green
     Write-Host ""
     Write-Host "Usage:" -ForegroundColor Yellow
-    Write-Host "  .\dev-local.ps1           # Backend only (FastAPI)" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Full     # Backend + Frontend" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Docker   # Docker Compose" -ForegroundColor White
-    Write-Host "  .\dev-local.ps1 -Test     # Run webhook tests" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1              # Backend only (FastAPI). If frontend\\build exists, it's served at / on :8000" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Full        # Backend on :8000, production-style SPA if built" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Full -Dev   # Backend + CRA dev server (frontend on :3100)" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Docker      # Docker Compose" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Test        # Run webhook tests" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Build       # Build frontend bundle (used by backend static mount on :8000)" -ForegroundColor White
+    Write-Host "  .\dev-local.ps1 -Full -Build # Build + start backend on :8000 (no CRA dev server unless -Dev)" -ForegroundColor White
     Write-Host ""
     Write-Host "Access URLs:" -ForegroundColor Yellow
     Write-Host "  Backend API: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
-    Write-Host "  Frontend: http://localhost:3100 (if -Full)" -ForegroundColor Cyan
+    Write-Host "  Frontend: http://localhost:8000 (production-style, serves frontend\\build if present)" -ForegroundColor Cyan
+    Write-Host "            http://localhost:3100 (only when -Dev is used)" -ForegroundColor Cyan
     exit 0
 }
 
@@ -72,6 +78,64 @@ function Ensure-Redis {
     return $false
 }
 
+function Clear-RedisMessages {
+    Write-Host "🧹 Clearing Redis message cache for fresh start..." -ForegroundColor Yellow
+    
+    # Check if Redis is available
+    if (-not (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379)) {
+        Write-Host "⚠️  Redis not available, skipping cache clear" -ForegroundColor Yellow
+        return
+    }
+    
+    # Try to use redis-cli if available, otherwise use docker
+    $redisCli = Get-Command redis-cli -ErrorAction SilentlyContinue
+    if ($redisCli) {
+        Write-Host "Using redis-cli to clear cache..." -ForegroundColor Gray
+        & redis-cli FLUSHALL | Out-Null
+    } else {
+        # Try using docker to run redis-cli
+        $docker = Get-Command docker -ErrorAction SilentlyContinue
+        if ($docker) {
+            Write-Host "Using docker redis-cli to clear cache..." -ForegroundColor Gray
+            & docker exec respondr-redis redis-cli FLUSHALL 2>$null | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                # If respondr-redis doesn't exist, try connecting to any redis container or run a temp one
+                & docker run --rm --network host redis:7-alpine redis-cli -h localhost FLUSHALL 2>$null | Out-Null
+            }
+        }
+    }
+    
+    Write-Host "✅ Redis cache cleared" -ForegroundColor Green
+}
+
+# Build the React frontend production bundle
+function Build-Frontend {
+    Write-Host "🏗️  Building frontend production bundle..." -ForegroundColor Yellow
+    $frontendPath = Join-Path $PWD "frontend"
+    if (-not (Test-Path $frontendPath)) {
+        Write-Host "❌ Frontend directory not found at $frontendPath" -ForegroundColor Red
+        return $false
+    }
+    Push-Location $frontendPath
+    try {
+        if (!(Test-Path 'node_modules')) {
+            Write-Host "Installing frontend dependencies (npm ci)…" -ForegroundColor Yellow
+            npm ci
+            if ($LASTEXITCODE -ne 0) { throw "npm ci failed" }
+        }
+        Write-Host "Running 'npm run build'…" -ForegroundColor Yellow
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+        Write-Host "✅ Frontend build complete: frontend\\build" -ForegroundColor Green
+        return $true
+    } catch {
+        Write-Host "❌ Frontend build failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    } finally {
+        Pop-Location
+    }
+}
+
 # Check if .env file exists
 if (-not (Test-Path "backend\.env")) {
     Write-Host "❌ backend\.env file not found!" -ForegroundColor Red
@@ -108,35 +172,70 @@ if ($Docker) {
     }
     
 } elseif ($Full) {
-    Write-Host "Starting Full Stack (Backend + Frontend)..." -ForegroundColor Blue
+    Write-Host "Starting Full Stack..." -ForegroundColor Blue
     Write-Host ""
-    Write-Host "This will open two terminals:" -ForegroundColor Yellow
-    Write-Host "  1. Backend (FastAPI) on http://localhost:8000" -ForegroundColor Cyan
-    Write-Host "  2. Frontend (React) on http://localhost:3100" -ForegroundColor Cyan
+    if ($Build) {
+        Write-Host "Mode: Build + Serve via Backend on :8000" -ForegroundColor Yellow
+        Write-Host "  • Backend (FastAPI) will serve the built SPA on http://localhost:8000" -ForegroundColor Cyan
+    }
+    if ($Dev) {
+        Write-Host "Mode: Dev UI enabled — CRA dev server will run on :3100" -ForegroundColor Yellow
+    } else {
+        Write-Host "Mode: Production-style UI on :8000 (serves existing frontend\\build if present)" -ForegroundColor Yellow
+    }
     Write-Host ""
 
+    taskkill /F /IM python.exe 2>$null | Out-Null
+    taskkill /F /IM node.exe 2>$null | Out-Null
     # Ensure Redis for local persistence
     Ensure-Redis | Out-Null
+    
+    # Clear Redis messages for fresh start
+    Clear-RedisMessages
+    
+    # If building, do it before starting the backend so static files are mounted
+    if ($Build) {
+        if (-not (Build-Frontend)) {
+            Write-Host "⚠️  Proceeding without built frontend due to build failure" -ForegroundColor Yellow
+        }
+    }
+
+    # Clear conflicting Azure OpenAI environment variables to ensure .env file is used
+    Write-Host "Clearing conflicting Azure OpenAI environment variables..." -ForegroundColor Yellow
+    Remove-Item Env:AZURE_OPENAI_ENDPOINT -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_API_VERSION -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_DEPLOYMENT -ErrorAction SilentlyContinue
+    Write-Host "✅ Environment cleared for .env file usage" -ForegroundColor Green
     
     # Start backend in new terminal using venv python if available
     $venvPy = Join-Path $PWD "backend\.venv\Scripts\python.exe"
     $pyCmd = if (Test-Path $venvPy) { $venvPy } else { 'python' }
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:REDIS_HOST='localhost'; `$env:REDIS_PORT='6379'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:LOCAL_BYPASS_IS_ADMIN='true'; `$env:DISABLE_API_KEY_CHECK='true'; `$env:ALLOW_CLEAR_ALL='true'; `$env:REDIS_HOST='localhost'; `$env:REDIS_PORT='6379'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
     
-    # Start frontend in new terminal
-    # - Auto-install dependencies if react-scripts is missing
-    # - Escape `$ so env var is set in the child
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; if (!(Test-Path 'node_modules\\.bin\\react-scripts') -and !(Test-Path 'node_modules\\react-scripts')) { Write-Host 'Installing frontend dependencies (npm ci)…' -ForegroundColor Yellow; npm ci }; Write-Host 'Starting Frontend on :3100...' -ForegroundColor Blue; `$env:PORT=3100; npm start"
-    
-    Write-Host "Both services starting in separate terminals..." -ForegroundColor Green
-    Write-Host ""
-    Write-Host "Access URLs:" -ForegroundColor Yellow
-    Write-Host "  • Frontend: http://localhost:3100" -ForegroundColor Cyan
-    Write-Host "  • Backend: http://localhost:8000" -ForegroundColor Cyan
-    Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
+    if ($Dev) {
+        # Start frontend in new terminal (CRA dev server)
+        # - Auto-install dependencies if react-scripts is missing
+        # - Escape `$ so env var is set in the child
+        Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\frontend'; if (!(Test-Path 'node_modules\\.bin\\react-scripts') -and !(Test-Path 'node_modules\\react-scripts')) { Write-Host 'Installing frontend dependencies (npm ci)…' -ForegroundColor Yellow; npm ci }; Write-Host 'Starting Frontend on :3100...' -ForegroundColor Blue; `$env:PORT=3100; npm start"
+        
+        Write-Host "Backend and Frontend dev server starting in separate terminals..." -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Access URLs:" -ForegroundColor Yellow
+        Write-Host "  • Frontend (Dev): http://localhost:3100" -ForegroundColor Cyan
+        Write-Host "  • Backend: http://localhost:8000" -ForegroundColor Cyan
+        Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
+    } else {
+        Write-Host "Backend starting; open the app at http://localhost:8000 (serves frontend\\build if present)" -ForegroundColor Green
+        Write-Host ""
+        Write-Host "Access URLs:" -ForegroundColor Yellow
+        Write-Host "  • App + API: http://localhost:8000" -ForegroundColor Cyan
+        Write-Host "  • API Docs: http://localhost:8000/docs" -ForegroundColor Cyan
+    # Open the app in the default browser for convenience
+    try { Start-Process "http://localhost:8000" } catch {}
+    }
     
 } else {
     Write-Host "Starting Backend Only (FastAPI)..." -ForegroundColor Blue
@@ -145,6 +244,7 @@ if ($Docker) {
     Write-Host "  • API: http://localhost:8000" -ForegroundColor Cyan
     Write-Host "  • Docs: http://localhost:8000/docs" -ForegroundColor Cyan
     Write-Host "  • Webhook: http://localhost:8000/webhook" -ForegroundColor Cyan
+    Write-Host "  • UI: http://localhost:8000 (if frontend\\build exists; use -Build to create it)" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "For testing, run in another terminal:" -ForegroundColor Yellow
     Write-Host "  .\dev-local.ps1 -Test" -ForegroundColor White
@@ -153,11 +253,31 @@ if ($Docker) {
     # Ensure Redis for local persistence
     Ensure-Redis | Out-Null
     
+    # Clear Redis messages for fresh start
+    Clear-RedisMessages
+    
+    # Clear conflicting Azure OpenAI environment variables to ensure .env file is used
+    Write-Host "Clearing conflicting Azure OpenAI environment variables..." -ForegroundColor Yellow
+    Remove-Item Env:AZURE_OPENAI_ENDPOINT -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_API_VERSION -ErrorAction SilentlyContinue
+    Remove-Item Env:AZURE_OPENAI_DEPLOYMENT -ErrorAction SilentlyContinue
+    Write-Host "✅ Environment cleared for .env file usage" -ForegroundColor Green
+    
+    # If building, do it before starting the backend so static files are mounted
+    if ($Build) {
+        if (-not (Build-Frontend)) {
+            Write-Host "⚠️  Proceeding without built frontend due to build failure" -ForegroundColor Yellow
+        }
+    }
+
     Set-Location backend
     $venvPy = Join-Path $PWD "..\backend\.venv\Scripts\python.exe"
     if (-not (Test-Path $venvPy)) { $venvPy = 'python' }
     $env:TIMEZONE='America/Los_Angeles'
     $env:ALLOW_LOCAL_AUTH_BYPASS='true'
+    $env:LOCAL_BYPASS_IS_ADMIN='true'
+    $env:DISABLE_API_KEY_CHECK='true'
+    $env:ALLOW_CLEAR_ALL='true'
     $env:REDIS_HOST='localhost'
     $env:REDIS_PORT='6379'
     & $venvPy -m uvicorn main:app --reload --host 0.0.0.0 --port 8000

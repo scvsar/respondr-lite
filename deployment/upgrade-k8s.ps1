@@ -57,6 +57,13 @@ param(
 # Script variables
 $ErrorActionPreference = "Stop"
 $deploymentName = "respondr-deployment"
+try {
+    if (Test-Path (Join-Path $PSScriptRoot 'values.yaml')) {
+        $vals = Get-Content (Join-Path $PSScriptRoot 'values.yaml') -Raw
+        $m = ($vals | Select-String 'appName: "([^"]+)"').Matches
+        if ($m.Count -gt 0) { $deploymentName = "$($m[0].Groups[1].Value)-deployment" }
+    }
+} catch {}
 $containerName = "respondr"
 
 Write-Host "Respondr Kubernetes Upgrade Script" -ForegroundColor Green

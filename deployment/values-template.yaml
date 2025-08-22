@@ -18,6 +18,20 @@ azureOpenAIEndpoint: ""
 azureOpenAIDeployment: ""
 azureOpenAIApiVersion: ""
 
+# Storage Configuration
+storageBackend: "redis"  # Options: redis, azure_table, file, memory
+storageFallback: "memory"  # Options: memory, file, redis (different from primary)
+
+# Azure Storage (when using azure_table backend)
+azureStorageAccountName: ""
+azureStorageAccountKey: ""
+azureStorageTableName: "responderMessages"
+
+# Redis Configuration (when using redis backend)
+redisHost: "respondr-redis"
+redisPort: "6379"
+redisDb: "0"
+
 # OAuth2 Configuration
 oauth2ClientId: ""
 oauth2TenantId: ""  # kept for backward compatibility if single-tenant is desired
@@ -37,4 +51,5 @@ hostname: ""
 
 # Application Configuration
 namespace: "respondr"
+appName: "respondr"
 replicas: 2

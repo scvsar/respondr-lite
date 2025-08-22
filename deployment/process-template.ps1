@@ -40,8 +40,12 @@ $templateContent = Get-Content $TemplateFile -Raw
 $processedContent = $templateContent
 
 # Replace all known placeholders with comprehensive mapping
+# Prefer explicit appName, fallback to namespace, then imageName, else 'respondr'
+$appNameValue = if ($values.ContainsKey('appName') -and $values['appName']) { $values['appName'] } elseif ($values['namespace']) { $values['namespace'] } elseif ($values['imageName']) { $values['imageName'] } else { 'respondr' }
+
 $placeholderMap = @{
-    '{{ACR_IMAGE_PLACEHOLDER}}' = "$($values['acrLoginServer'])/$($values['imageName']):$($values['imageTag'])"
+    # Always use the resolved app name for the image repository to avoid drift
+    '{{ACR_IMAGE_PLACEHOLDER}}' = "$($values['acrLoginServer'])/${appNameValue}:$($values['imageTag'])"
     '{{HOSTNAME_PLACEHOLDER}}' = $values['hostname']
     '{{TENANT_ID_PLACEHOLDER}}' = $values['azureTenantId']
     '{{CLIENT_ID_PLACEHOLDER}}' = $values['oauth2ClientId']
@@ -49,18 +53,16 @@ $placeholderMap = @{
     '{{NAMESPACE_PLACEHOLDER}}' = $values['namespace']
     '{{DOMAIN_PLACEHOLDER}}' = $values['domain']
     '{{REPLICAS_PLACEHOLDER}}' = $values['replicas']
+    '{{APP_NAME}}' = $appNameValue
     # Computed placeholders handled later; do NOT include them in the first pass
 }
 
-# Apply all basic placeholder replacements (always replace, even if empty)
+# Apply all basic placeholder replacements (always replace; treat null as empty string)
 foreach ($placeholder in $placeholderMap.Keys) {
-    $value = $placeholderMap[$placeholder]
-    $processedContent = $processedContent -replace [regex]::Escape($placeholder), ($value -ne $null ? $value : '')
-    if ($value -ne $null -and $value -ne '') {
-        Write-Verbose "Replaced: $placeholder -> $value"
-    } else {
-        Write-Verbose "No value for placeholder: $placeholder (left empty)"
-    }
+    $raw = $placeholderMap[$placeholder]
+    $replacement = if ($null -eq $raw) { '' } else { [string]$raw }
+    $processedContent = $processedContent -replace [regex]::Escape($placeholder), $replacement
+    if ($replacement -ne '') { Write-Verbose "Replaced: $placeholder -> $replacement" } else { Write-Verbose "No value for placeholder: $placeholder (empty)" }
 }
 
 # Compute multi-tenant issuer segment and email domain args
@@ -270,8 +272,9 @@ if ($remainingPlaceholders.Count -gt 0) {
 
 # Display key replacements made
 Write-Host "🔍 Key replacements made:" -ForegroundColor Cyan
-Write-Host "   Image: $($values['acrLoginServer'])/$($values['imageName']):$($values['imageTag'])" -ForegroundColor White
+Write-Host "   Image: $($values['acrLoginServer'])/${appNameValue}:$($values['imageTag'])" -ForegroundColor White
 Write-Host "   Hostname: $($values['hostname'])" -ForegroundColor White
 Write-Host "   Tenant ID: $($values['azureTenantId'])" -ForegroundColor White
 Write-Host "   Client ID: $($values['oauth2ClientId'])" -ForegroundColor White
 Write-Host "   Use OAuth2: $($values['useOAuth2'])" -ForegroundColor White
+Write-Host "   App Name: $appNameValue" -ForegroundColor White

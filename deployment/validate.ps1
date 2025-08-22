@@ -98,7 +98,15 @@ function Invoke-EnvValidation {
 function Invoke-AppValidation {
     Write-Host "\n[Phase] App validation (post-deploy smoke)" -ForegroundColor Yellow
     # Deployment readiness
-    $dep = kubectl get deploy respondr-deployment -n $Namespace -o json 2>$null | ConvertFrom-Json
+    $appName = "respondr"
+    try {
+        if (Test-Path (Join-Path $PSScriptRoot 'values.yaml')) {
+            $vals = Get-Content (Join-Path $PSScriptRoot 'values.yaml') -Raw
+            $m = ($vals | Select-String 'appName: "([^"]+)"').Matches
+            if ($m.Count -gt 0) { $appName = $m[0].Groups[1].Value }
+        }
+    } catch {}
+    $dep = kubectl get deploy "$appName-deployment" -n $Namespace -o json 2>$null | ConvertFrom-Json
     if ($dep) {
         $available = ($dep.status.availableReplicas -ge 1)
         if ($available) { Write-Host "✓ Deployment has available replicas" -ForegroundColor Green }
@@ -106,7 +114,7 @@ function Invoke-AppValidation {
     } else { Write-Host "ℹ️ Deployment not found yet" -ForegroundColor Cyan }
 
     # Ingress IP
-    $ingressIp = kubectl get ingress respondr-ingress -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
+    $ingressIp = kubectl get ingress "$appName-ingress" -n $Namespace -o jsonpath="{.status.loadBalancer.ingress[0].ip}" 2>$null
     if ($ingressIp) { Write-Host "✓ Ingress IP: $ingressIp" -ForegroundColor Green } else { Write-Host "ℹ️ Ingress IP not assigned yet" -ForegroundColor Cyan }
 
     # Cert status

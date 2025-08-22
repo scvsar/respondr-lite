@@ -8,6 +8,7 @@ param(
     [string]$Location = "eastus2",
     [string]$Namespace = "respondr",
     [string]$HostPrefix = "respondr",
+    [string]$AppName = "respondr",
     [switch]$SkipInfrastructure,
     [switch]$SkipImageBuild,
     [bool]$UseOAuth2 = $true,
@@ -34,6 +35,7 @@ $genArgs = @{
     Namespace           = $Namespace
     HostPrefix          = $HostPrefix
 }
+if ($AppName) { $genArgs.AppName = $AppName }
 if ($AllowedEmailDomains) { $genArgs.AllowedEmailDomains = $AllowedEmailDomains }
 if ($AllowedAdminUsers)   { $genArgs.AllowedAdminUsers   = $AllowedAdminUsers }
 & ".\generate-values.ps1" @genArgs
@@ -106,7 +108,7 @@ if ($LASTEXITCODE -ne 0) {
 
 # Wait for deployment
 Write-Host "⏳ Waiting for deployment to be ready..." -ForegroundColor Yellow
-kubectl rollout status deployment/respondr-deployment -n $Namespace --timeout=300s
+kubectl rollout status deployment/$AppName-deployment -n $Namespace --timeout=300s
 
 # Step 7: Verification
 Write-Host "✅ Step 7: Verifying deployment..." -ForegroundColor Green
@@ -138,3 +140,5 @@ if ($SetupAcrWebhook) {
     
     & ".\configure-acr-webhook.ps1" -ResourceGroupName $ResourceGroupName -Domain $Domain -Environment $Environment -HostPrefix $HostPrefix
 }
+
+

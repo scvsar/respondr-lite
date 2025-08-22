@@ -214,6 +214,7 @@ backend/respondr_messages.json
 # Template-based deployment - generated files (never commit)
 deployment/values.yaml
 deployment/secrets.yaml
+deployment/secrets*.yaml
 deployment/respondr-k8s-generated.yaml
 deployment/respondr-k8s-*.yaml
 !deployment/respondr-k8s-*-template.yaml
@@ -229,3 +230,8 @@ deployment/current-working-deployment.yaml
 _attic/test_results.txt
 _attic/*_results.txt
 _attic/test_*.txt
+
+preprod_test*.json
+prod_responders.json
+groupme_*_messages.json
+*.ipynb
