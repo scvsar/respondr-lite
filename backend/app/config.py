@@ -100,11 +100,30 @@ DEBUG_FULL_LLM_LOG = os.getenv("DEBUG_FULL_LLM_LOG", "").lower() in ("1", "true"
 
 # LLM token configuration (defaults with env overrides)
 # Default number of completion tokens to request from the model, unless overridden per-request
-DEFAULT_MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "768"))
+DEFAULT_MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "1024"))
 # Minimum allowed when clamping user overrides or internal adjustments
 MIN_COMPLETION_TOKENS = int(os.getenv("MIN_COMPLETION_TOKENS", "128"))
 # Upper cap for retries and overrides to avoid runaway costs
 MAX_COMPLETION_TOKENS_CAP = int(os.getenv("MAX_COMPLETION_TOKENS_CAP", "2048"))
+
+# LLM reasoning and verbosity configuration
+def _validate_llm_config():
+    """Validate and return LLM configuration values with defaults."""
+    # Reasoning effort level: "minimal", "low", "medium", "high"
+    reasoning_effort = os.getenv("LLM_REASONING_EFFORT", "medium").lower().strip()
+    if reasoning_effort not in ("minimal", "low", "medium", "high"):
+        logger.warning(f"Invalid LLM_REASONING_EFFORT '{reasoning_effort}', defaulting to 'medium'")
+        reasoning_effort = "medium"
+    
+    # Verbosity level: "low", "medium", "high"
+    verbosity = os.getenv("LLM_VERBOSITY", "low").lower().strip()
+    if verbosity not in ("low", "medium", "high"):
+        logger.warning(f"Invalid LLM_VERBOSITY '{verbosity}', defaulting to 'low'")
+        verbosity = "low"
+    
+    return reasoning_effort, verbosity
+
+LLM_REASONING_EFFORT, LLM_VERBOSITY = _validate_llm_config()
 
 # ACR webhook configuration
 ACR_WEBHOOK_TOKEN = os.getenv("ACR_WEBHOOK_TOKEN")
@@ -113,8 +132,8 @@ K8S_DEPLOYMENT = os.getenv("K8S_DEPLOYMENT", "respondr-deployment")
 
 # Hostname redirect configuration
 PRIMARY_HOSTNAME = os.getenv("PRIMARY_HOSTNAME", "respondr.scvsar.app")
-LEGACY_HOSTNAMES = os.getenv("LEGACY_HOSTNAMES", "").split(",")
-LEGACY_HOSTNAMES = [h.strip() for h in LEGACY_HOSTNAMES if h.strip()]
+_raw_legacy_hostnames = os.getenv("LEGACY_HOSTNAMES", "").split(",")
+LEGACY_HOSTNAMES = [h.strip() for h in _raw_legacy_hostnames if h.strip()]
 
 # GroupMe Group ID to Team mapping
 GROUP_ID_TO_TEAM: Dict[str, str] = {
