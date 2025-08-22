@@ -59,7 +59,7 @@ $headersArg = "X-ACR-Token=$acrWebhookToken"
 
 # Define environment-specific scope to prevent cross-environment restarts
 $scope = if ($Environment -eq "preprod") { 
-    "respondr:preprod*"  # Only preprod tags
+    "respondr:preprod"  # Only preprod tags
 } else { 
     "respondr:latest"    # Only latest tag for main/production
 }
