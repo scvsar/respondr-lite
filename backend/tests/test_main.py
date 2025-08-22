@@ -44,22 +44,16 @@ def test_webhook_endpoint(mock_openai_response):
     # Use a test messages list
     test_messages = []
     
-    # Mock the response to not use function calling for this test
-    mock_openai_response.choices = [
-        MagicMock(
-            message=MagicMock(
-                content='{"vehicle": "SAR-78", "eta_iso": "2025-01-01T15:45:00Z", "status":"Responding", "confidence":0.9}',
-                function_call=None
-            )
-        )
-    ]
-    
-    # Create a mock client that we can patch
-    mock_client = MagicMock()
-    mock_client.chat.completions.create.return_value = mock_openai_response
+    # Mock the LLM response directly at the function level
+    mock_llm_response = {
+        "vehicle": "SAR-78",
+        "eta_iso": "2025-01-01T15:45:00Z", 
+        "status": "Responding",
+        "confidence": 0.9
+    }
     
     with patch('main.messages', test_messages), \
-         patch('app.llm.client', mock_client):
+         patch('app.llm._call_llm_only', return_value=mock_llm_response):
         
         webhook_data = {
             "name": "Test User",
@@ -90,42 +84,30 @@ def test_webhook_endpoint(mock_openai_response):
 
 def test_extract_details_with_vehicle_and_eta():
     """Test extracting details with both vehicle and ETA present"""
-    # Create a mock client
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.choices = [
-        MagicMock(
-            message=MagicMock(
-                content='{"vehicle": "SAR-78", "eta_iso": "2025-01-01T15:30:00Z", "status":"Responding", "confidence":0.8}',
-                function_call=None
-            )
-        )
-    ]
-    mock_client.chat.completions.create.return_value = mock_response
+    # Mock the LLM response directly at the function level
+    mock_llm_response = {
+        "vehicle": "SAR-78",
+        "eta_iso": "2025-01-01T15:30:00Z", 
+        "status": "Responding",
+        "confidence": 0.8
+    }
     
-    with patch('app.llm.client', mock_client):
-        
+    with patch('app.llm._call_llm_only', return_value=mock_llm_response):
         result = extract_details_from_text("Taking SAR78, ETA 15 minutes")
     assert result["vehicle"] == "SAR-78"
     assert re.match(r"\d{2}:\d{2}", result["eta"]) 
 
 def test_extract_details_with_pov():
     """Test extracting details with POV vehicle"""
-    # Create a mock client
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.choices = [
-        MagicMock(
-            message=MagicMock(
-                content='{"vehicle": "POV", "eta_iso": "2025-01-01T23:30:00Z", "status":"Responding", "confidence":0.7}',
-                function_call=None
-            )
-        )
-    ]
-    mock_client.chat.completions.create.return_value = mock_response
+    # Mock the LLM response directly at the function level
+    mock_llm_response = {
+        "vehicle": "POV",
+        "eta_iso": "2025-01-01T23:30:00Z", 
+        "status": "Responding",
+        "confidence": 0.7
+    }
     
-    with patch('app.llm.client', mock_client):
-        
+    with patch('app.llm._call_llm_only', return_value=mock_llm_response):
         result = extract_details_from_text("Taking my personal vehicle, ETA 23:30")
     assert result["vehicle"] == "POV"
     assert re.match(r"\d{2}:\d{2}", result["eta"])  # derived from eta_iso
