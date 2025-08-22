@@ -18,7 +18,7 @@ Archived scripts and experimental tests live under `_attic/` (see `_attic/WHY.md
 - Single, template‑driven Kubernetes manifest
 - Optional ACR webhook to auto‑rollout on new images
 
-## Topology (high level)
+## High level topology
 
 ```
 GroupMe → Webhook Caller                    ACR → ACR Webhook  
