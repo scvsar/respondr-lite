@@ -2,7 +2,6 @@
 """
 Run working pytest tests for the Respondr backend
 """
-import os
 import sys
 
 def main():
@@ -13,7 +12,10 @@ def main():
     working_tests = [
         "tests/test_hostname_redirects_working.py",
         "tests/test_storage_working.py", 
-        "tests/test_main.py"
+        "tests/test_main.py",
+        "tests/test_acr_webhook.py",
+        "tests/test_hostname_redirect_direct.py",
+        "tests/test_hostname_redirect_integration.py"
     ]
     
     # Import pytest and run tests directly to avoid subprocess hanging
