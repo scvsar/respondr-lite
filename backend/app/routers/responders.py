@@ -4,7 +4,6 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Request, Depends
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..config import APP_TZ, GROUP_ID_TO_TEAM, allowed_email_domains, allowed_admin_users, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing
@@ -119,7 +118,7 @@ class UndeleteRequest(BaseModel):
 
 
 @router.get("/api/responders")
-async def get_responders(_: bool = Depends(require_authenticated_access)):
+async def get_responders(_: bool = Depends(require_authenticated_access)) -> List[Dict[str, Any]]:
     """Get all active responder messages."""
     try:
         messages = get_messages()
@@ -130,7 +129,7 @@ async def get_responders(_: bool = Depends(require_authenticated_access)):
 
 
 @router.get("/api/current-status")
-async def get_current_status(_: bool = Depends(require_authenticated_access)):
+async def get_current_status(_: bool = Depends(require_authenticated_access)) -> List[Dict[str, Any]]:
     """Get current status per person (latest message per person with priority logic)."""
     try:
         messages = get_messages()
@@ -149,7 +148,7 @@ async def get_current_status(_: bool = Depends(require_authenticated_access)):
                 except Exception:
                     return datetime.min.replace(tzinfo=timezone.utc)
         
-        latest_by_person = {}
+        latest_by_person: Dict[str, Dict[str, Any]] = {}
         sorted_messages = sorted(messages, key=lambda x: _coerce_dt(x.get('timestamp_utc') or x.get('timestamp')))
         
         for msg in sorted_messages:
@@ -195,7 +194,7 @@ async def get_current_status(_: bool = Depends(require_authenticated_access)):
                     latest_by_person[name]['_priority'] = priority
         
         # Convert to result list and remove priority field
-        result = []
+        result: List[Dict[str, Any]] = []
         for person_data in latest_by_person.values():
             person_data.pop('_priority', None)
             result.append(person_data)
@@ -211,7 +210,7 @@ async def get_current_status(_: bool = Depends(require_authenticated_access)):
 
 
 @router.post("/api/responders")
-async def create_responder(data: Dict[str, Any], _: bool = Depends(require_admin_access)):
+async def create_responder(data: Dict[str, Any], _: bool = Depends(require_admin_access)) -> Dict[str, Any]:
     """Create a new responder message manually."""
     try:
         # Process the input data
@@ -232,7 +231,7 @@ async def create_responder(data: Dict[str, Any], _: bool = Depends(require_admin
         team = GROUP_ID_TO_TEAM.get(group_id, "Manual") if group_id != "manual" else "Manual"
         
         # Create message
-        message = {
+        message: Dict[str, Any] = {
             "id": msg_id,
             "name": data.get("name", "Unknown"),
             "text": data.get("text", ""),
@@ -262,11 +261,11 @@ async def create_responder(data: Dict[str, Any], _: bool = Depends(require_admin
 
 
 @router.put("/api/responders/{msg_id}")
-async def update_responder(msg_id: str, update: ResponderUpdate, _: bool = Depends(require_admin_access)):
+async def update_responder(msg_id: str, update: ResponderUpdate, _: bool = Depends(require_admin_access)) -> Dict[str, Any]:
     """Update an existing responder message."""
     try:
         # Prepare updates
-        updates = {}
+        updates: Dict[str, Any] = {}
         if update.name is not None:
             updates["name"] = update.name
         if update.vehicle is not None:
@@ -310,7 +309,7 @@ async def update_responder(msg_id: str, update: ResponderUpdate, _: bool = Depen
 
 
 @router.delete("/api/responders/{msg_id}")
-async def delete_responder(msg_id: str, _: bool = Depends(require_admin_access)):
+async def delete_responder(msg_id: str, _: bool = Depends(require_admin_access)) -> Dict[str, str]:
     """Soft delete a responder message."""
     try:
         success = delete_message(msg_id)
@@ -327,7 +326,7 @@ async def delete_responder(msg_id: str, _: bool = Depends(require_admin_access))
 
 
 @router.post("/api/responders/bulk-delete")
-async def bulk_delete_responders(request: BulkDeleteRequest, _: bool = Depends(require_admin_access)):
+async def bulk_delete_responders(request: BulkDeleteRequest, _: bool = Depends(require_admin_access)) -> Dict[str, Any]:
     """Bulk delete multiple responder messages."""
     try:
         deleted_count = bulk_delete_messages(request.ids)
@@ -339,7 +338,7 @@ async def bulk_delete_responders(request: BulkDeleteRequest, _: bool = Depends(r
 
 
 @router.post("/api/clear-all")
-async def clear_all_responders(_: bool = Depends(require_admin_access)):
+async def clear_all_responders(_: bool = Depends(require_admin_access)) -> Dict[str, Any]:
     """Clear all active responders (soft delete)."""
     try:
         deleted_count = clear_all_messages()
@@ -351,7 +350,7 @@ async def clear_all_responders(_: bool = Depends(require_admin_access)):
 
 
 @router.get("/api/deleted-responders")
-async def get_deleted_responders(_: bool = Depends(require_admin_access)):
+async def get_deleted_responders(_: bool = Depends(require_admin_access)) -> List[Dict[str, Any]]:
     """Get all soft-deleted responder messages."""
     try:
         return get_deleted_messages()
@@ -361,7 +360,7 @@ async def get_deleted_responders(_: bool = Depends(require_admin_access)):
 
 
 @router.post("/api/deleted-responders/undelete")
-async def undelete_responder(request: UndeleteRequest, _: bool = Depends(require_admin_access)):
+async def undelete_responder(request: UndeleteRequest, _: bool = Depends(require_admin_access)) -> Dict[str, Any]:
     """Restore a deleted responder message."""
     try:
         success = undelete_message(request.message_id)
@@ -385,7 +384,7 @@ async def undelete_responder(request: UndeleteRequest, _: bool = Depends(require
 
 
 @router.delete("/api/deleted-responders/{msg_id}")
-async def permanently_delete_responder(msg_id: str, _: bool = Depends(require_admin_access)):
+async def permanently_delete_responder(msg_id: str, _: bool = Depends(require_admin_access)) -> Dict[str, str]:
     """Permanently delete a responder message."""
     try:
         success = permanently_delete_message(msg_id)
@@ -402,7 +401,7 @@ async def permanently_delete_responder(msg_id: str, _: bool = Depends(require_ad
 
 
 @router.post("/api/deleted-responders/clear-all")
-async def clear_all_deleted(_: bool = Depends(require_admin_access)):
+async def clear_all_deleted(_: bool = Depends(require_admin_access)) -> Dict[str, Any]:
     """Permanently delete all soft-deleted messages."""
     try:
         deleted_count = clear_all_deleted_messages()
@@ -414,7 +413,7 @@ async def clear_all_deleted(_: bool = Depends(require_admin_access)):
 
 
 @router.get("/api/storage-info")
-async def get_storage_status():
+async def get_storage_status() -> Dict[str, Any]:
     """Get current storage backend status and configuration."""
     try:
         storage_info = get_storage_info()
