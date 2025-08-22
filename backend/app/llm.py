@@ -9,7 +9,8 @@ from openai.types.chat import ChatCompletionMessageParam
 from .config import (
     azure_openai_api_key, azure_openai_endpoint, azure_openai_deployment,
     azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ,
-    DEFAULT_MAX_COMPLETION_TOKENS, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_CAP
+    DEFAULT_MAX_COMPLETION_TOKENS, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_CAP,
+    LLM_REASONING_EFFORT, LLM_VERBOSITY
 )
 from .utils import extract_eta_from_text_local, extract_duration_eta, compute_eta_fields, now_tz
 
@@ -134,11 +135,19 @@ def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
         "presence_penalty": 0,
         "frequency_penalty": 0,
     }
+    
+    # Use configured values from config.py as defaults
+    kw["verbosity"] = LLM_VERBOSITY
+    kw["reasoning_effort"] = LLM_REASONING_EFFORT
+    
+    # Model-specific overrides (if needed for specific models)
     if re.search(r"gpt-5-(nano|mini)", model_name or "", re.I):
-        kw["verbosity"] = "low"           # some models support this
-        kw["reasoning_effort"] = "low"    # some models support this
-    elif re.search(r"(gpt-5(?!-(nano|mini))|o3|gpt-4\.1|gpt-4o)", model_name or "", re.I):
-        kw["reasoning_effort"] = "medium"
+        # For nano/mini models, use lower settings if not already low
+        if LLM_VERBOSITY not in ("low",):
+            kw["verbosity"] = "low"
+        if LLM_REASONING_EFFORT not in ("minimal", "low"):
+            kw["reasoning_effort"] = "low"
+    
     return kw
 
 
