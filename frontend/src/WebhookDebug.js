@@ -46,11 +46,14 @@ export default function WebhookDebug() {
 
   const autoResize = useCallback((el) => {
     if (!el) return;
-    
+    // Preserve scroll position so page doesn't jump while resizing
+    const { scrollX, scrollY } = window;
     // Reset height to allow shrink, then expand to content
     el.style.height = 'auto';
     const nextHeight = el.scrollHeight;
     el.style.height = `${nextHeight}px`;
+    // Restore prior scroll position
+    window.scrollTo(scrollX, scrollY);
   }, []);
 
   // Simple resize on input - no debouncing, just immediate resize
@@ -360,10 +363,7 @@ export default function WebhookDebug() {
                         rows={1}
                         style={{ overflow: 'hidden', willChange: 'height' }}
                         value={userPrompt}
-                        onChange={e => {
-                          setUserPrompt(e.target.value);
-                          handleInput(e.target); // Fallback: ensure resize on change
-                        }}
+                        onChange={e => setUserPrompt(e.target.value)}
                         onInput={e => handleInput(e.target)}
                         disabled={!overrideEnabled}
                       />
