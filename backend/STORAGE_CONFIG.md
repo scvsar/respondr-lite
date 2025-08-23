@@ -1,13 +1,12 @@
 # Storage Configuration Guide
 
-Respondr now supports multiple storage backends with automatic fallback capabilities.
+Respondr uses Azure Table Storage for persistence with optional file or in-memory fallback.
 
 ## Environment Variables
 
 ### Primary Storage Backend
 Set `STORAGE_BACKEND` to choose your primary storage:
-- `redis` (default) - Use Redis for storage
-- `azure_table` - Use Azure Table Storage
+- `azure_table` (default) - Use Azure Table Storage
 - `file` - Use JSON files on disk
 - `memory` - Use in-memory storage (not persistent)
 
@@ -15,12 +14,6 @@ Set `STORAGE_BACKEND` to choose your primary storage:
 Set `STORAGE_FALLBACK` to choose fallback when primary fails:
 - `memory` (default) - Use in-memory storage as fallback
 - `file` - Use JSON files as fallback
-- `redis` - Use Redis as fallback (if primary is not redis)
-
-### Redis Configuration
-- `REDIS_HOST` - Redis server hostname (default: localhost)
-- `REDIS_PORT` - Redis server port (default: 6379)
-- `REDIS_DB` - Redis database number (default: 0)
 
 ### Azure Table Storage Configuration
 - `AZURE_STORAGE_CONNECTION_STRING` - Azure Storage connection string
@@ -32,15 +25,7 @@ Set `STORAGE_FALLBACK` to choose fallback when primary fails:
 
 ## Example Configurations
 
-### Redis Primary, Memory Fallback (Default)
-```bash
-STORAGE_BACKEND=redis
-STORAGE_FALLBACK=memory
-REDIS_HOST=localhost
-REDIS_PORT=6379
-```
-
-### Azure Table Primary, File Fallback
+### Azure Table Primary, File Fallback (Default)
 ```bash
 STORAGE_BACKEND=azure_table
 STORAGE_FALLBACK=file
@@ -83,5 +68,4 @@ to avoid conflicts with production data.
 
 ## Migration Notes
 
-This new storage system is backwards compatible with existing Redis-based storage.
-All existing functions continue to work unchanged.
+Redis support has been removed. Azure Table Storage is now the primary persistence mechanism.

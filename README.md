@@ -14,7 +14,7 @@ Archived scripts and experimental tests live under `_attic/` (see `_attic/WHY.md
 
 - Multi‑tenant Azure AD auth via OAuth2 Proxy sidecar (domain‑based allow list)
 - AI‑assisted message parsing (vehicle + ETA to HH:MM)
-- Redis for shared state across replicas
+- Azure Table Storage + Queue for shared state across replicas
 - Single, template‑driven Kubernetes manifest
 - Optional ACR webhook to auto‑rollout on new images
 
@@ -37,7 +37,7 @@ GroupMe → Webhook Caller                    ACR → ACR Webhook
        Respondr Backend (FastAPI)
         ├─ GroupMe: Azure OpenAI (extract vehicle, ETA)
         ├─ Normalize ETA → HH:MM; compute minutes/status
-        ├─ Persist to Redis (shared state)
+        ├─ Persist to Azure Table Storage
         └─ ACR: Validate token & trigger K8s restart
            │
            ▼
@@ -65,7 +65,7 @@ Notes
 
 - FastAPI backend + React frontend
 - OAuth2 Proxy for Azure AD/Entra auth (multi‑tenant)
-- Redis for shared state across replicas
+- Azure Table Storage + Queue for shared state across replicas
 - Containerized, Kubernetes‑ready with AGIC + Let’s Encrypt
 
 ## End‑to‑end deployment (recommended)
@@ -359,7 +359,6 @@ cd deployment
 kubectl create namespace respondr-preprod --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n respondr get secret respondr-secrets -o yaml | `
   sed 's/namespace: respondr/namespace: respondr-preprod/' | kubectl apply -f -
-kubectl apply -f redis-deployment.yaml -n respondr-preprod
 kubectl apply -f respondr-k8s-generated.yaml -n respondr-preprod
 ```
 
@@ -367,10 +366,10 @@ Add a DNS A record for your preprod host to the same App Gateway IP and wait for
 
 ## Soft delete and recovery (safety net for deletes)
 
-Deletes in the UI are “soft deletes.” Instead of permanently removing data, entries are moved to a separate Redis key so you can review and restore if needed.
+Deletes in the UI are “soft deletes.” Instead of permanently removing data, entries are moved to a separate Azure Table partition so you can review and restore if needed.
 
-- Active messages Redis key: `respondr_messages`
-- Deleted messages Redis key: `respondr_deleted_messages`
+- Active messages partition: `messages`
+- Deleted messages partition: `deleted`
 
 New endpoints (OAuth2‑protected via ingress):
 - `GET /api/deleted-responders` → list deleted messages (includes `deleted_at` timestamps)

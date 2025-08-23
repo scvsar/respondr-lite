@@ -4,6 +4,10 @@ import os
 
 import azure.functions as func
 from azure.storage.queue import QueueClient
+from dotenv import load_dotenv
+
+# Load environment variables from .env for local testing
+load_dotenv()
 
 
 def main(req: func.HttpRequest) -> func.HttpResponse:

@@ -160,7 +160,7 @@ def get_pod_info():
 @router.post("/cleanup/invalid-timestamps")
 def cleanup_invalid_timestamps():
     """Clean up messages with invalid timestamp formats."""
-    # This endpoint would need access to Redis storage layer
+    # This endpoint would need access to the storage layer
     # For now, return a placeholder response
     logger.info("Cleanup invalid timestamps endpoint called")
     return {
