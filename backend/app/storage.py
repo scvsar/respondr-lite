@@ -1,8 +1,8 @@
 """
 Unified storage manager for Respondr with pluggable backends and automatic fallback.
 
-This module provides a seamless storage abstraction that can work with Redis,
-Azure Table Storage, file-based storage, or in-memory storage with automatic
+This module provides a seamless storage abstraction that can work with Azure
+Table Storage, file-based storage, or in-memory storage with automatic
 fallback when primary storage is unavailable.
 """
 
@@ -13,10 +13,10 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from .storage_backends import (
-    BaseStorage, StorageBackend, MemoryStorage, RedisStorage, 
+    BaseStorage, StorageBackend, MemoryStorage,
     FileStorage, AzureTableStorage
 )
-from .config import REDIS_HOST, REDIS_PORT, REDIS_DB, REDIS_KEY, REDIS_DELETED_KEY, is_testing
+from .config import is_testing
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class StorageManager:
     - Configurable primary and fallback storage backends
     - Automatic failover when primary storage is unavailable
     - Seamless API that abstracts storage implementation details
-    - Support for Redis, Azure Table Storage, file, and in-memory storage
+    - Support for Azure Table Storage, file, and in-memory storage
     """
     
     def __init__(self):
@@ -55,7 +55,7 @@ class StorageManager:
             return
         
         # Determine primary backend from config
-        primary_type = os.getenv("STORAGE_BACKEND", "redis").lower()
+        primary_type = os.getenv("STORAGE_BACKEND", "azure_table").lower()
         fallback_type = os.getenv("STORAGE_FALLBACK", "memory").lower()
         
         logger.info(f"Configuring storage: primary={primary_type}, fallback={fallback_type}")
@@ -75,29 +75,20 @@ class StorageManager:
     
     def _create_backend(self, backend_type: str) -> BaseStorage:
         """Create a storage backend instance."""
-        
-        if backend_type == "redis":
-            return RedisStorage(
-                host=REDIS_HOST, 
-                port=REDIS_PORT, 
-                db=REDIS_DB,
-                messages_key=REDIS_KEY,
-                deleted_key=REDIS_DELETED_KEY
-            )
-        
-        elif backend_type == "azure_table":
+
+        if backend_type == "azure_table":
             connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
             table_name = os.getenv("AZURE_TABLE_NAME", "responderMessages")
             return AzureTableStorage(connection_string, table_name)
-        
+
         elif backend_type == "file":
             messages_file = os.getenv("STORAGE_MESSAGES_FILE", "messages.json")
             deleted_file = os.getenv("STORAGE_DELETED_FILE", "deleted_messages.json")
             return FileStorage(messages_file, deleted_file)
-        
+
         elif backend_type == "memory":
             return MemoryStorage()
-        
+
         else:
             logger.warning(f"Unknown storage backend '{backend_type}', falling back to memory")
             return MemoryStorage()
@@ -315,20 +306,6 @@ def get_storage_info() -> Dict[str, Any]:
     return _storage_manager.get_storage_info()
 
 
-# Legacy Redis client function for backwards compatibility
-def get_redis_client():
-    """Get Redis client or None if not available."""
-    if is_testing:
-        return None
-    
-    current_backend = _storage_manager.current_backend
-    if (current_backend and 
-        current_backend.backend_type == StorageBackend.REDIS and
-        hasattr(current_backend, '_client')):
-        # Type check: we know this is RedisStorage, so _client exists
-        redis_backend = current_backend  # type: ignore
-        return redis_backend._client  # type: ignore
-    return None
 
 
 # Legacy functions that might be used by other parts of the codebase

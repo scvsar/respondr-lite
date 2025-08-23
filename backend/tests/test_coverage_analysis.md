@@ -4,7 +4,7 @@
 
 ### 1. **Message Processing & Storage**
 - ✅ **Storage Layer** (`app/storage.py`)
-  - Redis-based message persistence
+  - Azure Table–based message persistence
   - In-memory fallback for testing
   - CRUD operations: get, add, update, delete messages
   - Soft delete functionality
@@ -71,11 +71,11 @@
 #### 1. **Storage Layer Testing**
 ```python
 # Missing: tests/test_storage.py
-- Redis connection and fallback testing
+- Azure Table connection and fallback testing
 - CRUD operation validation
 - Soft delete functionality
 - Data persistence and retrieval
-- Error handling for Redis failures
+- Error handling for storage failures
 ```
 
 #### 2. **LLM Processing Testing**
@@ -132,7 +132,7 @@
 
 #### A. **Storage Comprehensive Testing**
 ```python
-def test_redis_connection_handling()
+def test_storage_connection_handling()
 def test_storage_crud_operations()
 def test_soft_delete_workflow()
 def test_bulk_operations()

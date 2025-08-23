@@ -2,8 +2,8 @@
 """
 Storage Fallback Test Script
 
-This script demonstrates the new storage abstraction layer with automatic fallback.
-It tests different scenarios including Redis unavailable and storage switching.
+This script demonstrates the storage abstraction layer with automatic fallback.
+It tests different scenarios including storage switching.
 """
 
 import os
@@ -81,7 +81,7 @@ def test_storage_fallback():
     print("Current storage configuration:")
     print_storage_status()
     
-    print(f"\nSTORAGE_BACKEND env var: {os.getenv('STORAGE_BACKEND', 'redis')}")
+    print(f"\nSTORAGE_BACKEND env var: {os.getenv('STORAGE_BACKEND', 'azure_table')}")
     print(f"STORAGE_FALLBACK env var: {os.getenv('STORAGE_FALLBACK', 'memory')}")
     
     # Test message persistence
@@ -109,7 +109,7 @@ def test_different_backends():
     print_section("Testing Different Backend Configurations")
     
     configs = [
-        ("Redis Primary, Memory Fallback", "redis", "memory"),
+        ("Azure Table Primary, File Fallback", "azure_table", "file"),
         ("Memory Primary, File Fallback", "memory", "file"),
         ("File Primary, Memory Fallback", "file", "memory"),
     ]

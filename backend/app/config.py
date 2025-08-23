@@ -56,12 +56,6 @@ def now_tz() -> datetime:
     return datetime.now(APP_TZ)
 
 
-# Redis configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "redis-service")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-REDIS_KEY = "respondr_messages"
-REDIS_DELETED_KEY = "respondr_deleted_messages"
 
 # Authentication and authorization
 webhook_api_key = os.getenv("WEBHOOK_API_KEY")

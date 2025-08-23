@@ -37,77 +37,6 @@ if ($Help) {
 Write-Host "🛠️  Respondr Local Development Setup" -ForegroundColor Green
 Write-Host "====================================" -ForegroundColor Green
 
-# Helpers: ensure Redis is available locally when not using Docker Compose
-function Test-RedisPort {
-    param([string]$RedisHost = 'localhost', [int]$RedisPort = 6379, [int]$TimeoutMs = 1000)
-    try {
-        $tcp = New-Object Net.Sockets.TcpClient
-        $iar = $tcp.BeginConnect($RedisHost, $RedisPort, $null, $null)
-        $success = $iar.AsyncWaitHandle.WaitOne($TimeoutMs, $false)
-        if ($success -and $tcp.Connected) { $tcp.Close(); return $true }
-        $tcp.Close(); return $false
-    } catch { return $false }
-}
-
-function Start-LocalRedis {
-    Write-Host "Checking for Docker to start Redis..." -ForegroundColor Yellow
-    $docker = Get-Command docker -ErrorAction SilentlyContinue
-    if (-not $docker) {
-        Write-Host "Docker not found; cannot auto-start Redis. Install Docker Desktop or run Redis manually." -ForegroundColor Red
-        return $false
-    }
-    $running = (& docker ps --filter "name=respondr-redis" --filter "status=running" --format "{{.Names}}")
-    if ($running) { Write-Host "Redis container already running (respondr-redis)" -ForegroundColor Green; return $true }
-    $exists = (& docker ps -a --filter "name=respondr-redis" --format "{{.Names}}")
-    if ($exists) { & docker rm -f respondr-redis | Out-Null }
-    Write-Host "Starting Redis container on port 6379..." -ForegroundColor Yellow
-    & docker run -d --name respondr-redis -p 6379:6379 redis:7-alpine | Out-Null
-    Start-Sleep -Seconds 2
-    return (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379)
-}
-
-function Ensure-Redis {
-    if (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379) {
-        Write-Host "✅ Redis detected at localhost:6379" -ForegroundColor Green
-        return $true
-    }
-    Write-Host "ℹ️  Redis not detected locally. Attempting to start a Docker Redis..." -ForegroundColor Yellow
-    $started = Start-LocalRedis
-    if ($started) { Write-Host "✅ Redis started at localhost:6379" -ForegroundColor Green; return $true }
-    Write-Host "⚠️  Could not start Redis automatically. The backend will run with in-memory storage only (data will reset on reload)." -ForegroundColor Yellow
-    return $false
-}
-
-function Clear-RedisMessages {
-    Write-Host "🧹 Clearing Redis message cache for fresh start..." -ForegroundColor Yellow
-    
-    # Check if Redis is available
-    if (-not (Test-RedisPort -RedisHost 'localhost' -RedisPort 6379)) {
-        Write-Host "⚠️  Redis not available, skipping cache clear" -ForegroundColor Yellow
-        return
-    }
-    
-    # Try to use redis-cli if available, otherwise use docker
-    $redisCli = Get-Command redis-cli -ErrorAction SilentlyContinue
-    if ($redisCli) {
-        Write-Host "Using redis-cli to clear cache..." -ForegroundColor Gray
-        & redis-cli FLUSHALL | Out-Null
-    } else {
-        # Try using docker to run redis-cli
-        $docker = Get-Command docker -ErrorAction SilentlyContinue
-        if ($docker) {
-            Write-Host "Using docker redis-cli to clear cache..." -ForegroundColor Gray
-            & docker exec respondr-redis redis-cli FLUSHALL 2>$null | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                # If respondr-redis doesn't exist, try connecting to any redis container or run a temp one
-                & docker run --rm --network host redis:7-alpine redis-cli -h localhost FLUSHALL 2>$null | Out-Null
-            }
-        }
-    }
-    
-    Write-Host "✅ Redis cache cleared" -ForegroundColor Green
-}
-
 # Build the React frontend production bundle
 function Build-Frontend {
     Write-Host "🏗️  Building frontend production bundle..." -ForegroundColor Yellow
@@ -187,11 +116,6 @@ if ($Docker) {
 
     taskkill /F /IM python.exe 2>$null | Out-Null
     taskkill /F /IM node.exe 2>$null | Out-Null
-    # Ensure Redis for local persistence
-    Ensure-Redis | Out-Null
-    
-    # Clear Redis messages for fresh start
-    Clear-RedisMessages
     
     # If building, do it before starting the backend so static files are mounted
     if ($Build) {
@@ -210,7 +134,7 @@ if ($Docker) {
     # Start backend in new terminal using venv python if available
     $venvPy = Join-Path $PWD "backend\.venv\Scripts\python.exe"
     $pyCmd = if (Test-Path $venvPy) { $venvPy } else { 'python' }
-    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:LOCAL_BYPASS_IS_ADMIN='true'; `$env:DISABLE_API_KEY_CHECK='true'; `$env:ALLOW_CLEAR_ALL='true'; `$env:REDIS_HOST='localhost'; `$env:REDIS_PORT='6379'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
+    Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$PWD\backend'; Write-Host 'Starting Backend...' -ForegroundColor Green; `$env:TIMEZONE='America/Los_Angeles'; `$env:ALLOW_LOCAL_AUTH_BYPASS='true'; `$env:LOCAL_BYPASS_IS_ADMIN='true'; `$env:DISABLE_API_KEY_CHECK='true'; `$env:ALLOW_CLEAR_ALL='true'; & '$pyCmd' -m uvicorn main:app --reload --host 0.0.0.0 --port 8000"
     
     # Wait a moment for backend to start
     Start-Sleep -Seconds 3
@@ -250,11 +174,6 @@ if ($Docker) {
     Write-Host "  .\dev-local.ps1 -Test" -ForegroundColor White
     Write-Host ""
 
-    # Ensure Redis for local persistence
-    Ensure-Redis | Out-Null
-    
-    # Clear Redis messages for fresh start
-    Clear-RedisMessages
     
     # Clear conflicting Azure OpenAI environment variables to ensure .env file is used
     Write-Host "Clearing conflicting Azure OpenAI environment variables..." -ForegroundColor Yellow
@@ -278,7 +197,5 @@ if ($Docker) {
     $env:LOCAL_BYPASS_IS_ADMIN='true'
     $env:DISABLE_API_KEY_CHECK='true'
     $env:ALLOW_CLEAR_ALL='true'
-    $env:REDIS_HOST='localhost'
-    $env:REDIS_PORT='6379'
     & $venvPy -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 }

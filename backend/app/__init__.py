@@ -1,11 +1,13 @@
 import os
 import logging
+import asyncio
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from .config import PRIMARY_HOSTNAME, LEGACY_HOSTNAMES
 from .routers import webhook, responders, dashboard, acr, user, frontend
+from .queue_listener import listen_to_queue
 
 logger = logging.getLogger(__name__)
 
@@ -60,3 +62,9 @@ frontend.mount_static_files(app)
 
 # Add SPA catch-all route (must be last)
 frontend.add_spa_catch_all(app)
+
+
+@app.on_event("startup")
+async def _start_queue_listener() -> None:
+    """Launch background task to process queue messages."""
+    asyncio.create_task(listen_to_queue())
