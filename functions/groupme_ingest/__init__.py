@@ -17,8 +17,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         body = req.get_json()
-    except ValueError:
-        return func.HttpResponse("Invalid JSON", status_code=400)
+    except ValueError as e:
+        logging.exception("Failed to parse JSON from request")
+        return func.HttpResponse(f"Invalid JSON: {e}", status_code=400)
 
     message = {
         "name": body.get("name"),
@@ -33,7 +34,11 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         logging.error("Missing queue configuration")
         return func.HttpResponse("Server error", status_code=500)
 
-    queue = QueueClient.from_connection_string(conn_str, queue_name)
-    queue.send_message(json.dumps(message))
+    try:
+        queue = QueueClient.from_connection_string(conn_str, queue_name)
+        queue.send_message(json.dumps(message))
+    except Exception as e:
+        logging.exception("Failed to send message to queue")
+        return func.HttpResponse(f"Queue error: {e}", status_code=500)
 
     return func.HttpResponse("OK", status_code=200)
