@@ -1,0 +1,71 @@
+param location string = resourceGroup().location
+param saName string
+param functionAppName string
+param tableName string = 'ResponderMessages'
+param queueName string = 'respondr-incoming'
+
+resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: saName
+  location: location
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    minimumTlsVersion: 'TLS1_2'
+  }
+}
+
+resource qsvc 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
+  name: 'default'
+  parent: sa
+}
+
+resource queue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = {
+  name: queueName
+  parent: qsvc
+}
+
+resource tsvc 'Microsoft.Storage/storageAccounts/tableServices@2023-01-01' = {
+  name: 'default'
+  parent: sa
+}
+
+resource table 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-01-01' = {
+  name: tableName
+  parent: tsvc
+}
+
+var storageConn = 'DefaultEndpointsProtocol=https;AccountName=' + sa.name + ';AccountKey=' + listKeys(sa.id, '2023-01-01').keys[0].value + ';EndpointSuffix=' + environment().suffixes.storage
+
+resource plan 'Microsoft.Web/serverfarms@2022-09-01' = {
+  name: '${functionAppName}-plan'
+  location: location
+  sku: {
+    name: 'Y1'
+    tier: 'Dynamic'
+  }
+}
+
+resource func 'Microsoft.Web/sites@2022-09-01' = {
+  name: functionAppName
+  location: location
+  kind: 'functionapp'
+  properties: {
+    serverFarmId: plan.id
+    siteConfig: {
+      appSettings: [
+        {
+          name: 'AzureWebJobsStorage'
+          value: storageConn
+        }
+        {
+          name: 'STORAGE_QUEUE_NAME'
+          value: queueName
+        }
+      ]
+    }
+  }
+}
+
+output functionEndpoint string = func.properties.defaultHostName
