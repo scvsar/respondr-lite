@@ -1,13 +1,4 @@
 services:
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-
   respondr:
     build:
       context: .
@@ -16,15 +7,12 @@ services:
       - "8000:8000"
     environment:
       - DEBUG=true
-      - REDIS_HOST=redis
-  - DISABLE_API_KEY_CHECK=true
+      - DISABLE_API_KEY_CHECK=true
     env_file:
       - backend/.env
     volumes:
       - ./backend:/app:ro  # Read-only for security
     restart: unless-stopped
-    depends_on:
-      - redis
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/responders"]
       interval: 30s
@@ -44,5 +32,3 @@ services:
     profiles:
       - nginx  # Only start with --profile nginx
 
-volumes:
-  redis_data:

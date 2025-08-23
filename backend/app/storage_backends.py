@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 class StorageBackend(Enum):
     """Available storage backend types."""
     MEMORY = "memory"
-    REDIS = "redis"
     AZURE_TABLE = "azure_table"
     FILE = "file"
 
@@ -86,121 +85,6 @@ class MemoryStorage(BaseStorage):
         return StorageBackend.MEMORY
 
 
-class RedisStorage(BaseStorage):
-    """Redis storage implementation."""
-    
-    def __init__(self, host: str = "localhost", port: int = 6379, db: int = 0, 
-                 messages_key: str = "respondr_messages", 
-                 deleted_key: str = "respondr_deleted_messages"):
-        self.host = host
-        self.port = port
-        self.db = db
-        self.messages_key = messages_key
-        self.deleted_key = deleted_key
-        self._client = None
-        self._last_health_check = 0
-        self._is_healthy_cached = False
-        
-        # Try to initialize connection
-        self._init_client()
-    
-    def _init_client(self):
-        """Initialize Redis client."""
-        try:
-            import redis
-            self._client = redis.Redis(
-                host=self.host,
-                port=self.port, 
-                db=self.db,
-                decode_responses=True,
-                socket_timeout=5,
-                socket_connect_timeout=5
-            )
-            # Test connection
-            self._client.ping()
-            logger.info(f"Connected to Redis at {self.host}:{self.port}/{self.db}")
-            self._is_healthy_cached = True
-        except Exception as e:
-            logger.warning(f"Redis connection failed: {e}")
-            self._client = None
-            self._is_healthy_cached = False
-    
-    def is_healthy(self) -> bool:
-        """Check Redis health with basic caching to avoid constant pings."""
-        current_time = datetime.now().timestamp()
-        
-        # Only check every 30 seconds
-        if current_time - self._last_health_check < 30:
-            return self._is_healthy_cached
-        
-        self._last_health_check = current_time
-        
-        if self._client is None:
-            self._init_client()
-        
-        if self._client is not None:
-            try:
-                self._client.ping()
-                self._is_healthy_cached = True
-                return True
-            except Exception as e:
-                logger.warning(f"Redis health check failed: {e}")
-                self._is_healthy_cached = False
-                self._client = None
-        
-        return False
-    
-    def get_messages(self) -> List[Dict[str, Any]]:
-        if not self.is_healthy() or self._client is None:
-            raise Exception("Redis not available")
-        
-        try:
-            data = self._client.get(self.messages_key)
-            if data and isinstance(data, str):
-                return json.loads(data)
-            return []
-        except Exception as e:
-            logger.error(f"Failed to get messages from Redis: {e}")
-            raise
-    
-    def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
-        if not self.is_healthy() or self._client is None:
-            return False
-        
-        try:
-            self._client.set(self.messages_key, json.dumps(messages))
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save messages to Redis: {e}")
-            return False
-    
-    def get_deleted_messages(self) -> List[Dict[str, Any]]:
-        if not self.is_healthy() or self._client is None:
-            raise Exception("Redis not available")
-        
-        try:
-            data = self._client.get(self.deleted_key)
-            if data and isinstance(data, str):
-                return json.loads(data)
-            return []
-        except Exception as e:
-            logger.error(f"Failed to get deleted messages from Redis: {e}")
-            raise
-    
-    def save_deleted_messages(self, messages: List[Dict[str, Any]]) -> bool:
-        if not self.is_healthy() or self._client is None:
-            return False
-        
-        try:
-            self._client.set(self.deleted_key, json.dumps(messages))
-            return True
-        except Exception as e:
-            logger.error(f"Failed to save deleted messages to Redis: {e}")
-            return False
-    
-    @property
-    def backend_type(self) -> StorageBackend:
-        return StorageBackend.REDIS
 
 
 class FileStorage(BaseStorage):

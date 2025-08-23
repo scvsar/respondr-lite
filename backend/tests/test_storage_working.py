@@ -21,14 +21,6 @@ class TestStorageInterface:
         assert hasattr(storage, 'add_message')
         assert hasattr(storage, 'update_message')
         assert hasattr(storage, 'delete_message')
-        assert hasattr(storage, 'get_redis_client')
-
-    def test_redis_client_creation(self):
-        """Test Redis client creation logic."""
-        # Test in testing mode
-        with patch('app.storage.is_testing', True):
-            client = storage.get_redis_client()
-            assert client is None  # Should return None in testing mode
 
     def test_get_messages_with_mocked_import(self):
         """Test get_messages when in testing mode with proper mocking."""
@@ -138,26 +130,6 @@ class TestStorageInterface:
                         
                         assert result is True
 
-    def test_in_memory_fallback_with_redis_disabled(self):
-        """Test that in-memory storage works as fallback when Redis is disabled."""
-        # When Redis is not available, and we mock get_messages to avoid main import
-        with patch('app.storage.get_redis_client', return_value=None):
-            with patch('app.storage.get_messages', return_value=[]):
-                # Test that we can call functions without errors
-                result = storage.get_redis_client()
-                assert result is None
-
-    def test_storage_error_handling(self):
-        """Test error handling in storage operations."""
-        # Test with Redis client that raises exceptions
-        mock_redis = MagicMock()
-        mock_redis.get.side_effect = Exception("Redis error")
-        
-        with patch('app.storage.get_redis_client', return_value=mock_redis):
-            with patch('app.storage.is_testing', False):  # Not in testing mode
-                # Should handle the error gracefully and return empty list
-                messages = storage.get_messages()
-                assert messages == []
 
     def test_bulk_operations_logic(self):
         """Test logic for bulk operations."""
