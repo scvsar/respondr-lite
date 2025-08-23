@@ -135,6 +135,7 @@ celerybeat.pid
 
 # Environments
 .env
+*.env
 .envrc
 .venv
 env/
@@ -235,3 +236,29 @@ preprod_test*.json
 prod_responders.json
 groupme_*_messages.json
 *.ipynb
+
+# Generated deployment files - DO NOT COMMIT
+# These are generated from templates and contain environment-specific values
+secrets.yaml
+*-k8s-oauth2.yaml
+*-k8s-current.yaml
+*-k8s-temp.yaml
+*-generated*.yaml
+values.yaml
+values-preprod.yaml
+.generated/
+
+# Generated deployment files - DO NOT COMMIT
+# These are generated from templates and contain environment-specific values
+secrets.yaml
+*-k8s-oauth2.yaml
+*-k8s-current.yaml
+*-k8s-temp.yaml
+*-generated*.yaml
+values.yaml
+values-preprod.yaml
+.generated/
+
+# Generated files
+*.tmp
+*.temp
