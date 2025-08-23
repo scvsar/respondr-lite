@@ -85,9 +85,6 @@ disable_api_key_check = (
     os.getenv("DISABLE_API_KEY_CHECK", "false").lower() == "true" or is_testing
 )
 
-# Temporary override for PoC
-disable_api_key_check = True
-
 # Azure OpenAI configuration
 azure_openai_api_key = os.getenv("AZURE_OPENAI_API_KEY")
 azure_openai_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
