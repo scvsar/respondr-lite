@@ -262,3 +262,5 @@ values-preprod.yaml
 # Generated files
 *.tmp
 *.temp
+
+**/local.settings.json

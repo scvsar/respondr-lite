@@ -139,19 +139,7 @@ def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
     # Use configured values from config.py as defaults
     kw["verbosity"] = LLM_VERBOSITY
     kw["reasoning_effort"] = LLM_REASONING_EFFORT
-    
-    # Model-specific overrides (if needed for specific models)
-    if re.search(r"gpt-5-(nano|mini)", model_name or "", re.I):
-        # For nano/mini models, use lower settings if not already low
-        if LLM_VERBOSITY not in ("low",):
-            kw["verbosity"] = "low"
-        # NOTE: previously we forced a lower reasoning_effort for very small
-        # models which caused `reasoning_effort` to drop to "low" even when
-        # the operator configured a higher default (e.g., "medium"). That
-        # behavior was surprising in preprod. Preserve the configured
-        # `LLM_REASONING_EFFORT` here and only adjust verbosity for
-        # resource-constrained models.
-    
+        
     return kw
 
 
