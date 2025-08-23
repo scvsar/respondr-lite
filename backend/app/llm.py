@@ -145,8 +145,12 @@ def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
         # For nano/mini models, use lower settings if not already low
         if LLM_VERBOSITY not in ("low",):
             kw["verbosity"] = "low"
-        if LLM_REASONING_EFFORT not in ("minimal", "low"):
-            kw["reasoning_effort"] = "low"
+        # NOTE: previously we forced a lower reasoning_effort for very small
+        # models which caused `reasoning_effort` to drop to "low" even when
+        # the operator configured a higher default (e.g., "medium"). That
+        # behavior was surprising in preprod. Preserve the configured
+        # `LLM_REASONING_EFFORT` here and only adjust verbosity for
+        # resource-constrained models.
     
     return kw
 
@@ -285,6 +289,11 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
             return None
 
     kwargs = _select_kwargs_for_model(azure_openai_deployment)
+    # Log the resolved LLM kwargs so operators can verify what will be sent
+    try:
+        logger.debug(f"LLM kwargs before overrides: {kwargs}")
+    except Exception:
+        pass
     # Apply optional overrides if provided and valid
     if verbosity_override:
         v = str(verbosity_override).lower().strip()
