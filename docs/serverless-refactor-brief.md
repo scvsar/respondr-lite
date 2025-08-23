@@ -1,463 +1,496 @@
-Respondr – Serverless Refactor Brief (ACA + Functions)
+# Respondr – Serverless Refactor Plan (Azure Functions + Azure Container Apps)
 
-Goal: Deliver the same functional surface with radically lower cost (~$0/month for idle) by moving to:
+> Purpose: Keep exactly the same functional surface while collapsing infra to the lowest-cost, scale‑to‑zero design. This brief is the single source of truth for the refactor. It is written for an automated coding agent and human reviewers.
 
-Azure Functions (Consumption) for the incoming GroupMe webhook and housekeeping tasks (free grants: 1M executions + 400k GB‑s/month).
-Azure Container Apps (Consumption) for the combined front‑end + back‑end container, scale to zero, and wake on demand via HTTP and Queue triggers (free grants: 180k vCPU‑s, 360k GiB‑s, 2M requests/month).
-Azure Storage for queues and tables (replacing Redis). Note: lifecycle management natively covers Blob; Table has no built‑in TTL—so we add a tiny timer Function for deletes.
-Built‑in Authentication on Container Apps (aka “Easy Auth”) with Microsoft Entra ID; identity arrives via X-MS-CLIENT-PRINCIPAL* headers.
+---
 
-1) Target Architecture (high level)
-GroupMe  ──(HTTP POST)──► Azure Function (HTTP trigger)
-                           └─► enqueues JSON → Azure Storage Queue  (respondr-incoming)
+## 0) Executive Summary
 
-Container Apps (Consumption; minReplicas:0)
-  └─ Same Docker image runs FastAPI + React build + background queue worker
-     • Ingress: HTTPS; Easy Auth (Entra) required for UI/API (except health)
-     • Scale rules:
-         - HTTP concurrency (wake on web)
-         - Azure Queue length (wake on message)  ◄── KEDA scaler (MI/no key)
-     • Storage: Azure Table Storage (active responders) + (optional) Blob archive
+End state:
+- Azure Functions (Consumption) handles GroupMe inbound webhook + housekeeping (Table retention).
+- Azure Container Apps (Consumption, minReplicas: 0) runs a single Docker image that serves the FastAPI backend + React UI and a queue worker for LLM parsing & persistence.
+- Azure Storage replaces Redis:
+ - Queue respondr-incoming for ingest handoff and scale-from-zero.
+ - Table ResponderMessages as the canonical store.
+ - (Optional) Blob for raw ingest archives with lifecycle rules.
+- Auth: Container Apps built-in authentication (Entra). App reads identity from X-MS-CLIENT-PRINCIPAL* headers. Domain allowlist + admin list enforced in app.
 
-Azure Functions (Consumption)
-  • groupme_ingest (HTTP): validates + pushes to queue
-  • table_purge (Timer): deletes Table rows older than N days (because Table has no TTL)
+Why cheaper: Everything is consumption and scales to zero. No AKS, no App Gateway, no OAuth2 proxy, no Redis.
 
-Why this is the cheapest fit
+---
 
-Scale‑to‑zero: Container Apps minReplicas: 0 + queue/http scale rules means no runtime cost when idle.
-Generous free grants for ACA requests/compute and Functions executions—light traffic is commonly $0.
-No App Gateway / AKS / OAuth proxy to pay for or operate. Authentication handled by Container Apps Authentication; your app reads user/claim headers (e.g., X-MS-CLIENT-PRINCIPAL-NAME).
+## 1) What Changes at a Glance (Delta Map)
 
-2) Work Breakdown (order to implement)
-Phase 0 – Repo & Operational Hygiene
+| Area | Today | Target |
+|---|---|---|
+| Ingress from GroupMe | FastAPI /webhook | Azure Function groupme_ingest (HTTP), enqueues to Storage Queue |
+| App runtime | AKS + OAuth proxy | Container Apps (Consumption) with Easy Auth |
+| State | Redis + files | Azure Table (canonical), optional Blob archive |
+| Background work | In-app | Queue worker in the same container image, auto-wakes via queue rule |
+| AuthN | OAuth2 proxy headers | Easy Auth headers (X-MS-CLIENT-PRINCIPAL*), domain/admin checks remain |
+| Cost posture | Always-on infra | Scale-to-zero; pay only when invoked |
 
- Create docs/ (this file), infra/, functions/, container/.
+---
 
- Add a top‑level .env.sample with all env vars (see §4).
+## 2) Repository Plan
 
- Turn off the PoC bypass: disable_api_key_check = False in config.py.
 
-Phase 1 – Storage & Data Contracts
+/ (repo root)
+├─ container/ # Docker image & app runtime
+│ ├─ Dockerfile
+│ ├─ start.sh # launches uvicorn + worker (or startup thread)
+│ └─ appsettings.json # optional local dev config
+├─ functions/ # Azure Functions (Python)
+│ ├─ groupme_ingest/ # HTTP trigger → enqueue
+│ └─ table_purge/ # Timer trigger → delete old Table rows
+├─ infra/ # Bicep/ARM and scripts
+│ ├─ main.bicep # simplified resources (Storage, ACA, MI, Func)
+│ └─ deploy.ps1/.sh
+├─ docs/
+│ └─ refactor-aca-serverless.md # this brief
+├─ app/ # existing Python backend
+│ ├─ ... existing modules (config.py, storage.py, llm.py, etc.)
+│ └─ worker.py # new: queue consumer
+└─ frontend/ # existing React app
 
- Schema for the queue message (JSON): use your existing WebhookMessage fields (name, text, created_at, group_id, plus optional debug flags).
 
- Table: ResponderMessages
+---
 
-PartitionKey: group_id (string)
+## 3) Milestones & PR Checklist (ship in thin slices)
 
-RowKey: id (uuid)
+### PR1 – Storage & Config Scaffolding
+- [ ] Add Table + Queue names to .env.sample.
+- [ ] Ensure storage.py defaults to STORAGE_BACKEND=azure_table when not testing.
+- [ ] Verify AzureTableStorage implementation (MI first; conn string fallback). If missing, add it.
+- [ ] Implement get_storage_info() to reflect azure_table and health.
 
-Columns: those used today in storage.add_message() output (name, text, timestamp, timestamp_utc, vehicle, eta, eta_timestamp, eta_timestamp_utc, minutes_until_arrival, arrival_status, raw_status, status_source, status_confidence, team, group_id, created_at).
+### PR2 – Ingest Function (HTTP → Queue)
+- [ ] New Function functions/groupme_ingest (Python). Validates WEBHOOK_API_KEY (?k= or X-Webhook-Token).
+- [ ] Normalizes payload to current WebhookMessage structure and enqueues JSON to STORAGE_QUEUE_NAME.
+- [ ] Return 200 OK on success.
 
- Historical (optional/cheap): append raw inbound payloads as newline JSON in a Blob container ingest-raw/yyyymm/…ndjson so we can rely on Blob lifecycle to purge old months automatically.
+### PR3 – Queue Worker in Container App
+- [ ] Add app/worker.py that reads messages, calls extract_details_from_text(...), then add_message(...) (which writes to Table).
+- [ ] Make worker idempotent and at-least-once safe:
+ - Calculate deterministic message_id (e.g., UUID5 over (group_id|name|created_at|text)), use as RowKey to avoid duplicates.
+ - Upsert/merge semantics: if entity exists, update fields.
+- [ ] Start worker via: (a) a background thread on FastAPI startup, or (b) a secondary process in start.sh. Prefer thread for simplicity.
 
-Phase 2 – Azure Functions (Consumption)
+### PR4 – Auth: Switch to Easy Auth Headers
+- [ ] In user.py, prefer headers:
+ - X-MS-CLIENT-PRINCIPAL-NAME → email/UPN
+ - X-MS-CLIENT-PRINCIPAL (base64 JSON) → claims fallback
+- [ ] Keep old headers as fallback for local/dev.
+- [ ] Keep domain allowlist and allowed_admin_users logic.
 
-Functions project: functions/ (Python, v2 isolated or v1 in‑proc; pick your standard).
+### PR5 – Remove Redis Assumptions & Tighten Config
+- [ ] Remove/ignore Redis config in config.py unless explicitly selected in env.
+- [ ] Delete PoC override: disable_api_key_check = True → derive from env only.
+- [ ] Add /healthz unauthenticated route.
 
-groupme_ingest (HTTP trigger)
+### PR6 – Timer Function (Table Retention)
+- [ ] functions/table_purge (Timer) deletes ResponderMessages older than RETENTION_DAYS.
+- [ ] Optional: append raw ingest to Blob .ndjson with lifecycle on container (Blob lifecycle is native; Table needs this function).
 
-Validates shared secret (querystring or header). GroupMe has no native signature; we defend via an opaque token in the callback URL and IP filtering if desired.
+### PR7 – Infra
+- [ ] Bicep or CLI to deploy: Storage (Queue, Table), Container Apps Env, Container App, Function App, User‑Assigned MI, and role assignments:
+ - MI → Storage Queue Data Contributor and Table Data Contributor.
+ - If using separate scaler identity, grant Queue Data Reader.
+- [ ] Container App: enable Authentication (Entra) + require auth for UI/API.
+- [ ] Scale rules: HTTP concurrency + Azure Queue.
 
-Normalizes payload to WebhookMessage and enqueues to Storage Queue respondr-incoming.
+### PR8 – Cutover & Delete Legacy
+- [ ] Move GroupMe webhook URL to the Function endpoint.
+- [ ] End-to-end verification.
+- [ ] Remove AKS/AppGW/OAuth2-proxy/Redis assets.
 
-Function returns 200 OK.
+---
 
-table_purge (Timer trigger)
+## 4) Interfaces & Data Contracts (Source of Truth)
 
-Runs daily (or hourly), deletes Table rows older than RETENTION_DAYS. (Because Table Storage lacks TTL; unlike Blob.)
-
-Cost note: Functions (Consumption) include 1M free executions + 400k GB‑s/month. With tiny payloads & short durations you’ll likely live inside free.
-
-Phase 3 – Container App: merge front‑end + back‑end + worker
-
-Single Docker image that serves:
-
-FastAPI backend (your current routes), and
-
-React static build (served by FastAPI), and
-
-A background queue worker thread/process that drains respondr-incoming, runs llm.extract_details_from_text, and writes to Table via your storage facade.
-
-Key changes in code:
-
-storage.py → default STORAGE_BACKEND=azure_table. Ensure Table backend is robust and MI‑auth capable.
-
-user.py → add Easy Auth header parsing first (keep old headers as fallback):
-
-Prefer X-MS-CLIENT-PRINCIPAL (Base64 JSON with claims) and X-MS-CLIENT-PRINCIPAL-NAME / X-MS-CLIENT-PRINCIPAL-ID.
-
-frontend.py → unchanged except ensure static path exists in container image.
-
-New app/worker.py (or integrate into main.py): polling loop using azure-storage-queue with short sleeps when empty. When running in Container Apps, KEDA will scale in to 0 when queue is empty.
-
-Keep /api/debug/* admin‑only, but shift auth to Entra (see §5).
-
-Phase 4 – Scale rules & Authentication on Container Apps
-
-Scale rules on the Container App:
-
-HTTP (concurrency) → wakes app on UI/API traffic.
-
-Azure Queue (respondr-incoming) → wakes app when messages arrive (KEDA). Use Managed Identity for the scaler; no storage keys.
-
-Authentication: enable Container Apps Authentication with Microsoft Entra ID, set Require authentication for the app (except allow unauthenticated /healthz if you want). Headers with claims are injected (e.g., X-MS-CLIENT-PRINCIPAL-NAME).
-
-Phase 5 – Infra as Code + CI/CD
-
-Consolidate infra in Bicep (see §6) to provision:
-
-Storage Account + Queue + Table
-
-Container Apps Environment, User‑Assigned Managed Identity, Container App
-
-Function App (Consumption), App Settings, MI
-
-GitHub Actions:
-
-Build/push container to ACR.
-
-az containerapp update or deploy via Bicep.
-
-azure-functions deploy for functions/.
-
-Phase 6 – Cutover & Cleanup
-
-Switch GroupMe callback URL to the Function endpoint (groupme_ingest), with secret.
-
-Validate end‑to‑end (queue → container worker → table → UI).
-
-Decom old AKS/AppGW/OAuth2‑Proxy/Redis artifacts.
-
-3) Detailed Implementation Notes
-3.1 Queue message contract (from groupme_ingest)
-```
+### 4.1 Queue Message (enqueued by Function)
+json
 {
-  "name": "Jane Smith",
-  "text": "Responding, taking SAR-78, ETA 25",
-  "created_at": 1734989162,
-  "group_id": "96018206",
-  "debug_sys_prompt": null,
-  "debug_user_prompt": null,
-  "debug_verbosity": null,
-  "debug_reasoning": null,
-  "debug_max_tokens": null
+ "name": "Jane Smith",
+ "text": "Responding, taking SAR-78, ETA 25",
+ "created_at": 1734989162,
+ "group_id": "96018206",
+ "debug_sys_prompt": null,
+ "debug_user_prompt": null,
+ "debug_verbosity": null,
+ "debug_reasoning": null,
+ "debug_max_tokens": null
 }
-```
-3.2 Worker logic (in the Container)
-```
-def run_worker_loop():
-    q = make_queue_client()  # uses DefaultAzureCredential if MI present
-    while True:
-        msgs = q.receive_messages(messages_per_page=16, visibility_timeout=30)
-        got = False
-        for m in msgs:
-            got = True
-            payload = json.loads(m.content)  # SDK returns text (Base64 handled)
-            # 1) build history snapshot if desired (read last messages for this user from Table)
-            # 2) parsed = extract_details_from_text(...)
-            # 3) construct message dict (same shape you store today)
-            add_message(message)  # storage facade writes to Table
-            q.delete_message(m)
-        if not got:
-            time.sleep(float(os.getenv("WORKER_IDLE_SLEEP_SEC", "3")))
-```
-3.3 Authentication header parsing in user.py
-```
-def _try_easyauth_headers(request):
-    # Direct headers:
-    email = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME") or None
 
-    # Full claim bag (Base64 JSON):
-    b64 = request.headers.get("X-MS-CLIENT-PRINCIPAL")
-    if b64 and not email:
-        import base64, json
-        try:
-            claims = json.loads(base64.b64decode(b64).decode("utf-8")).get("claims", [])
-            c = {x["typ"]: x["val"] for x in claims if "typ" in x and "val" in x}
-            email = c.get("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress") \
-                 or c.get("preferred_username") or c.get("name")
-        except Exception:
-            pass
-    return email
-```
-The Container Apps auth sidecar handles login, sessions, and injects these headers.
 
-3.4 Replace Redis with Azure Table Storage
+### 4.2 Table Schema: ResponderMessages
+- PartitionKey: group_id
+- RowKey: deterministic message_id (UUID5 hash of (group_id|name|created_at|text)), or preexisting id if present
+- Columns:
+ - id, name, text, timestamp, timestamp_utc, vehicle, eta, eta_timestamp, eta_timestamp_utc, minutes_until_arrival,
+ - arrival_status, raw_status, status_source, status_confidence, team, group_id, created_at, deleted_at (nullable)
 
-In storage.py, set default STORAGE_BACKEND=azure_table.
+### 4.3 Admin/Debug Endpoints (unchanged behavior)
+- /api/debug/* guarded by admin checks (Easy Auth headers + allowlist).
 
-Ensure AzureTableStorage uses DefaultAzureCredential first, then falls back to connection string if provided. Prefer MI in both Functions and Container Apps.
+---
 
-get_storage_info() should reflect current backend azure_table and health.
-
-3.5 Security model
-
-Function endpoint: secret token required (?k=... or X-Webhook-Token).
-
-Container App UI/API: Require Entra sign‑in via Container Apps Authentication; your own code still enforces allowed domains and allowed_admin_users.
-
-Backend API keys: For routes marked “API key auth,” use X-API-Key and a secret injected via Container App secret.
-
-3.6 Cost controls
-
-Container App:
-
-minReplicas: 0, attach HTTP and azure-queue scale rules to wake on demand.
-
-Functions:
-
-Consumption plan (not Premium). Free grant covers most light workloads.
-
-Storage:
-
-Use Blob lifecycle policies for historical logs; add Timer Function to purge Table entities (since no native TTL).
-
-4) Environment variables (single source of truth)
+## 5) Environment Variables (One List, Two Runtimes)
 
 Common
-
-ALLOWED_EMAIL_DOMAINS=scvsar.org,rtreit.com
-
-ALLOWED_ADMIN_USERS="randy@...,alice@..."
+- TIMEZONE=America/Los_Angeles
+- ALLOWED_EMAIL_DOMAINS=scvsar.org,rtreit.com
+- ALLOWED_ADMIN_USERS=randy@...,alice@...
+- RETENTION_DAYS=30
 
 Storage
-
-STORAGE_ACCOUNT_NAME=<name>
-
-STORAGE_TABLE_NAME=ResponderMessages
-
-STORAGE_QUEUE_NAME=respondr-incoming
+- STORAGE_ACCOUNT_NAME=<name>
+- STORAGE_TABLE_NAME=ResponderMessages
+- STORAGE_QUEUE_NAME=respondr-incoming
+- (Optional) AZURE_STORAGE_CONNECTION_STRING (fallback; MI preferred)
 
 Security
-
-WEBHOOK_API_KEY=<opaque-secret-for-function>
-
-BACKEND_API_KEY=<opaque-secret-for-app-routes>
+- WEBHOOK_API_KEY=<opaque> (Functions)
+- BACKEND_API_KEY=<opaque> (X-API-Key for backend routes)
 
 LLM
+- AZURE_OPENAI_API_KEY=...
+- AZURE_OPENAI_ENDPOINT=...
+- AZURE_OPENAI_DEPLOYMENT=...
+- AZURE_OPENAI_API_VERSION=2024-02-01
 
-AZURE_OPENAI_API_KEY=...
+Worker
+- ENABLE_QUEUE_WORKER=true (Container App)
+- WORKER_POLL_BATCH=16
+- WORKER_VISIBILITY_TIMEOUT=30
+- WORKER_IDLE_SLEEP_SEC=3
 
-AZURE_OPENAI_ENDPOINT=...
+---
 
-AZURE_OPENAI_DEPLOYMENT=...
+## 6) Code Changes by File (Precise)
 
-AZURE_OPENAI_API_VERSION=2024-02-01
+### 6.1 user.py – prefer Easy Auth
+python
+def _try_easyauth_headers(request):
+ email = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+ if email:
+ return email
+ b64 = request.headers.get("X-MS-CLIENT-PRINCIPAL")
+ if b64:
+ import base64, json
+ claims = json.loads(base64.b64decode(b64).decode("utf-8")).get("claims", [])
+ c = {x.get("typ"): x.get("val") for x in claims}
+ return c.get("http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress") or c.get("preferred_username") or c.get("name")
+ return None
 
-App behavior
+Integrate this at the top of get_user_info() before current header fallbacks.
 
-TIMEZONE=America/Los_Angeles
+### 6.2 storage.py – default to Azure Table
+- Default STORAGE_BACKEND=azure_table.
+- Ensure AzureTableStorage uses DefaultAzureCredential if available.
+- add_message(...) should upsert on (PartitionKey, RowKey).
 
-DEBUG_FULL_LLM_LOG=false
+### 6.3 config.py
+- Remove hard override disable_api_key_check = True.
+- Keep all feature toggles behind env.
 
-RETENTION_DAYS=30
+### 6.4 New app/worker.py
+python
+import os, json, threading, time
+from azure.identity import DefaultAzureCredential
+from azure.storage.queue import QueueClient
+from .storage import add_message
+from .llm import extract_details_from_text
+from .utils import parse_datetime_like
 
-5) Ingress + Auth expectations (Container Apps)
+SA = os.getenv("STORAGE_ACCOUNT_NAME")
+QN = os.getenv("STORAGE_QUEUE_NAME", "respondr-incoming")
 
-Ingress: external: true, allowInsecure: false, targetPort: 8000 (uvicorn port).
+def _queue():
+ conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+ if conn:
+ return QueueClient.from_connection_string(conn, QN)
+ cred = DefaultAzureCredential()
+ return QueueClient(f"https://{SA}.queue.core.windows.net", QN, credential=cred)
 
-Auth (Entra): “Require authentication” and choose Microsoft provider. The auth sidecar injects identity via headers (e.g., X-MS-CLIENT-PRINCIPAL-NAME), which we now consume. Add /.auth/login/aad and /.auth/logout links if you want explicit UI affordances.
+def _message_id(m):
+ import uuid
+ key = f"{m.get('group_id','')}|{m.get('name','')}|{m.get('created_at','')}|{m.get('text','')}"
+ return str(uuid.uuid5(uuid.NAMESPACE_URL, key))
 
-6) Infrastructure as Code (Bicep/YAML snippets)
+def run_worker_loop():
+ if os.getenv("ENABLE_QUEUE_WORKER", "false").lower() != "true":
+ return
+ q = _queue()
+ batch = int(os.getenv("WORKER_POLL_BATCH", "16"))
+ vis = int(os.getenv("WORKER_VISIBILITY_TIMEOUT", "30"))
+ idle = float(os.getenv("WORKER_IDLE_SLEEP_SEC", "3"))
+ while True:
+ got = False
+ for msg in q.receive_messages(messages_per_page=batch, visibility_timeout=vis):
+ got = True
+ payload = json.loads(msg.content)
+ base = parse_datetime_like(payload.get("created_at"))
+ parsed = extract_details_from_text(payload.get("text", ""), base_time=base, prev_eta_iso=None)
+ entity = {
+ "id": _message_id(payload),
+ "name": payload.get("name"),
+ "text": payload.get("text"),
+ "timestamp": base.isoformat() if base else None,
+ "timestamp_utc": base.astimezone().__class__.utc.__call__().isoformat() if base else None,
+ "vehicle": parsed.get("vehicle"),
+ "eta": parsed.get("eta"),
+ "eta_timestamp": parsed.get("eta_timestamp"),
+ "eta_timestamp_utc": parsed.get("eta_timestamp_utc"),
+ "minutes_until_arrival": parsed.get("minutes_until_arrival"),
+ "arrival_status": parsed.get("arrival_status"),
+ "raw_status": parsed.get("raw_status"),
+ "status_source": parsed.get("status_source"),
+ "status_confidence": parsed.get("status_confidence"),
+ "team": parsed.get("team", "Unknown"),
+ "group_id": payload.get("group_id") or "unknown",
+ "created_at": int(payload.get("created_at") or 0)
+ }
+ add_message(entity)
+ q.delete_message(msg)
+ if not got:
+ time.sleep(idle)
 
-Keep one deploy: storage + queue + table + container apps env + container app + uami + functions.
+# Option A: call from FastAPI startup (preferred)
+thread = threading.Thread(target=run_worker_loop, daemon=True)
+thread.start()
 
-6.1 Storage: Queue + Table
-```
+*(Keep comments minimal; adjust the UTC line if needed—use your existing helpers such as now_tz.)
+
+### 6.5 App startup hook
+- In main.py (or FastAPI app factory), spawn worker.run_worker_loop() in a background thread only when ENABLE_QUEUE_WORKER=true.
+
+### 6.6 /healthz
+- Add a simple unauthenticated GET returning { "ok": true } for readiness/liveness.
+
+---
+
+## 7) Azure Functions – Minimal Sketches
+
+### 7.1 functions/groupme_ingest/__init__.py
+python
+import os, json
+import azure.functions as func
+from azure.storage.queue import QueueClient
+from azure.identity import DefaultAzureCredential
+
+WEBHOOK_KEY = os.getenv("WEBHOOK_API_KEY")
+SA = os.getenv("STORAGE_ACCOUNT_NAME")
+QN = os.getenv("STORAGE_QUEUE_NAME", "respondr-incoming")
+
+def _queue():
+ conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+ if conn:
+ return QueueClient.from_connection_string(conn, QN)
+ cred = DefaultAzureCredential()
+ return QueueClient(f"https://{SA}.queue.core.windows.net", QN, credential=cred)
+
+async def main(req: func.HttpRequest) -> func.HttpResponse:
+ token = req.params.get('k') or req.headers.get('X-Webhook-Token')
+ if token != WEBHOOK_KEY:
+ return func.HttpResponse("unauthorized", status_code=401)
+ body = req.get_json()
+ msg = {
+ "name": body.get("name") or "Unknown",
+ "text": body.get("text") or "",
+ "created_at": int(body.get("created_at") or 0),
+ "group_id": str(body.get("group_id") or "unknown"),
+ **{k:v for k,v in body.items() if k.startswith("debug_")}
+ }
+ _queue().send_message(json.dumps(msg))
+ return func.HttpResponse("ok", status_code=200)
+
+
+### 7.2 functions/table_purge/__init__.py
+python
+import os, datetime as dt
+import azure.functions as func
+from azure.data.tables import TableServiceClient
+from azure.identity import DefaultAzureCredential
+
+SA = os.getenv("STORAGE_ACCOUNT_NAME")
+TN = os.getenv("STORAGE_TABLE_NAME", "ResponderMessages")
+RETENTION = int(os.getenv("RETENTION_DAYS", "30"))
+
+def _table():
+ conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+ if conn:
+ return TableServiceClient.from_connection_string(conn).get_table_client(TN)
+ cred = DefaultAzureCredential()
+ return TableServiceClient(endpoint=f"https://{SA}.table.core.windows.net", credential=cred).get_table_client(TN)
+
+def _older_than(ts_iso):
+ try:
+ return dt.datetime.fromisoformat(ts_iso.replace('Z','+00:00')) < (dt.datetime.utcnow() - dt.timedelta(days=RETENTION))
+ except:
+ return False
+
+def main(mytimer: func.TimerRequest) -> None:
+ table = _table()
+ for ent in table.list_entities():
+ ts = ent.get('timestamp_utc') or ent.get('timestamp')
+ if ts and _older_than(ts):
+ table.delete_entity(partition_key=ent['PartitionKey'], row_key=ent['RowKey'])
+
+
+---
+
+## 8) Container Apps Configuration (Consumption)
+
+Ingress
+- external: true, targetPort: 8000 (uvicorn)
+
+Scale
+- minReplicas: 0, maxReplicas: 3
+- Rules:
+ - HTTP concurrency: concurrentRequests: 5
+ - Azure Queue: queueName: respondr-incoming, queueLength: 5, accountName: <storage>
+ - auth.identity: set to the app's User‑Assigned MI
+
+AuthN
+- Enable Authentication → Microsoft provider (Entra) → Require authentication.
+- App reads X-MS-CLIENT-PRINCIPAL-NAME/X-MS-CLIENT-PRINCIPAL.
+
+Identity & Roles
+- Assign User‑Assigned Managed Identity to the app.
+- Grant MI the following on the Storage Account:
+ - Storage Queue Data Contributor (app worker)
+ - Storage Table Data Contributor (app persist)
+ - If using a separate scaler identity, grant it Storage Queue Data Reader
+
+---
+
+## 9) Infra: Bicep Sketches (illustrative; normalize in infra/main.bicep)
+
+### 9.1 Storage (Account + Queue + Table)
+bicep
 param location string = resourceGroup().location
 param saName string
 param tableName string = 'ResponderMessages'
 param queueName string = 'respondr-incoming'
 
 resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: saName
-  location: location
-  sku: { name: 'Standard_LRS' }
-  kind: 'StorageV2'
-  properties: { minimumTlsVersion: 'TLS1_2' }
+ name: saName
+ location: location
+ sku: { name: 'Standard_LRS' }
+ kind: 'StorageV2'
+ properties: { minimumTlsVersion: 'TLS1_2' }
 }
 
 resource qsvc 'Microsoft.Storage/storageAccounts/queueServices@2023-01-01' = {
-  name: 'default'
-  parent: sa
+ name: 'default'
+ parent: sa
 }
 
 resource queue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-01-01' = {
-  name: queueName
-  parent: qsvc
+ name: queueName
+ parent: qsvc
 }
 
 resource tsvc 'Microsoft.Storage/storageAccounts/tableServices@2023-01-01' = {
-  name: 'default'
-  parent: sa
+ name: 'default'
+ parent: sa
 }
 
 resource table 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-01-01' = {
-  name: tableName
-  parent: tsvc
+ name: tableName
+ parent: tsvc
 }
-```
-6.2 Container Apps Environment + UAMI + App (Consumption)
 
-Use User‑Assigned Managed Identity for both app storage access and the KEDA scaler (queue rule). KEDA MI example for queues is supported.
 
-YAML sketch (apply via az containerapp create --yaml or Bicep equivalent):
-```
-type: Microsoft.App/containerApps@2024-03-01
-name: respondr-app
-location: <region>
-identity:
-  type: UserAssigned
-  userAssignedIdentities:
-    <uamiResourceId>: {}
-properties:
-  managedEnvironmentId: <envResourceId>
-  configuration:
-    ingress:
-      external: true
-      allowInsecure: false
-      targetPort: 8000
-    registries:
-      - server: <acrName>.azurecr.io
-        identity: <uamiResourceId>
-    secrets:
-      - name: backend-api-key
-        value: <set-with-az-cli>
-  template:
-    containers:
-      - name: respondr
-        image: <acrName>.azurecr.io/respondr:latest
-        env:
-          - name: STORAGE_ACCOUNT_NAME
-            value: <saName>
-          - name: STORAGE_TABLE_NAME
-            value: ResponderMessages
-          - name: STORAGE_QUEUE_NAME
-            value: respondr-incoming
-          - name: BACKEND_API_KEY
-            secretRef: backend-api-key
-    scale:
-      minReplicas: 0
-      maxReplicas: 3
-      rules:
-        - name: http
-          http:
-            concurrentRequests: 5
-        - name: queue
-          azureQueue:
-            queueName: respondr-incoming
-            queueLength: "5"
-            accountName: <saName>
-          auth:
-            - identity: <uamiResourceId>   # KEDA uses MI to read queue depth
-```
-6.3 Enable Authentication (Container Apps)
+(Add Container Apps Env, Container App, UAMI, Function App, and role assignments in the same template.)*
 
-Portal or ARM: Enable “Authentication” → Microsoft as provider → Require authentication; after that, your app reads identity headers (no SDK necessary).
+---
 
-6.4 Azure Functions (Consumption)
+## 10) Security Model (Definitive)
 
-Two functions (groupme_ingest HTTP, table_purge Timer). Function app uses:
+- Function ingress: shared secret in URL or header; optional IP filters. No PII stored beyond responder names/messages.
+- App UI/API: Entra login via Easy Auth; app still enforces ALLOWED_EMAIL_DOMAINS and ALLOWED_ADMIN_USERS.
+- Internal APIs: Routes that are not user-facing should require X-API-Key = BACKEND_API_KEY.
+- Storage access: Always prefer Managed Identity. Connection strings only for local/dev.
+- Idempotency: Deterministic RowKey + upsert semantics.
 
-AzureWebJobsStorage (required by Functions host).
+---
 
-Managed Identity to access Storage Table/Queue, or connection string if you prefer.
+## 11) Observability & Ops
 
-7) Code Tasks (granular)
+- Function logs: ingestion successes/failures.
+- Queue metrics: length ⇒ scaling signal.
+- Container logs: worker dequeues, LLM parse outcomes, persistence results.
+- Health: /healthz served without auth.
+- Alerts: queue length stuck > threshold; Function errors; Container crashloop.
 
- Default storage backend → azure_table.
+---
 
- User auth → Add Easy Auth parsing in user.py (see §3.3); keep existing fallbacks for local/dev.
+## 12) Test Plan (Scripts)
 
- Remove Redis assumptions in config.py, storage.py.
+### 12.1 Ingest Path
+bash
+curl -X POST "https://<func>.azurewebsites.net/api/groupme_ingest?k=$WEBHOOK_API_KEY" \
+ -H 'Content-Type: application/json' \
+ -d '{
+ "name":"Jane Smith",
+ "text":"Responding SAR-78, ETA 25",
+ "created_at": 1734989162,
+ "group_id":"96018206"
+ }'
 
- Queue worker module → new app/worker.py; start it when ENABLE_QUEUE_WORKER=true or always in ACA.
+- Expect: 200 OK. Message appears in Queue; Container App scales from 0 and writes to Table.
 
- Health endpoints → /healthz (no auth) for readiness/liveness.
+### 12.2 UI Path
+- Browse Container App URL → Entra login → /api/user reflects email domain + admin flag.
 
- Config cleanup: remove AKS/ACR webhook knobs that are no longer used.
+### 12.3 CSV Export & UTC Toggle
+- Confirm /api/responders data renders; export CSV works; UTC toggle behaves as before.
 
- ENV gating:
+### 12.4 Retention
+- Insert an old row (timestamp_utc older than RETENTION_DAYS) and confirm table_purge removes it on next schedule.
 
-ALLOW_LOCAL_AUTH_BYPASS=false in prod; true for dev only.
+---
 
-Move hard‑coded disable flags back to env (remove the temporary disable_api_key_check = True).
+## 13) Risks & Mitigations
 
-8) CI/CD (sketch)
+- Cold start latency: Acceptable trade‑off for cost; queue-trigger rule wakes app when traffic hits.
+- Duplicate messages (at-least-once queue): deterministic RowKey + upsert avoids dupes.
+- LLM errors/timeouts: current llm.py already handles fallbacks; log and continue.
+- Time zones/DST: keep TIMEZONE and zoneinfo guidance; warn if fallback in config.py.
+- Table query patterns: read paths already bounded (by team/group); acceptable for this scale.
 
-Container
+---
 
-Build image → push to ACR
+## 14) Definition of Done (Final)
 
-az containerapp update \ --name respondr-app --resource-group <rg> \ --image <acr>.azurecr.io/respondr:<sha>
+- [ ] Function receives GroupMe POST → enqueues → Container App auto-scales → worker parses → Table updated → UI shows responders.
+- [ ] Easy Auth wired; only allowed domains see the UI; admin endpoints restricted.
+- [ ] Redis removed; Table/Queue everywhere; optional Blob archive with lifecycle.
+- [ ] Bicep/CLI/GitHub Actions deploy the whole stack.
+- [ ] Idle cost ≈ zero; scale-to-zero verified.
 
-Functions
+---
 
-func azure functionapp publish <funcAppName> --python (or az functionapp deployment source config-zip)
+## 15) Commit Message Hints
 
-Secrets (API keys, OpenAI) are set with az containerapp secret set and Function App settings.
+- feat: add Azure Table/Queue scaffolding and env plumbed
+- feat(functions): HTTP ingest to queue with MI
+- feat(app): background queue worker with idempotent upsert
+- feat(auth): prefer Easy Auth headers; keep fallbacks
+- chore: default storage backend to azure_table; remove Redis usage
+- feat: timer function for Table retention
+- infra: Bicep for Storage+ACA+MI+Func; role assignments
 
-9) Test Plan & Acceptance
+---
 
-Ingest path
+## 16) Rollback Plan
 
-Post a GroupMe‑style JSON to Function (groupme_ingest?k=SECRET) → message lands in Queue.
+- Keep old AKS ingress endpoint active until Function ingest path is validated.
+- Feature-flag the worker (ENABLE_QUEUE_WORKER=false) to stop processing while leaving UI available.
+- If needed, temporarily point GroupMe back to old endpoint.
 
-Verify KEDA scales Container App from 0 → 1 (see ACA “Revisions/Replicas”). Queue drains, Table rows appear.
+---
 
-UI path
-
-Browse to Container App URL: redirected to Entra login. After login, /api/user returns allowed domain, is_admin correct.
-
-End‑to‑end
-
-UI shows active responders (Table). Avg ETA, sort, filters work.
-
-Export CSV still works (UTC toggle verified).
-
-Shutdown
-
-After queue empties and idle web traffic, replicas scale back to 0.
-
-Retention
-
-Timer Function deletes rows older than RETENTION_DAYS. Blob lifecycle policy removes old .ndjson archives (if enabled).
-
-10) Open Questions / Assumptions
-
-GroupMe security: No signature header; we use an opaque secret + IP filter. (If GroupMe adds signatures later, we can verify.)
-
-LLM costs: unchanged; retained Azure OpenAI config & prompts.
-
-Cold start: acceptable. Optional: Function can “warm” the app via a ping when it enqueues a message.
-
-Single vs dual container apps: We’re running worker+web in one app to minimize cost/ops. If you want strict isolation later, split into two apps sharing code/image and keep the queue scale rule on the worker app.
-
-11) Quick Reference (docs)
-
-ACA Authentication / Easy Auth (headers like X-MS-CLIENT-PRINCIPAL-* and redirect flows), and how to enable Entra.
-
-ACA free grant & scale to zero: 180k vCPU‑s, 360k GiB‑s, 2M requests monthly; minReplicas: 0.
-
-KEDA scale on Azure Storage Queue with Managed Identity in Container Apps: sample rule and identity wiring.
-
-Functions (Consumption) free grant: 1M executions + 400k GB‑s/month.
-
-Blob lifecycle management is supported; Table isn’t (use a purge Function).
-
-12) Definition of Done
-
-✅ Function endpoint receives GroupMe POST → enqueues to Storage Queue.
-
-✅ Container App scales from 0 on queue or HTTP → processes queue → writes Table → UI displays.
-
-✅ Easy Auth wired; only allowed domains can see the UI; admin list enforced.
-
-✅ Redis removed; Table/Queue used everywhere; (optional) Blob archive + lifecycle.
-
-✅ Bicep/CLI deploys the entire stack; GitHub Actions builds & deploys both artifacts.
-
-✅ Idle cost ≈ $0 (consumption plans + free grants), scale‑to‑zero verified.
-
+End of brief.**
