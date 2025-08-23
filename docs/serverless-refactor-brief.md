@@ -45,7 +45,7 @@ Why cheaper: Everything is consumption and scales to zero. No AKS, no App Gatewa
 │ └─ table_purge/ # Timer trigger → delete old Table rows
 ├─ infra/ # Bicep/ARM and scripts
 │ ├─ main.bicep # simplified resources (Storage, ACA, MI, Func)
-│ └─ deploy.ps1/.sh
+│ └─ deploy.ps1
 ├─ docs/
 │ └─ refactor-aca-serverless.md # this brief
 ├─ app/ # existing Python backend
