@@ -36,7 +36,8 @@ resource table 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-01-0
   parent: tsvc
 }
 
-var storageConn = 'DefaultEndpointsProtocol=https;AccountName=' + sa.name + ';AccountKey=' + listKeys(sa.id, '2023-01-01').keys[0].value + ';EndpointSuffix=' + environment().suffixes.storage
+// Use resource symbol reference and string interpolation to construct the connection string
+var storageConn = 'DefaultEndpointsProtocol=https;AccountName=${sa.name};AccountKey=${sa.listKeys().keys[0].value};EndpointSuffix=${environment().suffixes.storage}'
 
 resource plan 'Microsoft.Web/serverfarms@2022-09-01' = {
   name: '${functionAppName}-plan'
