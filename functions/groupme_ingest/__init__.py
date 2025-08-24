@@ -1,7 +1,5 @@
-import json
 import logging
 import os
-from typing import Any
 import traceback
 
 import azure.functions as func
@@ -19,10 +17,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info(f"Request URL: {req.url}")
     logging.info(f"Request headers: {dict(req.headers)}")
     logging.info(f"Request headers: {dict(req.headers)}")
-    #return func.HttpResponse("OK", status_code=200)
-    
-    # Remove this early return to allow the rest of the function to execute
-    # return func.HttpResponse("OK", status_code=200)
 
     expected_key = os.getenv("WEBHOOK_API_KEY", "")
     k_param = req.params.get("k", None)
@@ -78,14 +72,6 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logging.warning("Rejected request from disallowed group_id %s", group_id)
             return func.HttpResponse("Unauthorized: group not allowed", status_code=401)
 
-    # Keep the queued message small and consistent
-    message: dict[str, Any] = {
-        "name": parsed.name,
-        "text": parsed.text,
-        "created_at": parsed.created_at,
-        "group_id": group_id,
-    }
-
 
     queue_name = os.getenv("STORAGE_QUEUE_NAME")
     logging.info(queue_name)
@@ -97,20 +83,21 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         logging.info("Sending message to queue '%s'", queue_name)
         queue = QueueClient.from_connection_string(conn_str, queue_name)
-        logging.info(f"Conn string: {conn_str}")
-        logging.info("HERE")
-        logging.info(json.dumps(message))
+        
+        # Serialize the GroupMeMessage to JSON using Pydantic's built-in method
+        message_json = parsed.model_dump_json()
+        logging.info("Serialized message: %s", message_json)
+        
         try:
-            test = queue.send_message(json.dumps(message))
-            logging.info(f"Test: {test}")
+            queue.send_message(message_json)
+            logging.info("Successfully sent message to queue")
         except Exception as e:
-            logging.info("Failed to send message to queue: %s", e)
-        logging.info("Successfully sent message to queue")
+            logging.error("Failed to send message to queue: %s", e)
+            raise
+            
         return func.HttpResponse("OK", status_code=200)       
     except Exception as e:
         # Log full traceback and return exception type+message for local debugging
         logging.error("Failed to send message to queue: %s", e)
         logging.error(traceback.format_exc())
         return func.HttpResponse(f"Queue error: {type(e).__name__}: {e}", status_code=500)
-
-    return func.HttpResponse("OK", status_code=200)

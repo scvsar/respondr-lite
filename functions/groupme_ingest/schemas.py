@@ -18,12 +18,12 @@ class GroupMeMessage(BaseModel):
     group_id: str
     id: str
     name: str
-    sender_id: Optional[str] = None
-    sender_type: Optional[str] = None
-    source_guid: Optional[str] = None
+    sender_id: str  # Required - identifies the sender
+    sender_type: str  # Required - typically "user" or "bot"
+    source_guid: str  # Required - unique identifier for the message
     system: bool = False
-    text: Optional[str] = None
-    user_id: Optional[str] = None
+    text: str  # Required - the message content
+    user_id: str  # Required - user who sent the message
 
     @field_validator("created_at")
     def validate_created_at(cls, v: int) -> int:  # type: ignore[override]
