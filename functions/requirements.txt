@@ -1,3 +1,8 @@
 azure-functions
 azure-storage-queue
+azure-core
 python-dotenv
+pydantic
+requests
+typing-extensions
+isoscore

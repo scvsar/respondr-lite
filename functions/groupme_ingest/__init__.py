@@ -1,18 +1,28 @@
 import json
 import logging
 import os
+from typing import Any
+import traceback
 
 import azure.functions as func
 from azure.storage.queue import QueueClient
-from dotenv import load_dotenv
 
-# Load environment variables from .env for local testing
-load_dotenv()
-
+from .schemas import GroupMeMessage
+from pydantic import ValidationError
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """HTTP trigger function that enqueues messages to Azure Storage Queue."""
+    # Use Azure Functions built-in logging
     logging.info("Processing GroupMe webhook")
+    logging.info("TEST debug log — function entered")
+    logging.info(f"Request method: {req.method}")
+    logging.info(f"Request URL: {req.url}")
+    logging.info(f"Request headers: {dict(req.headers)}")
+    logging.info(f"Request headers: {dict(req.headers)}")
+    #return func.HttpResponse("OK", status_code=200)
+    
+    # Remove this early return to allow the rest of the function to execute
+    # return func.HttpResponse("OK", status_code=200)
 
     expected_key = os.getenv("WEBHOOK_API_KEY", "")
     k_param = req.params.get("k", None)
@@ -43,11 +53,21 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         body = req.get_json()
+        logging.info("Request JSON parsed; keys: %s", list(body.keys())[:10])
     except ValueError as e:
         logging.exception("Failed to parse JSON from request")
         return func.HttpResponse(f"Invalid JSON: {e}", status_code=400)
+    
 
-    group_id = body.get("group_id")
+    # Validate payload against expected schema
+    try:
+        parsed: GroupMeMessage = GroupMeMessage.model_validate(body)  # pydantic v2
+        logging.info("Payload validation succeeded; group_id=%s id=%s", parsed.group_id, parsed.id)
+    except ValidationError as e:
+        logging.warning("Payload validation failed: %s", str(e))
+        return func.HttpResponse(f"Invalid payload: {e}", status_code=400)
+
+    group_id = parsed.group_id
 
     # If no API key is set, require group_id in the payload and optionally validate it
     if not expected_key:
@@ -58,24 +78,39 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             logging.warning("Rejected request from disallowed group_id %s", group_id)
             return func.HttpResponse("Unauthorized: group not allowed", status_code=401)
 
-    message = {
-        "name": body.get("name"),
-        "text": body.get("text"),
-        "created_at": body.get("created_at"),
+    # Keep the queued message small and consistent
+    message: dict[str, Any] = {
+        "name": parsed.name,
+        "text": parsed.text,
+        "created_at": parsed.created_at,
         "group_id": group_id,
     }
 
+
     queue_name = os.getenv("STORAGE_QUEUE_NAME")
+    logging.info(queue_name)
     conn_str = os.getenv("AzureWebJobsStorage")
     if not queue_name or not conn_str:
         logging.error("Missing queue configuration")
         return func.HttpResponse("Server error", status_code=500)
 
     try:
+        logging.info("Sending message to queue '%s'", queue_name)
         queue = QueueClient.from_connection_string(conn_str, queue_name)
-        queue.send_message(json.dumps(message))
+        logging.info(f"Conn string: {conn_str}")
+        logging.info("HERE")
+        logging.info(json.dumps(message))
+        try:
+            test = queue.send_message(json.dumps(message))
+            logging.info(f"Test: {test}")
+        except Exception as e:
+            logging.info("Failed to send message to queue: %s", e)
+        logging.info("Successfully sent message to queue")
+        return func.HttpResponse("OK", status_code=200)       
     except Exception as e:
-        logging.exception("Failed to send message to queue")
-        return func.HttpResponse(f"Queue error: {e}", status_code=500)
+        # Log full traceback and return exception type+message for local debugging
+        logging.error("Failed to send message to queue: %s", e)
+        logging.error(traceback.format_exc())
+        return func.HttpResponse(f"Queue error: {type(e).__name__}: {e}", status_code=500)
 
     return func.HttpResponse("OK", status_code=200)

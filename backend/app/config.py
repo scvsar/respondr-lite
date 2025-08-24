@@ -19,6 +19,13 @@ logging.basicConfig(
     level=logging.INFO, 
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+
+
+# silence azure-core HTTP request/response logs
+logging.getLogger("azure.core.pipeline.policies.http_logging_policy").setLevel(logging.WARNING)
+# optionally silence all azure SDK logs
+logging.getLogger("azure").setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 # Timezone handling

@@ -1,3 +1,12 @@
 {
-  "version": "2.0"
+  "version": "2.0",
+  "logging": {
+    "logLevel": {
+      "default": "Information",
+      "Function": "Information",
+      "Host": "Information",
+      "Host.Results": "Information",
+      "Function.groupme_ingest": "Information"
+    }
+  }
 }

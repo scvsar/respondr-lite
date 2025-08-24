@@ -84,9 +84,6 @@ param openAiPublicNetworkAccess string = 'Enabled'
 @description('Azure region for the OpenAI account (must be an allowed AOAI region).')
 param openAiLocation string = location
 
-@description('Deployment name to expose for the gpt-5-nano model.')
-param gpt5NanoDeploymentName string = 'gpt5-nano'
-
 // Azure OpenAI account
 resource openai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: openAiName
