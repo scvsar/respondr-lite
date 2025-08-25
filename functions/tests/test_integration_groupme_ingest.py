@@ -23,7 +23,8 @@ def post_with_retries(url: str, payload: Dict[str, Any], headers: Dict[str, str]
 
 
 def test_post_valid_groupme_message():
-    url = "https://respondrliteapp.azurewebsites.net/api/groupme_ingest?code=YOUR_FUNCTION_KEY_HERE"
+    #url = "https://respondrliteapp.azurewebsites.net/api/groupme_ingest?code=YOUR_FUNCTION_KEY_HERE"
+    url = "http://localhost:7071/api/groupme_ingest"
     payload: Dict[str, Any] = {
         "attachments": [],
         "avatar_url": None,

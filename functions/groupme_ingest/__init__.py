@@ -4,6 +4,7 @@ import traceback
 
 import azure.functions as func
 from azure.storage.queue import QueueClient
+from azure.core.exceptions import ResourceExistsError
 
 from .schemas import GroupMeMessage
 from pydantic import ValidationError
@@ -81,8 +82,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         return func.HttpResponse("Server error", status_code=500)
 
     try:
-        logging.info("Sending message to queue '%s'", queue_name)
+        # check if queue exists and if not, create it
         queue = QueueClient.from_connection_string(conn_str, queue_name)
+        try:
+            queue.create_queue()
+        except ResourceExistsError:
+            pass  # Queue already exists
+        logging.info("Sending message to queue '%s'", queue_name)
         
         # Serialize the GroupMeMessage to JSON using Pydantic's built-in method
         message_json = parsed.model_dump_json()

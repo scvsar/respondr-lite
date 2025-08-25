@@ -22,7 +22,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
+ 
   # Optional: Add nginx for reverse proxy testing
   nginx:
     image: nginx:alpine
@@ -34,4 +34,6 @@ services:
       - respondr
     profiles:
       - nginx  # Only start with --profile nginx
+ 
 
+ 
