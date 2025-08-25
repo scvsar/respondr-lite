@@ -98,11 +98,15 @@ DEBUG_FULL_LLM_LOG = os.getenv("DEBUG_FULL_LLM_LOG", "").lower() in ("1", "true"
 
 # LLM token configuration (defaults with env overrides)
 # Default number of completion tokens to request from the model, unless overridden per-request
-DEFAULT_MAX_COMPLETION_TOKENS = int(os.getenv("MAX_COMPLETION_TOKENS", "1024"))
+DEFAULT_MAX_COMPLETION_TOKENS = int(os.getenv("DEFAULT_MAX_COMPLETION_TOKENS", "1024"))
 # Minimum allowed when clamping user overrides or internal adjustments
 MIN_COMPLETION_TOKENS = int(os.getenv("MIN_COMPLETION_TOKENS", "128"))
 # Upper cap for retries and overrides to avoid runaway costs
 MAX_COMPLETION_TOKENS_CAP = int(os.getenv("MAX_COMPLETION_TOKENS_CAP", "2048"))
+
+# LLM retry configuration
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_TOKEN_INCREASE_FACTOR = float(os.getenv("LLM_TOKEN_INCREASE_FACTOR", "1.5"))
 
 # LLM reasoning and verbosity configuration
 def _validate_llm_config():

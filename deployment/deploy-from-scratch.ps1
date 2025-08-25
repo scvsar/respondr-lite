@@ -21,9 +21,12 @@ if (-not (az group exists --name $rgName)) {
 }
 # from repo root (where infra\deploy.ps1 and infra\main.bicep live)
 ..\infra\deploy.ps1 `
-  -ResourceGroup $rgName `
-  -StorageAccountName $storageAccountName `
-  -FunctionAppName $functionAppName `
-  -Location $location `
-  -OpenAiName $openAiName `
-  -OpenAiLocation $openAiLocation
+  -ResourceGroup respondrlite `
+  -StorageAccountName respondrlitesg `
+  -FunctionAppName respondrliteapp `
+  -Location eastus2 `
+  -OpenAiName respondrlite-openai `
+  -OpenAiLocation eastus2 `
+  -ContainerAppName respondrlite-ca `
+  -ContainerImage "docker.io/rtreit/respondr:2025-08-25" `
+  -DotEnvPath ".\.env"

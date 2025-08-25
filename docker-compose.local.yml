@@ -8,10 +8,13 @@ services:
     environment:
       - DEBUG=true
       - DISABLE_API_KEY_CHECK=true
+      - ALLOW_LOCAL_AUTH_BYPASS=true
+      - LOCAL_BYPASS_IS_ADMIN=true
+      - ALLOW_CLEAR_ALL=true
     env_file:
       - .env
     volumes:
-      - ./backend:/app:ro  # Read-only for security
+      - ./backend:/app/backend:ro  # Mount backend source under /app/backend to avoid overwriting build artifacts
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/storage-info"]

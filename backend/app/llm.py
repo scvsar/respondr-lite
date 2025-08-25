@@ -10,7 +10,7 @@ from .config import (
     azure_openai_api_key, azure_openai_endpoint, azure_openai_deployment,
     azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ,
     DEFAULT_MAX_COMPLETION_TOKENS, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_CAP,
-    LLM_REASONING_EFFORT, LLM_VERBOSITY
+    LLM_REASONING_EFFORT, LLM_VERBOSITY, LLM_MAX_RETRIES, LLM_TOKEN_INCREASE_FACTOR
 )
 from .utils import extract_eta_from_text_local, extract_duration_eta, compute_eta_fields, now_tz
 
@@ -244,9 +244,21 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
         debug_info["sys_prompt"] = sys_msg
         debug_info["user_prompt"] = user_msg
 
-    def _try_call(kwargs: Dict[str, Any], with_json_format: bool) -> Optional[str]:
+    def _try_call_with_retry(kwargs: Dict[str, Any], with_json_format: bool, attempt: int = 1) -> Tuple[Optional[str], Dict[str, Any]]:
+        """Enhanced LLM call with comprehensive retry logic and token usage logging."""
+        call_info = {
+            "attempt": attempt,
+            "max_completion_tokens": kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS),
+            "with_json_format": with_json_format,
+            "tokens_used": None,
+            "error": None,
+            "success": False
+        }
+        
         try:
             assert azure_openai_deployment is not None
+            logger.info(f"LLM call attempt {attempt}/{LLM_MAX_RETRIES} - max_completion_tokens: {call_info['max_completion_tokens']}")
+            
             if with_json_format:
                 resp = c.chat.completions.create(
                     model=azure_openai_deployment,
@@ -260,21 +272,55 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                     messages=messages_payload,
                     **kwargs
                 )
-            return (resp.choices[0].message.content or "").strip()
+            
+            # Log token usage
+            if hasattr(resp, 'usage') and resp.usage:
+                call_info["tokens_used"] = {
+                    "prompt_tokens": getattr(resp.usage, 'prompt_tokens', None),
+                    "completion_tokens": getattr(resp.usage, 'completion_tokens', None),
+                    "total_tokens": getattr(resp.usage, 'total_tokens', None)
+                }
+                logger.info(f"LLM tokens used - prompt: {call_info['tokens_used']['prompt_tokens']}, "
+                           f"completion: {call_info['tokens_used']['completion_tokens']}, "
+                           f"total: {call_info['tokens_used']['total_tokens']}")
+            
+            content = (resp.choices[0].message.content or "").strip()
+            
+            if not content:
+                call_info["error"] = "empty_response"
+                logger.warning(f"LLM returned empty response on attempt {attempt}")
+                return None, call_info
+            
+            call_info["success"] = True
+            logger.info(f"LLM call successful on attempt {attempt}")
+            return content, call_info
+            
         except Exception as e:
+            call_info["error"] = str(e)
             etxt = str(e).lower()
-            # prune unsupported knobs and retry upstream
+            logger.warning(f"LLM call failed on attempt {attempt}: {e}")
+            
+            # Handle unsupported parameters
+            params_removed = []
             for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"):
                 if k in kwargs and (k.replace("_", " ") in etxt or "unknown" in etxt):
                     kwargs.pop(k, None)
+                    params_removed.append(k)
+            
+            if params_removed:
+                logger.info(f"Removed unsupported parameters: {params_removed}")
+            
+            # Handle token limit errors
             if "max tokens" in etxt or "output limit" in etxt or "too long" in etxt:
                 current = int(kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS))
-                # Increase but clamp to cap; ensure at least a floor (e.g., 1024) when escalating
-                kwargs["max_completion_tokens"] = min(
+                new_tokens = min(
                     int(MAX_COMPLETION_TOKENS_CAP),
-                    max(current * 2, max(int(MIN_COMPLETION_TOKENS), 1024))
+                    max(int(current * LLM_TOKEN_INCREASE_FACTOR), max(int(MIN_COMPLETION_TOKENS), 1024))
                 )
-            return None
+                kwargs["max_completion_tokens"] = new_tokens
+                logger.info(f"Token limit error - increasing from {current} to {new_tokens}")
+            
+            return None, call_info
 
     kwargs = _select_kwargs_for_model(azure_openai_deployment)
     # Log the resolved LLM kwargs so operators can verify what will be sent
@@ -298,11 +344,57 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
             min(int(MAX_COMPLETION_TOKENS_CAP), int(max_tokens_override))
         )
 
-    content = _try_call(dict(kwargs), with_json_format=True)
+    # Enhanced retry logic with comprehensive logging
+    content = None
+    all_call_info = []
+    
+    # Try with JSON format first
+    for attempt in range(1, LLM_MAX_RETRIES + 1):
+        content, call_info = _try_call_with_retry(dict(kwargs), True, attempt)
+        all_call_info.append(call_info)
+        
+        if content:
+            break
+        
+        if not call_info["success"] and call_info["error"]:
+            logger.warning(f"LLM attempt {attempt} failed: {call_info['error']}")
+            
+            # If we got an empty response, try increasing tokens for next attempt
+            if call_info["error"] == "empty_response" and attempt < LLM_MAX_RETRIES:
+                current_tokens = kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS)
+                new_tokens = min(
+                    int(MAX_COMPLETION_TOKENS_CAP),
+                    max(int(current_tokens * LLM_TOKEN_INCREASE_FACTOR), max(int(MIN_COMPLETION_TOKENS), 1024))
+                )
+                kwargs["max_completion_tokens"] = new_tokens
+                logger.info(f"Empty response - increasing tokens from {current_tokens} to {new_tokens} for attempt {attempt + 1}")
+    
+    # If JSON format failed, try without JSON format
     if not content:
-        content = _try_call(dict(kwargs), with_json_format=False)
+        logger.info("JSON format attempts failed, trying without JSON format")
+        for attempt in range(1, LLM_MAX_RETRIES + 1):
+            content, call_info = _try_call_with_retry(dict(kwargs), False, attempt)
+            all_call_info.append(call_info)
+            
+            if content:
+                break
+                
+            if not call_info["success"] and call_info["error"]:
+                logger.warning(f"Non-JSON attempt {attempt} failed: {call_info['error']}")
+                
+                # If we got an empty response, try increasing tokens for next attempt
+                if call_info["error"] == "empty_response" and attempt < LLM_MAX_RETRIES:
+                    current_tokens = kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS)
+                    new_tokens = min(
+                        int(MAX_COMPLETION_TOKENS_CAP),
+                        max(int(current_tokens * LLM_TOKEN_INCREASE_FACTOR), max(int(MIN_COMPLETION_TOKENS), 1024))
+                    )
+                    kwargs["max_completion_tokens"] = new_tokens
+                    logger.info(f"Empty response - increasing tokens from {current_tokens} to {new_tokens} for non-JSON attempt {attempt + 1}")
+    
+    # Last-ditch compact retry if still no content
     if not content or not content.strip():
-        # last-ditch compact retry
+        logger.warning("All retry attempts failed, trying last-ditch compact retry")
         messages_retry: List[ChatCompletionMessageParam] = [
             {"role": "system", "content": "Return ONLY valid compact JSON per schema."},
             {"role": "user", "content": f"{user_msg}\nReturn only JSON."},
@@ -318,8 +410,16 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                 ),
             )
             content = (resp.choices[0].message.content or "").strip()
+            if content:
+                logger.info("Last-ditch compact retry succeeded")
+            else:
+                logger.error("Last-ditch compact retry returned empty content")
         except Exception as e:
             logger.error(f"Final LLM retry failed: {e}")
+            # Log summary of all attempts
+            logger.error(f"All LLM attempts failed. Summary: {len(all_call_info)} attempts made")
+            for i, info in enumerate(all_call_info, 1):
+                logger.error(f"  Attempt {i}: tokens={info['max_completion_tokens']}, success={info['success']}, error={info.get('error', 'None')}")
             return {"_llm_error": str(e)}
 
     try:

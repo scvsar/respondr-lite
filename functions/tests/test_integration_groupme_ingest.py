@@ -23,7 +23,7 @@ def post_with_retries(url: str, payload: Dict[str, Any], headers: Dict[str, str]
 
 
 def test_post_valid_groupme_message():
-    url = "http://localhost:7071/api/groupme_ingest"
+    url = "https://respondrliteapp.azurewebsites.net/api/groupme_ingest?code=YOUR_FUNCTION_KEY_HERE"
     payload: Dict[str, Any] = {
         "attachments": [],
         "avatar_url": None,
@@ -42,6 +42,7 @@ def test_post_valid_groupme_message():
     headers = {"Content-Type": "application/json"}
 
     resp = post_with_retries(url, payload, headers, attempts=6, timeout=15)
+    print(f"Response status: {resp.status_code}, body: {resp.text}")
 
     assert resp.status_code == 200, f"Unexpected status: {resp.status_code} body: {resp.text}"
 
