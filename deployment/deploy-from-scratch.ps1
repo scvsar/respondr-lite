@@ -28,5 +28,5 @@ if (-not (az group exists --name $rgName)) {
   -OpenAiName respondrlite-openai `
   -OpenAiLocation eastus2 `
   -ContainerAppName respondrlite-ca `
-  -ContainerImage "docker.io/rtreit/respondr:2025-08-25" `
+  -ContainerImage "docker.io/randytreit/respondr:2025-08-25" `
   -DotEnvPath ".\.env"
