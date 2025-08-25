@@ -2,7 +2,7 @@
 Storage backends for Respondr - pluggable storage implementations.
 """
 
-import json
+import os, json
 import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -141,9 +141,10 @@ class FileStorage(BaseStorage):
 class AzureTableStorage(BaseStorage):
     """Azure Table Storage implementation."""
     
-    def __init__(self, connection_string: str, table_name: str = "responderMessages"):
+    def __init__(self, connection_string: str, table_name: Optional[str] = None):
+        # Prefer env var STORAGE_TABLE_NAME, then provided table_name, then default
+        self.table_name = os.getenv("STORAGE_TABLE_NAME") or table_name or "responder-messages"
         self.connection_string = connection_string
-        self.table_name = table_name
         self._client = None
         self._last_health_check = 0
         self._is_healthy_cached = False
