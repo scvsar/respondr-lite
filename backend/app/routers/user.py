@@ -40,7 +40,7 @@ def is_admin(email: Optional[str]) -> bool:
 
 @router.get("/api/user")
 def get_user_info(request: Request) -> JSONResponse:
-    """Get user info from OAuth2 Proxy headers."""
+    """Get user info from EasyAuth or OAuth2 Proxy headers."""
     if DEBUG_LOG_HEADERS:
         logger.debug("=== DEBUG: All headers received ===")
         for header_name, header_value in request.headers.items():
@@ -49,7 +49,8 @@ def get_user_info(request: Request) -> JSONResponse:
         logger.debug("=== END DEBUG ===")
 
     user_email = (
-        request.headers.get("X-Auth-Request-Email")
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+        or request.headers.get("X-Auth-Request-Email")
         or request.headers.get("X-Auth-Request-User")
         or request.headers.get("x-forwarded-email")
     )
@@ -57,6 +58,7 @@ def get_user_info(request: Request) -> JSONResponse:
         request.headers.get("X-Auth-Request-Preferred-Username")
         or request.headers.get("X-Auth-Request-User")
         or request.headers.get("x-forwarded-preferred-username")
+        or request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
     )
     user_groups = request.headers.get("X-Auth-Request-Groups", "").split(",") if request.headers.get("X-Auth-Request-Groups") else []
 
@@ -74,7 +76,7 @@ def get_user_info(request: Request) -> JSONResponse:
                 "authenticated": False,
                 "error": "Access denied",
                 "message": f"Your domain is not authorized to access this application. Allowed domains: {', '.join(allowed_email_domains)}",
-                "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+                "logout_url": f"/.auth/logout?post_logout_redirect_uri={quote('/', safe='')}",
             })
         authenticated = True
         display_name = user_name or user_email
@@ -103,5 +105,5 @@ def get_user_info(request: Request) -> JSONResponse:
         "name": display_name,
         "groups": groups,
         "is_admin": admin_flag,
-        "logout_url": f"/oauth2/sign_out?rd={quote('/', safe='')}",
+        "logout_url": f"/.auth/logout?post_logout_redirect_uri={quote('/', safe='')}",
     })

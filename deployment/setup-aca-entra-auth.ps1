@@ -57,6 +57,10 @@ if ($appRegList.Count -ge 1) {
 $appId = $appReg.appId
 if ([string]::IsNullOrWhiteSpace($appId)) { throw "appId not resolved." }
 
+# Ensure v2 token acceptance before possibly switching audience (required by AAD for 'AzureADandPersonalMicrosoftAccount')
+try {
+  az ad app update --id $appId --set accessTokenAcceptedVersion=2 api.requestedAccessTokenVersion=2 --only-show-errors | Out-Null
+} catch { }
 # Keep audience in sync with the switch
 $desiredAudience = $(if ($IncludeMSA) { "AzureADandPersonalMicrosoftAccount" } else { "AzureADMultipleOrgs" })
 if ($appReg.signInAudience -ne $desiredAudience) {
@@ -128,8 +132,7 @@ if ($clientSecret) {
 # --- 5) Configure the Microsoft provider in Container Apps ----------------------------
 # Prefer tenant-specific issuer for reliability; include MSA uses 'common'
 $tenantId = az account show --query tenantId -o tsv
-#$issuer   = $(if ($IncludeMSA) { "https://login.microsoftonline.com/common/v2.0" } else { "https://login.microsoftonline.com/$tenantId/v2.0" })
-$issuer = "https://login.microsoftonline.com/common/v2.0"
+$issuer   = $(if ($IncludeMSA) { "https://login.microsoftonline.com/common/v2.0" } else { "https://login.microsoftonline.com/$tenantId/v2.0" })
 
 Log "Configuring Microsoft provider (clientId=$appId, issuer=$issuer)..."
 $msArgs = @(

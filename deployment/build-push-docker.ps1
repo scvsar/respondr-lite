@@ -2,7 +2,7 @@
 docker login
 
 # Pick a tag. Use your date-based tag to match Bicep:
-$TAG = "2025-08-25"
+$TAG = "2025-08-25.1"
 $IMAGE = "randytreit/respondr:$TAG"
 
 Push-Location -Path ..

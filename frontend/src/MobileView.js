@@ -259,7 +259,7 @@ export default function MobileView() {
         <div className="empty" role="alert">
           {accessDenied.message || 'Access denied'}
           <div style={{marginTop:12}}>
-            <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/sign_out?rd=/' : '/oauth2/sign_out?rd=/'}>Sign out</a>
+            <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/sign_out?rd=/' : '/.auth/logout?post_logout_redirect_uri=/'}>Sign out</a>
           </div>
         </div>
       )}

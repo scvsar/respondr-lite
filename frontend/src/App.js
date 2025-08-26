@@ -22,7 +22,7 @@ function AuthGate({ children }) {
     if (isDevPort) {
       return `http://localhost:8000/oauth2/start?rd=${rd}`;
     }
-    return `/oauth2/start?rd=${rd}`;
+    return `/.auth/login/aad?post_login_redirect_uri=${rd}`;
   }, []);
 
   React.useEffect(() => {
@@ -35,8 +35,8 @@ function AuthGate({ children }) {
         if (cancelled) return;
         setUser(j);
         if (!j.authenticated) {
-          // Not authenticated: redirect to sign-in preserving target
-          window.location.href = signInUrl(loc.pathname || '/');
+          // Not authenticated: show Sign In option instead of auto-redirect (handles when EasyAuth is disabled)
+          setDenied({ error: 'Not authenticated' });
           return;
         }
         if (j.error === 'Access denied') {
@@ -56,9 +56,9 @@ function AuthGate({ children }) {
   if (denied) {
     return (
       <div className="empty" role="alert">
-        {denied.message || 'Access denied'}
+        {denied.message || denied.error || 'Not authenticated'}
         <div style={{marginTop:12}}>
-          <a className="btn" href="/oauth2/sign_out?rd=/">Sign out</a>
+          <a className="btn" href={signInUrl('/')}>Sign In</a>
         </div>
       </div>
     );
@@ -656,7 +656,7 @@ function MainApp() {
               <div className="menu-item" onClick={()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
-                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
+                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/.auth/logout?post_logout_redirect_uri=%2F.auth%2Flogin%2Faad%3Fpost_login_redirect_uri%3D%2F';
                 window.location.href = url; 
               }}>Switch Account</div>
               {isAdmin && (
@@ -665,7 +665,7 @@ function MainApp() {
               <div className="menu-item" onClick={()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
-                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/' : (user?.logout_url || '/oauth2/sign_out?rd=/');
+                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/' : (user?.logout_url || '/.auth/logout?post_logout_redirect_uri=/');
                 window.location.href = url; 
               }}>Logout</div>
             </div>

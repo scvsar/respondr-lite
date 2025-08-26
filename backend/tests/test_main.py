@@ -181,7 +181,7 @@ def test_user_info():
     assert data["email"] == "test@scvsar.org"
     assert data["name"] == "Test User"
     assert data["groups"] == ["group1", "group2", "group3"]
-    assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"
+    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
 
 def test_user_info_minimal_headers():
     """Test the /api/user endpoint with minimal OAuth2 headers"""
@@ -197,7 +197,7 @@ def test_user_info_minimal_headers():
     assert data["email"] == "minimal@rtreit.com"
     assert data["name"] == "minimal@rtreit.com"  # Should fallback to email
     assert data["groups"] == []
-    assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"
+    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
 
 def test_user_info_no_headers():
     """Test the /api/user endpoint with no OAuth2 headers"""
@@ -209,7 +209,7 @@ def test_user_info_no_headers():
     assert data["email"] is None
     assert data["name"] is None
     assert data["groups"] == []
-    assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"
+    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
 
 def test_user_info_oauth2_proxy_headers():
     """Test the /api/user endpoint with OAuth2 Proxy standard headers"""
@@ -228,4 +228,4 @@ def test_user_info_oauth2_proxy_headers():
     assert data["email"] == "oauth2@scvsar.org"
     assert data["name"] == "OAuth2 User"
     assert data["groups"] == ["admin", "users", "testers"]
-    assert data["logout_url"] == "/oauth2/sign_out?rd=%2F"
+    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
