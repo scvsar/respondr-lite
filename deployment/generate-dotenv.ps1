@@ -10,13 +10,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string]$ResourceGroup,
-    [Parameter(Mandatory)] [string]$StorageAccountName,
-    [Parameter(Mandatory)] [string]$FunctionAppName,
-    [Parameter(Mandatory)] [string]$OpenAiName,
-    [Parameter(Mandatory)] [string]$ContainerAppName,
+    [string]$StorageAccountName,
+    [string]$FunctionAppName,
+    [string]$OpenAiName,
+    [string]$ContainerAppName,
     [string]$OutputPath = ".\.env.populated",
     [switch]$Apply,
-
     # ---------- Optional overrides for non-dynamic keys ----------
     [string]$ALLOWED_EMAIL_DOMAINS,
     [string]$ALLOWED_ADMIN_USERS,
@@ -137,6 +136,66 @@ function AzTsv {
     }
 }
 
+Start-Step "Discover resource names in RG (when not provided)"
+
+# Function App
+if (-not $FunctionAppName) {
+  $faList = AzJson @("functionapp","list","-g",$ResourceGroup)
+  if (($faList | Measure-Object).Count -eq 1) {
+    $FunctionAppName = $faList[0].name
+  } elseif (($faList | Measure-Object).Count -gt 1) {
+    $FunctionAppName = ($faList | Select-Object -ExpandProperty name | Sort-Object | Select-Object -First 1)
+    Warn "Multiple Function Apps found; picking '$FunctionAppName'. Pass -FunctionAppName to override."
+  } else { throw "No Function Apps found in resource group '$ResourceGroup'." }
+  Log "Function App: $FunctionAppName"
+}
+
+# Container App
+if (-not $ContainerAppName) {
+  $caList = AzJson @("containerapp","list","-g",$ResourceGroup)
+  if (($caList | Measure-Object).Count -eq 1) {
+    $ContainerAppName = $caList[0].name
+  } elseif (($caList | Measure-Object).Count -gt 1) {
+    $ContainerAppName = ($caList | Select-Object -ExpandProperty name | Sort-Object | Select-Object -First 1)
+    Warn "Multiple Container Apps found; picking '$ContainerAppName'. Pass -ContainerAppName to override."
+  } else { Warn "No Container Apps found in '$ResourceGroup'."; $ContainerAppName = $null }
+  if ($ContainerAppName) { Log "Container App: $ContainerAppName" }
+}
+
+# AOAI account (Cognitive Services kind == OpenAI)
+if (-not $OpenAiName) {
+  $aoaiList = AzJson @("cognitiveservices","account","list","-g",$ResourceGroup,"--query","[?kind=='OpenAI']")
+  if (($aoaiList | Measure-Object).Count -eq 1) {
+    $OpenAiName = $aoaiList[0].name
+  } elseif (($aoaiList | Measure-Object).Count -gt 1) {
+    $OpenAiName = ($aoaiList | Select-Object -ExpandProperty name | Sort-Object | Select-Object -First 1)
+    Warn "Multiple AOAI accounts found; picking '$OpenAiName'. Pass -OpenAiName to override."
+  } else { throw "No Azure OpenAI (kind='OpenAI') accounts found in '$ResourceGroup'." }
+  Log "AOAI: $OpenAiName"
+}
+
+# Storage Account — prefer the one referenced by the Function App's AzureWebJobsStorage
+if (-not $StorageAccountName) {
+  $faSettings = AzJson @("functionapp","config","appsettings","list","-g",$ResourceGroup,"-n",$FunctionAppName)
+  $webJobs = $faSettings | Where-Object { $_.name -eq "AzureWebJobsStorage" }
+  if ($webJobs -and $webJobs.value -match "AccountName=([^;]+)") {
+    $StorageAccountName = $matches[1]
+    Log "Storage (from AzureWebJobsStorage): $StorageAccountName"
+  }
+  if (-not $StorageAccountName) {
+    $saList = AzJson @("storage","account","list","-g",$ResourceGroup)
+    if (($saList | Measure-Object).Count -eq 1) {
+      $StorageAccountName = $saList[0].name
+    } elseif (($saList | Measure-Object).Count -gt 1) {
+      $StorageAccountName = ($saList | Select-Object -ExpandProperty name | Sort-Object | Select-Object -First 1)
+      Warn "Multiple Storage Accounts found; picking '$StorageAccountName'. Pass -StorageAccountName to override."
+    } else { throw "No Storage Accounts found in '$ResourceGroup'." }
+    Log "Storage (by list): $StorageAccountName"
+  }
+}
+End-Step
+
+
 Start-Step "Collect: Storage account"
 $storage = AzJson @("storage", "account", "show", "-g", $ResourceGroup, "-n", $StorageAccountName)
 if (-not $storage) { Err "Storage account '$StorageAccountName' not found"; throw }
@@ -177,7 +236,7 @@ End-Step
 Start-Step "Collect: Function App and app settings"
 $func = AzJson @("functionapp", "show", "-g", $ResourceGroup, "-n", $FunctionAppName)
 if (-not $func) { Err "Function App '$FunctionAppName' not found"; throw }
-$funcAppSettings = AzJson @("webapp", "config", "appsettings", "list", "-g", $ResourceGroup, "-n", $FunctionAppName)
+$funcAppSettings = AzJson @("functionapp","config","appsettings","list","-g",$ResourceGroup,"-n",$FunctionAppName)
 if ($funcAppSettings) {
     $qSetting = $funcAppSettings | Where-Object { $_.name -eq "STORAGE_QUEUE_NAME" }
     if ($qSetting -and $qSetting.value) { 
@@ -335,7 +394,7 @@ if ($Apply) {
     }
 
     # Function App update (bulk)
-    $faArgs = @("webapp", "config", "appsettings", "set", "-g", $ResourceGroup, "-n", $FunctionAppName, "--settings")
+    $faArgs = @("functionapp","config","appsettings","set","-g",$ResourceGroup,"-n",$FunctionAppName,"--settings")
     foreach ($k in $funcSettings.Keys) { $faArgs += "$k=$($funcSettings[$k])" }
     AzJson @faArgs | Out-Null
 
