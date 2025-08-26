@@ -21,6 +21,21 @@ function Get-ShortHash {
   return $hex.Substring(0, [Math]::Min($Length, $hex.Length))
 }
 
+function New-UniqueHyphenName {
+  param(
+    [Parameter(Mandatory=$true)] [string]$BaseName,
+    [string]$Salt = "",
+    [int]$MaxLength = 64
+  )
+  # AOAI / many resources: 2-64 chars, lowercase letters/numbers/hyphens, no leading/trailing hyphen
+  $clean = ($BaseName -replace '[^a-z0-9-]','').ToLower()
+  $suffix = Get-ShortHash -Input "$BaseName|$Salt" -Length 8  # deterministic
+  $candidate = "$clean-$suffix".Trim('-')
+  if ($candidate.Length -gt $MaxLength) { $candidate = $candidate.Substring(0, $MaxLength).Trim('-') }
+  if ($candidate.Length -lt 2) { $candidate = ($candidate + "-aa").Substring(0,[Math]::Min(2,$MaxLength)) }
+  return $candidate
+}
+
 function New-UniqueStorageAccountName {
   param(
     [Parameter(Mandatory=$true)] [string]$BaseName,
@@ -73,7 +88,11 @@ function Log {
     Write-Host "Failed to write to log file: $_" -ForegroundColor Yellow
   }
 }
-
+function Assert-Name($name, $pattern, $max) {
+  if ($name.Length -gt $max -or -not ($name -match $pattern)) {
+    throw "Name '$name' violates rules (max=$max, pattern=$pattern)"
+  }
+}
 function Run-ProcessCapture {
   param(
     [Parameter(Mandatory=$true)] [string]$Exe,
@@ -155,24 +174,43 @@ function Run-ProcessCapture {
 
 # ------------------------------------------------------------------------
 
-# deploy.ps1 parameter variables
 $ResourceGroup      = "respondrlite"
 $Location           = "eastus2"
 $OpenAiLocation     = "eastus2"
-$StorageAccountBase = "respondrlitesg"
-$FunctionAppBase    = "respondrliteapp"
-$OpenAiName         = "respondrlite-openai"
-$ContainerAppBase   = "respondrlite-ca"
-$ContainerImage     = "docker.io/randytreit/respondr:2025-08-25"
-$DotEnvPath         = ".\.env"
 
-# compute unique storage account name (uses resource group + function app as salt)
-$StorageAccountName = New-UniqueStorageAccountName -BaseName $StorageAccountBase -Salt "$ResourceGroup|$FunctionAppName"
-$FunctionAppName    = New-UniqueStorageAccountName -BaseName $FunctionAppBase -Salt "$ResourceGroup|$StorageAccountName"
-$ContainerAppName   = New-UniqueStorageAccountName -BaseName $ContainerAppBase -Salt "$ResourceGroup|$StorageAccountName"
+$ContainerImage = "docker.io/randytreit/respondr:2025-08-25"
+$DotEnvPath     = ".\.env"
 
-Write-Host "Using storage account name: $StorageAccountName"
-# initialize/rotate log
+$StorageAccountBase = "respondrlitesg"     # storage: 3-24, a-z0-9 only
+$FunctionAppBase    = "respondrliteapp"    # app service: letters/numbers/hyphen
+$ContainerAppBase   = "respondrlite-ca"    # container app: letters/numbers/hyphen
+$OpenAiBase         = "respondrlite-openai" # AOAI: letters/numbers/hyphen
+
+$baseSalt = "$ResourceGroup|$Location" # use this if you want names to be idempotent
+$runId    = ([guid]::NewGuid()).ToString('N')  # 32 hex chars, no dashes
+
+$StorageAccountName = New-UniqueStorageAccountName -BaseName $StorageAccountBase -Salt $runId
+$FunctionAppName    = New-UniqueHyphenName        -BaseName $FunctionAppBase    -Salt $runId -MaxLength 60
+$ContainerAppName   = New-UniqueHyphenName        -BaseName $ContainerAppBase   -Salt $runId -MaxLength 63
+$OpenAiName         = New-UniqueHyphenName        -BaseName $OpenAiBase         -Salt $runId -MaxLength 64
+
+Assert-Name $StorageAccountName '^[a-z0-9]{3,24}$' 24
+Assert-Name $FunctionAppName    '^[a-z0-9-]{2,60}$' 60
+Assert-Name $ContainerAppName   '^[a-z0-9-]{2,63}$' 63
+Assert-Name $OpenAiName         '^[a-z0-9-]{2,64}$' 64
+
+$names = [ordered]@{
+  resourceGroup = $ResourceGroup
+  storage       = $StorageAccountName
+  functionApp   = $FunctionAppName
+  containerApp  = $ContainerAppName
+  openAi        = $OpenAiName
+  location      = $Location
+}
+$names.GetEnumerator() | ForEach-Object { Write-Host ("{0}: {1}" -f $_.Key, $_.Value) }
+$names | ConvertTo-Json | Set-Content (Join-Path $PSScriptRoot 'deploy-names.json') -Encoding UTF8
+
+
 # initialize/rotate log: set log path and overwrite previous log so old noisy content is not shown
 if (-not $global:LogFile) {
   if ($PSVersionTable.PSVersion.Major -ge 3 -and $PSScriptRoot) {

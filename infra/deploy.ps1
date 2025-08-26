@@ -94,7 +94,8 @@ $tempParams = Join-Path $env:TEMP "aca-params-$($ContainerAppName)-$(Get-Date -F
   az deployment group create `
     --resource-group $ResourceGroup `
     --template-file "$scriptDir/main.bicep" `
-    --parameters `@"$tempParams"
+    --parameters `@"$tempParams" `
+    --debug
 
   Remove-Item $tempParams -Force
   Write-Host "Deployment complete."
