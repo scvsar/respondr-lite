@@ -11,15 +11,16 @@
 
 function Get-ShortHash {
   param(
-    [Parameter(Mandatory=$true)] [string]$Input,
+    [Parameter(Mandatory=$true)] [string]$Text,
     [int]$Length = 8
   )
-  $bytes = [System.Text.Encoding]::UTF8.GetBytes($Input)
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
   $sha = [System.Security.Cryptography.SHA256]::Create()
   $hash = $sha.ComputeHash($bytes)
   $hex = ([System.BitConverter]::ToString($hash)).Replace('-','').ToLower()
   return $hex.Substring(0, [Math]::Min($Length, $hex.Length))
 }
+
 
 function New-UniqueHyphenName {
   param(
@@ -29,7 +30,7 @@ function New-UniqueHyphenName {
   )
   # AOAI / many resources: 2-64 chars, lowercase letters/numbers/hyphens, no leading/trailing hyphen
   $clean = ($BaseName -replace '[^a-z0-9-]','').ToLower()
-  $suffix = Get-ShortHash -Input "$BaseName|$Salt" -Length 8  # deterministic
+  $suffix = Get-ShortHash -Text "$BaseName|$Salt" -Length 8
   $candidate = "$clean-$suffix".Trim('-')
   if ($candidate.Length -gt $MaxLength) { $candidate = $candidate.Substring(0, $MaxLength).Trim('-') }
   if ($candidate.Length -lt 2) { $candidate = ($candidate + "-aa").Substring(0,[Math]::Min(2,$MaxLength)) }
@@ -45,7 +46,7 @@ function New-UniqueStorageAccountName {
   $hashLength = 8
   $cleanBase = ($BaseName -replace '[^a-z0-9]','').ToLower()
   $saltInput = "$BaseName|$Salt"
-  $shortHash = Get-ShortHash -Input $saltInput -Length $hashLength
+  $shortHash = Get-ShortHash -Text $saltInput -Length $hashLength
 
   $maxTotal = 24
   $maxBaseLen = $maxTotal - $shortHash.Length
