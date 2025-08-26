@@ -183,22 +183,9 @@ if (-not $OnlyContainer -and $FunctionAppName) {
 if (-not $OnlyFunction -and $ContainerAppName) {
     Log "Applying to Container App: $ContainerAppName (RG: $ResourceGroup)"
 
-    # 1) Update secrets for secret keys present in the .env
-    $secretsToSet = @()
-    foreach ($k in $SecretKeys) {
-        if (HasKey $envMap $k -and $null -ne $envMap[$k]) {
-            $secretsToSet += "$k=$($envMap[$k])"
-        }
-    }
-    if ($secretsToSet.Count -gt 0) {
-        $args = @("containerapp", "secret", "set", "-g", $ResourceGroup, "-n", $ContainerAppName, "--secrets") + $secretsToSet
-        if ($VerboseLogging) { Write-Host "az $($args -join ' ')" }
-        AzJson $args | Out-Null
-        Log "Container App secrets updated: $($secretsToSet.Count)"
-    }
-    else {
-        Log "No Container App secrets to set."
-    }
+    # Previously secrets were stored as Container App secrets and referenced via secretref.
+    # Change: write secret values directly as container environment variables instead.
+    Log "Embedding secret keys as container environment variables (not as secretrefs)"
 
     # 2) Get the container name using smarter selection logic
     $currentCA = AzJson @("containerapp", "show", "-g", $ResourceGroup, "-n", $ContainerAppName)
@@ -228,7 +215,8 @@ foreach ($k in $envMap.Keys) {
     if ($null -eq $v) { continue }
 
     if ($SecretKeys -contains $k) {
-        $envPairsToSet += "$k=secretref:$k"
+        # embed the secret value directly as an env var on the container app
+        $envPairsToSet += "$k=$v"
     }
     else {
         # Do NOT escape quotes here; each pair is a single argument token

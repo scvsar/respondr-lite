@@ -23,13 +23,15 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-Write-Host "Registering providers if needed..."
-az provider register --namespace Microsoft.CognitiveServices | Out-Null
-az provider register --namespace Microsoft.App | Out-Null
-az provider register --namespace Microsoft.OperationalInsights | Out-Null
+# run the main deploy operations inside a try/catch to avoid PowerShell printing script source
+try {
+  Write-Host "Registering providers if needed..."
+  az provider register --namespace Microsoft.CognitiveServices | Out-Null
+  az provider register --namespace Microsoft.App | Out-Null
+  az provider register --namespace Microsoft.OperationalInsights | Out-Null
 
-Write-Host "Ensuring resource group '$ResourceGroup' exists..."
-az group create -n $ResourceGroup -l $Location | Out-Null
+  Write-Host "Ensuring resource group '$ResourceGroup' exists..."
+  az group create -n $ResourceGroup -l $Location | Out-Null
 
 # --- Parse .env into plain env + secrets ---
 function Parse-DotEnv([string]$path) {
@@ -87,11 +89,28 @@ $tempParams = Join-Path $env:TEMP "aca-params-$($ContainerAppName)-$(Get-Date -F
   containerSecretMap       = @{ value = $secretMap }
 } | ConvertTo-Json -Depth 50 | Set-Content -Encoding UTF8 $tempParams
 
-Write-Host "Starting deployment..."
-az deployment group create `
-  --resource-group $ResourceGroup `
-  --template-file "$scriptDir/main.bicep" `
-  --parameters `@"$tempParams"
 
-Remove-Item $tempParams -Force
-Write-Host "Deployment complete."
+  Write-Host "Starting deployment..."
+  az deployment group create `
+    --resource-group $ResourceGroup `
+    --template-file "$scriptDir/main.bicep" `
+    --parameters `@"$tempParams"
+
+  Remove-Item $tempParams -Force
+  Write-Host "Deployment complete."
+
+} catch {
+  # Save full exception details to a file and emit a concise message only
+  $ex = $_.Exception
+  $time = Get-Date -Format 'yyyyMMddHHmmss'
+  try {
+    $errFile = Join-Path $scriptDir "deploy-error-$time.txt"
+    $ex.ToString() | Out-File -FilePath $errFile -Encoding UTF8
+    Write-Host "ERROR: Deployment failed. Full details saved to $errFile"
+  }
+  catch {
+    Write-Host "ERROR: Deployment failed. (Failed to write error file)"
+  }
+  # exit with non-zero code so callers know it failed
+  exit 1
+}

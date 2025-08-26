@@ -1,9 +1,93 @@
+// Basic infrastructure parameters
 param location string = resourceGroup().location
 param saName string
 param functionAppName string
 param tableName string = 'ResponderMessages'
 param queueName string = 'respondr-incoming'
 
+// Azure OpenAI parameters
+@description('Azure OpenAI account name (global unique, 2-64 chars, letters/numbers/hyphen).')
+param openAiName string
+
+@allowed([
+  'Enabled'
+  'Disabled'
+])
+param openAiPublicNetworkAccess string = 'Enabled'
+
+@description('Azure region for the OpenAI account (must be an allowed AOAI region).')
+param openAiLocation string = 'eastus2'
+
+@description('Deployment name for the GPT-5-nano model.')
+param gpt5nanoDeploymentName string = 'gpt-5-nano'
+
+@description('Model version for GPT-5-nano. See model/version list in docs.')
+param gpt5nanoModelVersion string = '2025-08-07'
+
+// Container Apps parameters - matching the PowerShell script exactly
+@description('Container App name')
+param containerAppName string
+
+@description('Docker image on Docker Hub, e.g., docker.io/<user>/<repo>:<tag>')
+param containerImage string
+
+@description('Container port exposed by the app')
+param containerPort int = 8000
+
+@description('Expose a public HTTPS endpoint')
+param exposePublic bool = true
+
+@description('HTTP concurrency target per replica')
+param httpConcurrentRequests int = 50
+
+@description('Min replicas (0 enables scale to zero)')
+param containerMinReplicas int = 0
+
+@description('Max replicas')
+param containerMaxReplicas int = 5
+
+@description('Global cooldown before scaling in (seconds). 7200 = 2 hours.')
+param cooldownSeconds int = 7200
+
+@description('Scaler polling interval in seconds')
+param pollingIntervalSeconds int = 30
+
+@description('Non-secret env vars for the container: array of { name, value }')
+param containerEnvPlain array = []
+
+@secure()
+@description('Secret map: name -> value. Secrets are created and also exposed via env using the same name.')
+param containerSecretMap object = {}
+
+resource openai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
+  name: openAiName
+  location: openAiLocation
+  kind: 'OpenAI'
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    publicNetworkAccess: openAiPublicNetworkAccess
+  }
+}
+
+resource gpt5nanoDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
+  parent: openai
+  name: gpt5nanoDeploymentName
+  properties: {
+    model: {
+      name: 'gpt-5-nano'
+      format: 'OpenAI'
+      version: gpt5nanoModelVersion
+    }
+  }
+  sku: {
+    name: 'GlobalStandard'
+    capacity: 1
+  }
+}
+
+// ---------- Storage Account ----------
 resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: saName
   location: location
@@ -100,71 +184,7 @@ resource func 'Microsoft.Web/sites@2022-09-01' = {
 output functionEndpoint string = func.properties.defaultHostName
 output functionUrl string = 'https://${func.properties.defaultHostName}'
 
-
-// ---------- Azure OpenAI ----------
-@description('Azure OpenAI account name (global unique, 2-64 chars, letters/numbers/hyphen).')
-param openAiName string
-
-@allowed([
-  'Enabled'
-  'Disabled'
-])
-param openAiPublicNetworkAccess string = 'Enabled'
-
-@description('Azure region for the OpenAI account (must be an allowed AOAI region).')
-param openAiLocation string = location
-
-// Azure OpenAI account
-resource openai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
-  name: openAiName
-  location: openAiLocation
-  kind: 'OpenAI'
-  sku: {
-    name: 'S0'
-  }
-  properties: {
-    publicNetworkAccess: openAiPublicNetworkAccess
-    // customSubDomainName is optional; if omitted, endpoint = https://${name}.openai.azure.com/
-  }
-}
-
-// Helpful outputs
-output openAiEndpoint string = 'https://${openai.name}.openai.azure.com/'
-
-// ---------- Container Apps (Consumption, HTTP + Queue scaler; pulls from PUBLIC Docker Hub) ----------
-@description('Container App name')
-param containerAppName string
-
-@description('Docker image on Docker Hub, e.g., docker.io/<user>/<repo>:<tag>')
-param containerImage string
-
-@description('Container port exposed by the app')
-param containerPort int = 8000
-
-@description('Expose a public HTTPS endpoint')
-param exposePublic bool = true
-
-@description('HTTP concurrency target per replica')
-param httpConcurrentRequests int = 50
-
-@description('Min replicas (0 enables scale to zero)')
-param containerMinReplicas int = 0
-
-@description('Max replicas')
-param containerMaxReplicas int = 5
-
-@description('Global cooldown before scaling in (seconds). 7200 = 2 hours.')
-param cooldownSeconds int = 7200
-
-@description('Scaler polling interval in seconds')
-param pollingIntervalSeconds int = 30
-
-@description('Non-secret env vars for the container: array of { name, value }')
-param containerEnvPlain array = []
-
-@secure()
-@description('Secret map: name -> value. Secrets are created and also exposed via env using the same name.')
-param containerSecretMap object = {}
+// ---------- Azure OpenAI (moved to top since it's referenced) ----------
 
 // Convert secret map to Container Apps secrets + env refs
 var containerSecretsArray = [for s in items(containerSecretMap): {
@@ -181,18 +201,10 @@ resource law 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: '${containerAppName}-law'
   location: location
   properties: {
-    // SKU must be under properties for this API version
     sku: {
       name: 'PerGB2018'
     }
     retentionInDays: 30
-    // Optional features you can set on this API version include:
-    // features: {
-    //   disableLocalAuth: true
-    //   enableDataExport: false
-    //   enableLogAccessUsingOnlyResourcePermissions: true
-    //   immediatePurgeDataOn30Days: false
-    // }
   }
 }
 
@@ -205,7 +217,7 @@ resource cae 'Microsoft.App/managedEnvironments@2025-01-01' = {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
         customerId: law.properties.customerId
-        sharedKey: listKeys(law.id, '2015-03-20').primarySharedKey
+        sharedKey: law.listKeys().primarySharedKey
       }
     }
   }
@@ -305,5 +317,19 @@ resource queueProcessorRole 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-// Helpful output
+// RBAC: allow the Container App's managed identity to access Azure OpenAI
+resource openaiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(openai.id, containerAppName, 'openai-user')
+  scope: openai
+  properties: {
+    // Cognitive Services OpenAI User
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')
+    principalId: respondr.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Outputs
 output containerAppUrl string = exposePublic ? 'https://${respondr.properties.configuration.ingress.fqdn}' : ''
+output openAiEndpoint string = 'https://${openai.name}.openai.azure.com/'
+output gpt5nanoDeployment string = gpt5nanoDeploymentName
