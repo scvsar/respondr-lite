@@ -36,7 +36,8 @@ param(
     [string]$LOCAL_BYPASS_IS_ADMIN,
     [string]$ALLOW_CLEAR_ALL,
     [string]$STORAGE_TABLE_NAME,
-    [string]$STORAGE_QUEUE_NAME
+    [string]$STORAGE_QUEUE_NAME,
+    [string]$ENABLE_LOCAL_AUTH
 )
 
 
@@ -333,8 +334,15 @@ $kv = [ordered]@{
 
   # Storage (dynamic, but overridable)
   "AZURE_STORAGE_CONNECTION_STRING" = $storageConn
+  "AZURE_STORAGE_ACCOUNT"           = $StorageAccountName
   "STORAGE_TABLE_NAME"              = _pick $STORAGE_TABLE_NAME $storageTableName
   "STORAGE_QUEUE_NAME"              = _pick $STORAGE_QUEUE_NAME $storageQueueName
+  
+  # Authentication
+  "ENABLE_LOCAL_AUTH"               = _pick $ENABLE_LOCAL_AUTH "true"
+  
+  # Deployment tracking (auto-generated)
+  "REDEPLOY_AT"                     = (Get-Date -Format "yyyyMMdd-HHmmss")
 }
 
 

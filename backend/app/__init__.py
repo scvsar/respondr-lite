@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from .config import PRIMARY_HOSTNAME, LEGACY_HOSTNAMES
-from .routers import webhook, responders, dashboard, acr, user, frontend
+from .routers import webhook, responders, dashboard, acr, user, frontend, auth
 from .queue_listener import listen_to_queue
 
 logger = logging.getLogger(__name__)
@@ -55,6 +55,7 @@ app.include_router(responders.router)
 app.include_router(dashboard.router)
 app.include_router(acr.router)
 app.include_router(user.router)
+app.include_router(auth.router)
 app.include_router(frontend.router)
 
 # Mount static files for frontend

@@ -24,6 +24,9 @@ param gpt5nanoDeploymentName string = 'gpt-5-nano'
 @description('Model version for GPT-5-nano. See model/version list in docs.')
 param gpt5nanoModelVersion string = '2025-08-07'
 
+@description('TPM units for GPT-5-nano deployment; 1 unit = 1,000 TPM. 200 units = 200,000 TPM.')
+param gpt5nanoTpmUnits int = 200
+
 // Container Apps parameters - matching the PowerShell script exactly
 @description('Container App name')
 param containerAppName string
@@ -59,6 +62,20 @@ param containerEnvPlain array = []
 @description('Secret map: name -> value. Secrets are created and also exposed via env using the same name.')
 param containerSecretMap object = {}
 
+// EasyAuth parameters
+@description('Enable Azure Entra ID authentication')
+param enableAuth bool = false
+
+@description('Azure AD Client ID for authentication')
+param authClientId string = ''
+
+@secure()
+@description('Azure AD Client Secret for authentication')
+param authClientSecret string = ''
+
+@description('Azure AD Tenant ID (optional, defaults to current tenant)')
+param authTenantId string = ''
+
 resource openai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: openAiName
   location: openAiLocation
@@ -83,7 +100,7 @@ resource gpt5nanoDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
   }
   sku: {
     name: 'GlobalStandard'
-    capacity: 1
+    capacity: gpt5nanoTpmUnits
   }
 }
 
@@ -186,11 +203,21 @@ output functionUrl string = 'https://${func.properties.defaultHostName}'
 
 // ---------- Azure OpenAI (moved to top since it's referenced) ----------
 
-// Convert secret map to Container Apps secrets + env refs
-var containerSecretsArray = [for s in items(containerSecretMap): {
+// Convert secret map to Container Apps secrets + env refs, including auth secrets
+var baseSecrets = [for s in items(containerSecretMap): {
   name: s.key
   value: s.value
 }]
+
+var authSecrets = enableAuth ? [
+  {
+    name: 'microsoft-provider-client-secret'
+    value: authClientSecret
+  }
+] : []
+
+var containerSecretsArray = union(baseSecrets, authSecrets)
+
 var envFromSecrets = [for s in items(containerSecretMap): {
   name: s.key
   secretRef: s.key
@@ -301,6 +328,45 @@ resource respondr 'Microsoft.App/containerApps@2025-01-01' = {
           }
         ]
       }
+    }
+  }
+}
+
+// Container App Authentication Configuration (separate resource)
+resource authConfig 'Microsoft.App/containerApps/authConfigs@2025-01-01' = if (enableAuth) {
+  parent: respondr
+  name: 'current'
+  properties: {
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          clientId: authClientId
+          clientSecretSettingName: 'microsoft-provider-client-secret'
+          openIdIssuer: !empty(authTenantId) ? '${environment().authentication.loginEndpoint}${authTenantId}/v2.0' : '${environment().authentication.loginEndpoint}${tenant().tenantId}/v2.0'
+        }
+      }
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'AllowAnonymous'
+      redirectToProvider: 'azureActiveDirectory'
+      excludedPaths: [
+        '/'                          // Allow home page access
+        '/.auth/*'                   // Auth endpoints
+        '/api/auth/local/*'          // Local auth endpoints
+        '/api/user'                  // User info endpoint
+        '/static/*'                  // Static assets
+        '/manifest.json'             // App manifest
+        '/*.ico'                     // Icon files
+        '/*.png'                     // Image files
+        '/*.js'                      // JavaScript files
+        '/*.css'                     // CSS files
+        '/health'                    // Health check endpoint
+      ]
+    }
+    platform: {
+      enabled: true
+      runtimeVersion: '~1'
     }
   }
 }

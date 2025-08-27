@@ -6,6 +6,8 @@ import MobileView from './MobileView';
 import Profile from './Profile';
 import StatusTabs from './StatusTabs';
 import WebhookDebug from './WebhookDebug';
+import LoginChoice from './LoginChoice';
+import AdminPanel from './AdminPanel';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -54,15 +56,88 @@ function AuthGate({ children }) {
 
   if (loading) return <div className="empty">Checking sign-in…</div>;
   if (denied) {
+    // Show login choice page instead of simple sign-in button
+    return <LoginChoice />;
+  }
+  return children;
+}
+
+// Admin gate: ensures user is authenticated and has admin privileges
+function AdminGate({ children }) {
+  const [user, setUser] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [denied, setDenied] = React.useState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const resp = await fetch("/api/user", { credentials: 'include' });
+        if (!resp.ok) {
+          if (!cancelled) {
+            setDenied("Failed to load user info");
+            setLoading(false);
+          }
+          return;
+        }
+        const userData = await resp.json();
+        if (!cancelled) {
+          if (!userData.authenticated) {
+            setDenied("Authentication required");
+          } else if (!userData.is_admin) {
+            setDenied("Admin privileges required");
+          } else {
+            setUser(userData);
+          }
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setDenied("Network error loading user info");
+          setLoading(false);
+        }
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: '40px', textAlign: 'center', color: '#a0a0a0' }}>Loading...</div>;
+  }
+
+  if (denied) {
     return (
-      <div className="empty" role="alert">
-        {denied.message || denied.error || 'Not authenticated'}
-        <div style={{marginTop:12}}>
-          <a className="btn" href={signInUrl('/')}>Sign In</a>
-        </div>
+      <div style={{ 
+        padding: '40px', 
+        textAlign: 'center', 
+        color: '#ff6b6b',
+        background: '#1a1a1a',
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column'
+      }}>
+        <h2 style={{ color: '#ffffff', marginBottom: '16px' }}>Access Denied</h2>
+        <p style={{ marginBottom: '24px' }}>{denied}</p>
+        <button 
+          onClick={() => window.location.href = '/'}
+          style={{
+            background: '#0078d4',
+            color: 'white',
+            border: 'none',
+            padding: '12px 24px',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          Return to Dashboard
+        </button>
       </div>
     );
   }
+
   return children;
 }
 
@@ -653,20 +728,38 @@ function MainApp() {
                 u.searchParams.set('mobile','1');
                 window.location.href = u.toString();
               }}>Mobile Site</div>
-              <div className="menu-item" onClick={()=>{ 
+              <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
-                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/.auth/logout?post_logout_redirect_uri=%2F.auth%2Flogin%2Faad%3Fpost_login_redirect_uri%3D%2F';
-                window.location.href = url; 
+                if (host.endsWith(':3100')) {
+                  window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/';
+                } else if (user?.auth_type === 'local') {
+                  await fetch('/api/auth/local/logout', { method: 'POST', credentials: 'include' });
+                  sessionStorage.clear();
+                  window.location.reload();
+                } else {
+                  window.location.href = '/.auth/logout?post_logout_redirect_uri=%2F.auth%2Flogin%2Faad%3Fpost_login_redirect_uri%3D%2F';
+                }
               }}>Switch Account</div>
+              {isAdmin && (
+                <div className="menu-item" onClick={()=>{ window.location.href = '/admin'; }}>Admin Panel</div>
+              )}
               {isAdmin && (
                 <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
               )}
-              <div className="menu-item" onClick={()=>{ 
+              <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
-                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/' : (user?.logout_url || '/.auth/logout?post_logout_redirect_uri=/');
-                window.location.href = url; 
+                if (host.endsWith(':3100')) {
+                  window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/';
+                } else if (user?.auth_type === 'local') {
+                  await fetch('/api/auth/local/logout', { method: 'POST', credentials: 'include' });
+                  sessionStorage.clear();
+                  window.location.reload();
+                } else {
+                  const url = user?.logout_url || '/.auth/logout?post_logout_redirect_uri=/';
+                  window.location.href = url;
+                }
               }}>Logout</div>
             </div>
           )}
@@ -860,7 +953,8 @@ function App() {
           </AuthGate>
         } />
         <Route path="/logout" element={<Logout />} />
-  <Route path="/debug/webhook" element={<AuthGate><WebhookDebug /></AuthGate>} />
+        <Route path="/admin" element={<AdminGate><AdminPanel /></AdminGate>} />
+        <Route path="/debug/webhook" element={<AuthGate><WebhookDebug /></AuthGate>} />
       </Routes>
     </Router>
   );

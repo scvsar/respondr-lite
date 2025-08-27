@@ -1,0 +1,534 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.37.4.10188",
+      "templateHash": "2380046311765131567"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "saName": {
+      "type": "string"
+    },
+    "functionAppName": {
+      "type": "string"
+    },
+    "tableName": {
+      "type": "string",
+      "defaultValue": "ResponderMessages"
+    },
+    "queueName": {
+      "type": "string",
+      "defaultValue": "respondr-incoming"
+    },
+    "openAiName": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure OpenAI account name (global unique, 2-64 chars, letters/numbers/hyphen)."
+      }
+    },
+    "openAiPublicNetworkAccess": {
+      "type": "string",
+      "defaultValue": "Enabled",
+      "allowedValues": [
+        "Enabled",
+        "Disabled"
+      ]
+    },
+    "openAiLocation": {
+      "type": "string",
+      "defaultValue": "eastus2",
+      "metadata": {
+        "description": "Azure region for the OpenAI account (must be an allowed AOAI region)."
+      }
+    },
+    "gpt5nanoDeploymentName": {
+      "type": "string",
+      "defaultValue": "gpt-5-nano",
+      "metadata": {
+        "description": "Deployment name for the GPT-5-nano model."
+      }
+    },
+    "gpt5nanoModelVersion": {
+      "type": "string",
+      "defaultValue": "2025-08-07",
+      "metadata": {
+        "description": "Model version for GPT-5-nano. See model/version list in docs."
+      }
+    },
+    "gpt5nanoTpmUnits": {
+      "type": "int",
+      "defaultValue": 200,
+      "metadata": {
+        "description": "TPM units for GPT-5-nano deployment; 1 unit = 1,000 TPM. 200 units = 200,000 TPM."
+      }
+    },
+    "containerAppName": {
+      "type": "string",
+      "metadata": {
+        "description": "Container App name"
+      }
+    },
+    "containerImage": {
+      "type": "string",
+      "metadata": {
+        "description": "Docker image on Docker Hub, e.g., docker.io/<user>/<repo>:<tag>"
+      }
+    },
+    "containerPort": {
+      "type": "int",
+      "defaultValue": 8000,
+      "metadata": {
+        "description": "Container port exposed by the app"
+      }
+    },
+    "exposePublic": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Expose a public HTTPS endpoint"
+      }
+    },
+    "httpConcurrentRequests": {
+      "type": "int",
+      "defaultValue": 50,
+      "metadata": {
+        "description": "HTTP concurrency target per replica"
+      }
+    },
+    "containerMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Min replicas (0 enables scale to zero)"
+      }
+    },
+    "containerMaxReplicas": {
+      "type": "int",
+      "defaultValue": 5,
+      "metadata": {
+        "description": "Max replicas"
+      }
+    },
+    "cooldownSeconds": {
+      "type": "int",
+      "defaultValue": 7200,
+      "metadata": {
+        "description": "Global cooldown before scaling in (seconds). 7200 = 2 hours."
+      }
+    },
+    "pollingIntervalSeconds": {
+      "type": "int",
+      "defaultValue": 30,
+      "metadata": {
+        "description": "Scaler polling interval in seconds"
+      }
+    },
+    "containerEnvPlain": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "Non-secret env vars for the container: array of { name, value }"
+      }
+    },
+    "containerSecretMap": {
+      "type": "secureObject",
+      "defaultValue": {},
+      "metadata": {
+        "description": "Secret map: name -> value. Secrets are created and also exposed via env using the same name."
+      }
+    },
+    "enableAuth": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable Azure Entra ID authentication"
+      }
+    },
+    "authClientId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure AD Client ID for authentication"
+      }
+    },
+    "authClientSecret": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure AD Client Secret for authentication"
+      }
+    },
+    "authTenantId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Azure AD Tenant ID (optional, defaults to current tenant)"
+      }
+    }
+  },
+  "variables": {
+    "copy": [
+      {
+        "name": "baseSecrets",
+        "count": "[length(items(parameters('containerSecretMap')))]",
+        "input": {
+          "name": "[items(parameters('containerSecretMap'))[copyIndex('baseSecrets')].key]",
+          "value": "[items(parameters('containerSecretMap'))[copyIndex('baseSecrets')].value]"
+        }
+      },
+      {
+        "name": "envFromSecrets",
+        "count": "[length(items(parameters('containerSecretMap')))]",
+        "input": {
+          "name": "[items(parameters('containerSecretMap'))[copyIndex('envFromSecrets')].key]",
+          "secretRef": "[items(parameters('containerSecretMap'))[copyIndex('envFromSecrets')].key]"
+        }
+      }
+    ],
+    "authSecrets": "[if(parameters('enableAuth'), createArray(createObject('name', 'microsoft-provider-client-secret', 'value', parameters('authClientSecret'))), createArray())]",
+    "containerSecretsArray": "[union(variables('baseSecrets'), variables('authSecrets'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2025-06-01",
+      "name": "[parameters('openAiName')]",
+      "location": "[parameters('openAiLocation')]",
+      "kind": "OpenAI",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "publicNetworkAccess": "[parameters('openAiPublicNetworkAccess')]"
+      }
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2025-06-01",
+      "name": "[format('{0}/{1}', parameters('openAiName'), parameters('gpt5nanoDeploymentName'))]",
+      "properties": {
+        "model": {
+          "name": "gpt-5-nano",
+          "format": "OpenAI",
+          "version": "[parameters('gpt5nanoModelVersion')]"
+        }
+      },
+      "sku": {
+        "name": "GlobalStandard",
+        "capacity": "[parameters('gpt5nanoTpmUnits')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[parameters('saName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}', parameters('saName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('saName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/queueServices/queues",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}/{2}', parameters('saName'), 'default', parameters('queueName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices', parameters('saName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}', parameters('saName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('saName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/tableServices/tables",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}/{2}', parameters('saName'), 'default', parameters('tableName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/tableServices', parameters('saName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2022-09-01",
+      "name": "[format('{0}-plan', parameters('functionAppName'))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic"
+      },
+      "kind": "functionapp",
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2022-09-01",
+      "name": "[parameters('functionAppName')]",
+      "location": "[parameters('location')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "httpsOnly": true,
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', format('{0}-plan', parameters('functionAppName')))]",
+        "siteConfig": {
+          "linuxFxVersion": "Python|3.11",
+          "ftpsState": "Disabled",
+          "appSettings": [
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "python"
+            },
+            {
+              "name": "SCM_DO_BUILD_DURING_DEPLOYMENT",
+              "value": "1"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE",
+              "value": "1"
+            },
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', parameters('saName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('saName')), '2023-01-01').keys[0].value, environment().suffixes.storage)]"
+            },
+            {
+              "name": "STORAGE_QUEUE_NAME",
+              "value": "[parameters('queueName')]"
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', format('{0}-plan', parameters('functionAppName')))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('saName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[format('{0}-law', parameters('containerAppName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": 30
+      }
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2025-01-01",
+      "name": "[format('{0}-env', parameters('containerAppName'))]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-law', parameters('containerAppName'))), '2022-10-01').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-law', parameters('containerAppName'))), '2022-10-01').primarySharedKey]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', format('{0}-law', parameters('containerAppName')))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2025-01-01",
+      "name": "[parameters('containerAppName')]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('containerAppName')))]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "secrets": "[variables('containerSecretsArray')]",
+          "ingress": {
+            "external": "[parameters('exposePublic')]",
+            "allowInsecure": false,
+            "targetPort": "[parameters('containerPort')]",
+            "transport": "auto",
+            "traffic": [
+              {
+                "latestRevision": true,
+                "weight": 100
+              }
+            ]
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "app",
+              "image": "[parameters('containerImage')]",
+              "env": "[concat(parameters('containerEnvPlain'), variables('envFromSecrets'), createArray(createObject('name', 'STORAGE_QUEUE_NAME', 'value', parameters('queueName')), createObject('name', 'AZURE_STORAGE_ACCOUNT', 'value', parameters('saName')), createObject('name', 'AZURE_OPENAI_ENDPOINT', 'value', format('https://{0}.openai.azure.com/', parameters('openAiName')))))]",
+              "probes": [
+                {
+                  "type": "Liveness",
+                  "httpGet": {
+                    "path": "/health",
+                    "port": "[parameters('containerPort')]"
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 20,
+                  "timeoutSeconds": 5,
+                  "failureThreshold": 3
+                }
+              ],
+              "resources": {
+                "cpu": 1,
+                "memory": "2Gi"
+              }
+            }
+          ],
+          "revisionSuffix": "v1",
+          "scale": {
+            "minReplicas": "[parameters('containerMinReplicas')]",
+            "maxReplicas": "[parameters('containerMaxReplicas')]",
+            "pollingInterval": "[parameters('pollingIntervalSeconds')]",
+            "cooldownPeriod": "[parameters('cooldownSeconds')]",
+            "rules": [
+              {
+                "name": "http",
+                "http": {
+                  "metadata": {
+                    "concurrentRequests": "[string(parameters('httpConcurrentRequests'))]"
+                  }
+                }
+              },
+              {
+                "name": "queue",
+                "azureQueue": {
+                  "identity": "system",
+                  "accountName": "[parameters('saName')]",
+                  "queueName": "[parameters('queueName')]",
+                  "queueLength": 1
+                }
+              }
+            ]
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('containerAppName')))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('saName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('enableAuth')]",
+      "type": "Microsoft.App/containerApps/authConfigs",
+      "apiVersion": "2025-01-01",
+      "name": "[format('{0}/{1}', parameters('containerAppName'), 'current')]",
+      "properties": {
+        "identityProviders": {
+          "azureActiveDirectory": {
+            "enabled": true,
+            "registration": {
+              "clientId": "[parameters('authClientId')]",
+              "clientSecretSettingName": "microsoft-provider-client-secret",
+              "openIdIssuer": "[if(not(empty(parameters('authTenantId'))), format('{0}{1}/v2.0', environment().authentication.loginEndpoint, parameters('authTenantId')), format('{0}{1}/v2.0', environment().authentication.loginEndpoint, tenant().tenantId))]"
+            }
+          }
+        },
+        "globalValidation": {
+          "redirectToProvider": "azureActiveDirectory"
+        },
+        "platform": {
+          "enabled": true,
+          "runtimeVersion": "~1"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/containerApps', parameters('containerAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.Storage/storageAccounts/{0}/queueServices/{1}/queues/{2}', parameters('saName'), 'default', parameters('queueName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', parameters('saName'), 'default', parameters('queueName')), parameters('containerAppName'), 'queue-msg-processor')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8a0f0c08-91a1-4084-bc3d-661d67233fed')]",
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', parameters('saName'), 'default', parameters('queueName'))]",
+        "[resourceId('Microsoft.App/containerApps', parameters('containerAppName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', parameters('openAiName'))]",
+      "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName')), parameters('containerAppName'), 'openai-user')]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
+        "principalId": "[reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-01-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName'))]",
+        "[resourceId('Microsoft.App/containerApps', parameters('containerAppName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "functionEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2022-09-01').defaultHostName]"
+    },
+    "functionUrl": {
+      "type": "string",
+      "value": "[format('https://{0}', reference(resourceId('Microsoft.Web/sites', parameters('functionAppName')), '2022-09-01').defaultHostName)]"
+    },
+    "containerAppUrl": {
+      "type": "string",
+      "value": "[if(parameters('exposePublic'), format('https://{0}', reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-01-01').configuration.ingress.fqdn), '')]"
+    },
+    "openAiEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}.openai.azure.com/', parameters('openAiName'))]"
+    },
+    "gpt5nanoDeployment": {
+      "type": "string",
+      "value": "[parameters('gpt5nanoDeploymentName')]"
+    }
+  }
+}

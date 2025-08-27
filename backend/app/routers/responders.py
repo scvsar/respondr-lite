@@ -51,9 +51,28 @@ def require_admin_access(request: Request) -> bool:
     # During testing, bypass authentication entirely
     if is_testing:
         return True
+    
+    # Check for local authentication first
+    from ..local_auth import extract_session_token_from_request, verify_session_token
+    from ..config import ENABLE_LOCAL_AUTH
+    
+    if ENABLE_LOCAL_AUTH:
+        token = extract_session_token_from_request(request)
+        if token:
+            local_user = verify_session_token(token)
+            if local_user and local_user.get("email"):
+                # Check if local user's email domain is allowed
+                if not is_email_domain_allowed(local_user["email"]):
+                    raise HTTPException(status_code=403, detail="Access denied: domain not authorized")
+                # Check if local user is admin
+                if not local_user.get("is_admin", False):
+                    raise HTTPException(status_code=403, detail="Access denied: admin privileges required")
+                return True
         
+    # Check for SSO/EasyAuth authentication
     user_email = (
-        request.headers.get("X-Auth-Request-Email")
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+        or request.headers.get("X-Auth-Request-Email")
         or request.headers.get("X-Auth-Request-User")
         or request.headers.get("x-forwarded-email")
         or request.headers.get("X-User")
@@ -79,9 +98,25 @@ def require_authenticated_access(request: Request) -> bool:
     # During testing, bypass authentication entirely
     if is_testing:
         return True
+    
+    # Check for local authentication first
+    from ..local_auth import extract_session_token_from_request, verify_session_token
+    from ..config import ENABLE_LOCAL_AUTH
+    
+    if ENABLE_LOCAL_AUTH:
+        token = extract_session_token_from_request(request)
+        if token:
+            local_user = verify_session_token(token)
+            if local_user and local_user.get("email"):
+                # Check if local user's email domain is allowed
+                if not is_email_domain_allowed(local_user["email"]):
+                    raise HTTPException(status_code=403, detail="Access denied: domain not authorized")
+                return True
         
+    # Check for SSO/EasyAuth authentication
     user_email = (
-        request.headers.get("X-Auth-Request-Email")
+        request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
+        or request.headers.get("X-Auth-Request-Email")
         or request.headers.get("X-Auth-Request-User")
         or request.headers.get("x-forwarded-email")
         or request.headers.get("X-User")

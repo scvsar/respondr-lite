@@ -1,0 +1,146 @@
+name: Deploy to Preprod
+
+on:
+  push:
+    branches:
+      - preprod
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  DOCKER_REPO: randytreit/respondr
+  RESOURCE_GROUP: respondrlite
+  CONTAINER_APP_NAME: respondrlite-ca-667cdd10  # Update this with your actual Container App name
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      id-token: write  # Required for Azure OIDC authentication
+      contents: read
+    
+    steps:
+      # Checkout the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # Set up Docker Buildx for advanced build features
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      # Log in to Docker Hub
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      
+      # Generate version tag (date.buildnumber format)
+      - name: Generate version tag
+        id: version
+        run: |
+          TODAY=$(date -u +"%Y-%m-%d")
+          
+          # Get latest tag from Docker Hub
+          LATEST_TAG=$(curl -s "https://hub.docker.com/v2/repositories/${{ env.DOCKER_REPO }}/tags?page_size=100" | \
+            jq -r '.results[].name' | \
+            grep -E "^${TODAY}\.[0-9]+$" | \
+            sort -V | \
+            tail -1)
+          
+          if [ -z "$LATEST_TAG" ]; then
+            # No tag for today yet, start at 1
+            BUILD_NUMBER=1
+          else
+            # Extract build number and increment
+            BUILD_NUMBER=$(echo $LATEST_TAG | cut -d. -f2)
+            BUILD_NUMBER=$((BUILD_NUMBER + 1))
+          fi
+          
+          NEW_TAG="${TODAY}.${BUILD_NUMBER}"
+          echo "NEW_TAG=${NEW_TAG}" >> $GITHUB_OUTPUT
+          echo "Generated tag: ${NEW_TAG}"
+      
+      # Build and push Docker image
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.DOCKER_REPO }}:${{ steps.version.outputs.NEW_TAG }}
+            ${{ env.DOCKER_REPO }}:latest
+            ${{ env.DOCKER_REPO }}:preprod
+          cache-from: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache,mode=max
+      
+      # Log in to Azure using OIDC (federated credentials)
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+      
+      # Deploy to Azure Container Apps
+      - name: Deploy to Azure Container Apps
+        run: |
+          REVISION_SUFFIX="gh-$(date +%Y%m%d-%H%M%S)"
+          IMAGE="docker.io/${{ env.DOCKER_REPO }}:${{ steps.version.outputs.NEW_TAG }}"
+          
+          echo "Deploying image: ${IMAGE}"
+          echo "Revision suffix: ${REVISION_SUFFIX}"
+          
+          az containerapp update \
+            -g ${{ env.RESOURCE_GROUP }} \
+            -n ${{ env.CONTAINER_APP_NAME }} \
+            --image ${IMAGE} \
+            --revision-suffix ${REVISION_SUFFIX} \
+            --set-env-vars REDEPLOY_AT=$(date +%Y%m%d-%H%M%S) \
+            --query "properties.configuration.ingress.fqdn" \
+            -o tsv
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ Deployment successful!"
+            FQDN=$(az containerapp show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.CONTAINER_APP_NAME }} --query "properties.configuration.ingress.fqdn" -o tsv)
+            echo "🌐 Application URL: https://${FQDN}"
+          else
+            echo "❌ Deployment failed"
+            exit 1
+          fi
+      
+      # Create deployment summary
+      - name: Create deployment summary
+        if: success()
+        run: |
+          FQDN=$(az containerapp show -g ${{ env.RESOURCE_GROUP }} -n ${{ env.CONTAINER_APP_NAME }} --query "properties.configuration.ingress.fqdn" -o tsv)
+          
+          cat >> $GITHUB_STEP_SUMMARY <<EOF
+          ## 🚀 Deployment Summary
+          
+          ### Docker Image
+          - **Repository**: \`${{ env.DOCKER_REPO }}\`
+          - **Tag**: \`${{ steps.version.outputs.NEW_TAG }}\`
+          - **Registry**: Docker Hub
+          
+          ### Azure Container Apps
+          - **Resource Group**: \`${{ env.RESOURCE_GROUP }}\`
+          - **Container App**: \`${{ env.CONTAINER_APP_NAME }}\`
+          - **URL**: https://${FQDN}
+          
+          ### Deployment Details
+          - **Branch**: \`preprod\`
+          - **Commit**: \`${{ github.sha }}\`
+          - **Triggered by**: ${{ github.actor }}
+          - **Workflow run**: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          EOF
+      
+      # Optional: Send notification (Slack, Teams, etc.)
+      # - name: Send notification
+      #   if: always()
+      #   run: |
+      #     # Add your notification logic here

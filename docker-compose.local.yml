@@ -8,9 +8,10 @@ services:
     environment:
       - DEBUG=true
       - DISABLE_API_KEY_CHECK=true
-      - ALLOW_LOCAL_AUTH_BYPASS=true
-      - LOCAL_BYPASS_IS_ADMIN=true
+      - ALLOW_LOCAL_AUTH_BYPASS=false
+      - LOCAL_BYPASS_IS_ADMIN=false
       - ALLOW_CLEAR_ALL=true
+      - ENABLE_LOCAL_AUTH=true
     env_file:
       - .env
     volumes:

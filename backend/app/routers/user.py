@@ -3,10 +3,11 @@
 from fastapi import APIRouter, Request
 from typing import List, Optional
 
-from ..config import allowed_email_domains, allowed_admin_users, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing
+from ..config import allowed_email_domains, allowed_admin_users, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing, ENABLE_LOCAL_AUTH
 import logging
 from urllib.parse import quote
 from fastapi.responses import JSONResponse
+from ..local_auth import extract_session_token_from_request, verify_session_token
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def is_admin(email: Optional[str]) -> bool:
 
 @router.get("/api/user")
 def get_user_info(request: Request) -> JSONResponse:
-    """Get user info from EasyAuth or OAuth2 Proxy headers."""
+    """Get user info from EasyAuth, OAuth2 Proxy headers, or local session."""
     if DEBUG_LOG_HEADERS:
         logger.debug("=== DEBUG: All headers received ===")
         for header_name, header_value in request.headers.items():
@@ -48,6 +49,26 @@ def get_user_info(request: Request) -> JSONResponse:
                 logger.debug(f"Header: {header_name} = {header_value}")
         logger.debug("=== END DEBUG ===")
 
+    # Try local authentication first if enabled
+    if ENABLE_LOCAL_AUTH or is_testing:
+        token = extract_session_token_from_request(request)
+        if token:
+            local_user = verify_session_token(token)
+        else:
+            local_user = None
+        if local_user:
+            return JSONResponse(content={
+                "authenticated": True,
+                "email": local_user["email"],
+                "name": local_user["display_name"],
+                "groups": [],  # Local users don't have groups yet
+                "is_admin": local_user["is_admin"],
+                "auth_type": "local",
+                "organization": local_user.get("organization", ""),
+                "logout_url": "/api/auth/local/logout",
+            })
+
+    # Try EasyAuth/OAuth2 headers
     user_email = (
         request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME")
         or request.headers.get("X-Auth-Request-Email")
@@ -81,17 +102,20 @@ def get_user_info(request: Request) -> JSONResponse:
         authenticated = True
         display_name = user_name or user_email
         email = user_email
+        auth_type = "sso"
     else:
         if ALLOW_LOCAL_AUTH_BYPASS and not is_testing:
             authenticated = True
             display_name = "Local Dev User"
             email = "dev@local"
             user_groups = []
+            auth_type = "dev"
         else:
             authenticated = False
             display_name = None
             email = None
             user_groups = []
+            auth_type = None
 
     # Clean up groups list
     groups = [g.strip() for g in user_groups if g.strip()] if user_groups else []
@@ -99,11 +123,16 @@ def get_user_info(request: Request) -> JSONResponse:
     # Check admin status
     admin_flag = is_admin(email)
 
-    return JSONResponse(content={
+    response_data = {
         "authenticated": authenticated,
         "email": email,
         "name": display_name,
         "groups": groups,
         "is_admin": admin_flag,
         "logout_url": f"/.auth/logout?post_logout_redirect_uri={quote('/', safe='')}",
-    })
+    }
+    
+    if auth_type:
+        response_data["auth_type"] = auth_type
+
+    return JSONResponse(content=response_data)

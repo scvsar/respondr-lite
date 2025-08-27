@@ -57,15 +57,25 @@ if ($appRegList.Count -ge 1) {
 $appId = $appReg.appId
 if ([string]::IsNullOrWhiteSpace($appId)) { throw "appId not resolved." }
 
-# Ensure v2 token acceptance before possibly switching audience (required by AAD for 'AzureADandPersonalMicrosoftAccount')
+# Ensure v2 token acceptance and proper audience configuration
 try {
-  az ad app update --id $appId --set accessTokenAcceptedVersion=2 api.requestedAccessTokenVersion=2 --only-show-errors | Out-Null
-} catch { }
-# Keep audience in sync with the switch
-$desiredAudience = $(if ($IncludeMSA) { "AzureADandPersonalMicrosoftAccount" } else { "AzureADMultipleOrgs" })
-if ($appReg.signInAudience -ne $desiredAudience) {
-  Log "Updating sign-in audience to $desiredAudience"
-  az ad app update --id $appId --sign-in-audience $desiredAudience --only-show-errors | Out-Null
+  # Get current app configuration
+  $currentApp = az ad app show --id $appId --query "{accessTokenAcceptedVersion: accessTokenAcceptedVersion, signInAudience: signInAudience}" --only-show-errors | ConvertFrom-Json
+  
+  # Update access token version if needed
+  if ($currentApp.accessTokenAcceptedVersion -ne 2) {
+    Log "Updating access token version to v2"
+    az ad app update --id $appId --set accessTokenAcceptedVersion=2 --only-show-errors | Out-Null
+  }
+  
+  # Update audience if needed
+  $desiredAudience = $(if ($IncludeMSA) { "AzureADandPersonalMicrosoftAccount" } else { "AzureADMultipleOrgs" })
+  if ($currentApp.signInAudience -ne $desiredAudience) {
+    Log "Updating sign-in audience to $desiredAudience"
+    az ad app update --id $appId --sign-in-audience $desiredAudience --only-show-errors | Out-Null
+  }
+} catch {
+  Log "Warning: Could not update app registration properties. This may not affect functionality."
 }
 
 # --- 3) Ensure redirect URIs and token issuance --------------------------------------
@@ -130,39 +140,70 @@ if ($clientSecret) {
 }
 
 # --- 5) Configure the Microsoft provider in Container Apps ----------------------------
-# Prefer tenant-specific issuer for reliability; include MSA uses 'common'
-$tenantId = az account show --query tenantId -o tsv
-$issuer   = $(if ($IncludeMSA) { "https://login.microsoftonline.com/common/v2.0" } else { "https://login.microsoftonline.com/$tenantId/v2.0" })
+$issuer   = "https://login.microsoftonline.com/common/v2.0"
 
 Log "Configuring Microsoft provider (clientId=$appId, issuer=$issuer)..."
-$msArgs = @(
-  "containerapp","auth","microsoft","update",
-  "-g",$ResourceGroup,"-n",$ContainerAppName,
-  "--client-id",$appId,
-  "--issuer",$issuer
-)
-# Only supply the plaintext secret when we just created/rotated it
-if ($clientSecret) { $msArgs += @("--client-secret", $clientSecret) }
-az @msArgs --only-show-errors | Out-Null
+try {
+  $msArgs = @(
+    "containerapp","auth","microsoft","update",
+    "-g",$ResourceGroup,"-n",$ContainerAppName,
+    "--client-id",$appId,
+    "--issuer",$issuer
+  )
+  # Only supply the plaintext secret when we just created/rotated it
+  if ($clientSecret) { 
+    Log "Adding client secret to Microsoft provider configuration..."
+    $msArgs += @("--client-secret", $clientSecret, "--yes") 
+  }
+  az @msArgs --only-show-errors | Out-Null
+  Log "Microsoft provider configured successfully"
+} catch {
+  throw "Failed to configure Microsoft provider: $_"
+}
 
 # --- 6) Enable Easy Auth & default behavior ------------------------------------------
 Log "Enabling Easy Auth and setting unauthenticated action to RedirectToLoginPage..."
-az containerapp auth update -g $ResourceGroup -n $ContainerAppName `
-  --enabled true `
-  --redirect-provider microsoft `
-  --unauthenticated-client-action RedirectToLoginPage `
-  --only-show-errors | Out-Null
+try {
+  az containerapp auth update -g $ResourceGroup -n $ContainerAppName `
+    --enabled true `
+    --redirect-provider microsoft `
+    --unauthenticated-client-action RedirectToLoginPage `
+    --only-show-errors | Out-Null
+  Log "Easy Auth enabled successfully"
+} catch {
+  throw "Failed to enable Easy Auth: $_"
+}
 
 # --- 7) Final verification ------------------------------------------------------------
-$fqdn = az containerapp show -g $ResourceGroup -n $ContainerAppName --query "properties.configuration.ingress.fqdn" -o tsv
-$redirect = "https://$fqdn/.auth/login/aad/callback"
-
-Log ""
-Log "=== DONE =============================================================="
-Log "Container App:   $ContainerAppName"
-Log "App displayName: $AppDisplayName"
-Log "App (client) ID: $appId"
-Log "Issuer:          $issuer"
-Log "Login URL:       https://$fqdn/.auth/login/aad?post_login_redirect_uri=/"
-Log "Callback URL:    $redirect"
-Log "======================================================================="
+Log "Verifying configuration..."
+try {
+  $fqdn = az containerapp show -g $ResourceGroup -n $ContainerAppName --query "properties.configuration.ingress.fqdn" -o tsv --only-show-errors
+  if ([string]::IsNullOrWhiteSpace($fqdn)) {
+    throw "Could not retrieve Container App FQDN"
+  }
+  
+  # Verify auth is enabled
+  $authEnabled = az containerapp auth show -g $ResourceGroup -n $ContainerAppName --query "properties.globalValidation.requireAuthentication" -o tsv --only-show-errors 2>$null
+  
+  $redirect = "https://$fqdn/.auth/login/aad/callback"
+  
+  Log ""
+  Log "=== CONFIGURATION COMPLETE ==========================================="
+  Log "Container App:     $ContainerAppName"
+  Log "App displayName:   $AppDisplayName"
+  Log "App (client) ID:   $appId"
+  Log "Issuer:            $issuer"
+  Log "Authentication:    $(if ($authEnabled -eq 'true') { 'Enabled' } else { 'Enabled (verify manually)' })"
+  Log "Login URL:         https://$fqdn/.auth/login/aad?post_login_redirect_uri=/"
+  Log "Callback URL:      $redirect"
+  Log ""
+  Log "Next steps:"
+  Log "1. Add the callback URL to your Entra app registration if not already present"
+  Log "2. Test authentication by visiting: https://$fqdn"
+  Log "3. For dual auth, deploy with ENABLE_LOCAL_AUTH=true"
+  Log "======================================================================="
+  
+} catch {
+  Log "Warning: Could not verify final configuration, but setup should be complete"
+  Log "Manual verification recommended"
+}

@@ -80,8 +80,22 @@ allowed_admin_users = [
 ALLOW_LOCAL_AUTH_BYPASS = os.getenv("ALLOW_LOCAL_AUTH_BYPASS", "false").lower() == "true"
 LOCAL_BYPASS_IS_ADMIN = os.getenv("LOCAL_BYPASS_IS_ADMIN", "false").lower() == "true"
 
-# Testing and development flags
+# Testing and development flags (defined early as other config depends on it)
 is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.modules
+
+# Local authentication configuration
+ENABLE_LOCAL_AUTH = os.getenv("ENABLE_LOCAL_AUTH", "false").lower() == "true"
+LOCAL_USERS_TABLE = os.getenv("LOCAL_USERS_TABLE", "LocalUsers")
+LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_KEY", "your-secret-key-change-this")
+LOCAL_AUTH_SESSION_HOURS = int(os.getenv("LOCAL_AUTH_SESSION_HOURS", "24"))
+
+# JWT token configuration for local auth
+import secrets
+if LOCAL_AUTH_SECRET_KEY == "your-secret-key-change-this" and not is_testing:
+    logger.warning("LOCAL_AUTH_SECRET_KEY not set! Using random key (sessions won't persist across restarts)")
+    LOCAL_AUTH_SECRET_KEY = secrets.token_urlsafe(32)
+
+# API security flags  
 disable_api_key_check = (
     os.getenv("DISABLE_API_KEY_CHECK", "false").lower() == "true" or is_testing
 )
