@@ -177,7 +177,7 @@ async def admin_create_user(
     )
     
     if success:
-        logger.info(f"Admin {current_user['username']} created local user: {create_request.username}")
+        logger.info(f"Admin created local user: {create_request.username}")
         return {
             "success": True, 
             "message": f"User '{create_request.username}' created successfully"
@@ -195,7 +195,7 @@ async def admin_reset_password(
     success = await update_local_user_password(reset_request.username, reset_request.new_password)
     
     if success:
-        logger.info(f"Admin {current_user['username']} reset password for: {reset_request.username}")
+        logger.info(f"Admin reset password for: {reset_request.username}")
         return {
             "success": True,
             "message": f"Password reset for user '{reset_request.username}'"
