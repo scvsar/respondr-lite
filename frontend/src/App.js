@@ -152,23 +152,14 @@ function MainApp() {
   const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
   const [activeTab, setActiveTab] = useState('all');
   const [geocitiesMode, setGeocitiesMode] = useState(() => {
-    // Check localStorage for saved preference
-    try {
-      return localStorage.getItem('geocities_theme') === 'true';
-    } catch {
-      return false;
-    }
+    // Always start disabled by default for professional appearance
+    // Users must explicitly enable the retro mode each session
+    return false;
   });
 
-  // Toggle GeoCities theme
+  // Toggle GeoCities theme (session-only, resets on page refresh)
   const toggleGeocitiesTheme = useCallback(() => {
-    setGeocitiesMode(prev => {
-      const newValue = !prev;
-      try {
-        localStorage.setItem('geocities_theme', String(newValue));
-      } catch {}
-      return newValue;
-    });
+    setGeocitiesMode(prev => !prev);
   }, []);
 
   const handleTabChange = useCallback((tab) => {
