@@ -23,6 +23,7 @@ const StatusTabs = ({
   vehicleFilter = [],
   query = '',
   refreshNonce = 0,
+  geocitiesMode = false,
   // Controlled tab props (optional)
   activeTab: controlledActiveTab,
   onTabChange,
@@ -226,8 +227,8 @@ const StatusTabs = ({
     const visibleIds = (tableData || []).map(r => r.id).filter(Boolean);
     const allVisibleChecked = visibleIds.length > 0 && visibleIds.every(id => selected.has(id)) && selected.size === visibleIds.length;
     return (
-  <div className="table-wrap">
-        <table className="dashboard-table" role="table">
+  <div className={geocitiesMode ? "table-wrap geocities-table" : "table-wrap"}>
+        <table className={geocitiesMode ? "dashboard-table geocities-retro-table" : "dashboard-table"} role="table">
           <thead>
             <tr>
               {editMode && showAllColumns && (
