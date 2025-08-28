@@ -251,8 +251,19 @@ export default function WebhookDebug() {
   return (
     <div className="debug-wrap">
       <div className="page-header">
-        <div className="title">Webhook Debugger</div>
-        <div className="subtitle">Post test messages to <code className="mono">/webhook?debug=true</code> and inspect prompts, parsing, and storage.</div>
+        <div className="header-content">
+          <div className="header-title-section">
+            <div className="title">Webhook Debugger</div>
+            <div className="subtitle">Post test messages to <code className="mono">/webhook?debug=true</code> and inspect prompts, parsing, and storage.</div>
+          </div>
+          <button 
+            className="btn-secondary back-to-dashboard"
+            onClick={() => window.location.href = '/'}
+            title="Return to Dashboard"
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
       </div>
       {authError && (
         <div className="alert error" role="alert">{authError}</div>
