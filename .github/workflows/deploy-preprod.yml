@@ -15,7 +15,92 @@ env:
   AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Checkout the repository code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      # Set up Python for backend tests
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      # Set up Node.js for frontend tests
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      # Cache Python dependencies
+      - name: Cache Python dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+      
+      # Cache Node modules
+      - name: Cache Node modules
+        uses: actions/cache@v3
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+      
+      # Install backend dependencies
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+      
+      # Run backend tests
+      - name: Run backend tests
+        env:
+          WEBHOOK_API_KEY: test-key
+          ENABLE_LOCAL_AUTH: true
+          LOCAL_AUTH_SECRET_KEY: test-secret-key
+          PYTEST_CURRENT_TEST: true
+        run: |
+          cd backend
+          python run_tests.py
+      
+      # Install frontend dependencies
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+      
+      # Run frontend tests
+      - name: Run frontend tests
+        run: |
+          cd frontend
+          npm test -- --watchAll=false --ci --coverage
+      
+      # Upload test results if tests fail (optional)
+      - name: Upload backend test results
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: backend-test-results
+          path: backend/htmlcov/
+      
+      - name: Upload frontend coverage
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: frontend-coverage
+          path: frontend/coverage/
+  
   build-and-deploy:
+    name: Build and Deploy
+    needs: test  # Only run if tests pass
     runs-on: ubuntu-latest
     
     permissions:
@@ -121,6 +206,9 @@ jobs:
           
           cat >> $GITHUB_STEP_SUMMARY <<EOF
           ## 🚀 Deployment Summary
+          
+          ### ✅ Tests Passed
+          All backend and frontend tests passed successfully before deployment.
           
           ### Docker Image
           - **Repository**: \`${{ env.DOCKER_REPO }}\`
