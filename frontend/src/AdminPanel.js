@@ -38,8 +38,19 @@ function AdminPanel() {
   return (
     <div className="admin-panel">
       <div className="admin-header">
-        <h1>Admin Panel</h1>
-        <p>Manage local user accounts and system settings</p>
+        <div className="admin-header-content">
+          <div className="admin-title">
+            <h1>Admin Panel</h1>
+            <p>Manage local user accounts and system settings</p>
+          </div>
+          <button 
+            className="btn btn-secondary back-to-dashboard"
+            onClick={() => window.location.href = '/'}
+            title="Return to Dashboard"
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
       </div>
 
       <div className="admin-tabs">

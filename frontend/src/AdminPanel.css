@@ -29,7 +29,18 @@ body:has(.admin-panel) {
 
 .admin-header {
   margin-bottom: 30px;
+}
+
+.admin-header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+}
+
+.admin-title {
   text-align: center;
+  flex: 1;
 }
 
 .admin-header h1 {
@@ -133,6 +144,21 @@ body:has(.admin-panel) {
 
 .btn-secondary:hover {
   background: var(--bg-elev-2);
+}
+
+.back-to-dashboard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: all 0.2s ease;
+}
+
+.back-to-dashboard:hover {
+  transform: translateX(-2px);
 }
 
 .btn-danger {
@@ -477,5 +503,18 @@ body:has(.admin-panel) {
   
   .modal-actions {
     flex-direction: column;
+  }
+  
+  .admin-header-content {
+    flex-direction: column;
+    gap: 15px;
+  }
+  
+  .admin-title {
+    text-align: center;
+  }
+  
+  .back-to-dashboard {
+    align-self: center;
   }
 }
