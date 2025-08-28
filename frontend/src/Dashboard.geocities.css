@@ -199,16 +199,39 @@
 
 /* Navigation with that sweet hover effect */
 .geocities-nav {
-  background: repeating-linear-gradient(
-    90deg,
-    #ff0000,
-    #ff0000 10px,
-    #0000ff 10px,
-    #0000ff 20px
-  );
+  background: linear-gradient(135deg, #000080, #4b0082);
   padding: 10px;
   text-align: center;
   border: 5px ridge gold;
+  box-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+  position: relative;
+}
+
+.geocities-nav::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 40px,
+    rgba(255, 0, 0, 0.2) 40px,
+    rgba(255, 0, 0, 0.2) 50px,
+    transparent 50px,
+    transparent 90px,
+    rgba(0, 0, 255, 0.2) 90px,
+    rgba(0, 0, 255, 0.2) 100px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.geocities-nav > * {
+  position: relative;
+  z-index: 2;
 }
 
 .geocities-nav a {
@@ -227,8 +250,8 @@
   color: #00ff00;
 }
 
-/* Status badges with classic styling */
-.status-responding {
+/* Status badges with classic styling - only in GeoCities mode */
+.geocities-theme .status-responding {
   background: #00ff00;
   color: #000;
   padding: 2px 8px;
@@ -237,7 +260,7 @@
   animation: blink 2s infinite;
 }
 
-.status-cancelled {
+.geocities-theme .status-cancelled {
   background: #ff0000;
   color: #ffff00;
   padding: 2px 8px;
@@ -245,7 +268,7 @@
   font-weight: bold;
 }
 
-.status-available {
+.geocities-theme .status-available {
   background: #ffff00;
   color: #000;
   padding: 2px 8px;
@@ -406,9 +429,19 @@
 .fire-text {
   font-size: 36px;
   font-weight: bold;
-  color: #ff3300;
-  text-shadow: 0 0 10px #ff3300, 0 0 20px #ff6600, 0 0 30px #ff9900;
+  color: #ffff00;
+  text-shadow: 
+    0 0 5px #ff3300, 
+    0 0 10px #ff6600, 
+    0 0 15px #ff9900,
+    0 0 20px #ffcc00,
+    2px 2px 4px #000000,
+    -1px -1px 2px #000000;
   animation: flame 1s infinite;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 5px 10px;
+  border-radius: 5px;
+  display: inline-block;
 }
 
 /* Loading spinner - classic style */
