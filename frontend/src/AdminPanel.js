@@ -87,11 +87,22 @@ function UserManagement({ users, setUsers, loading, error, showCreateUser, setSh
     }
 
     try {
-      // Note: You'd need to implement a delete endpoint
-      // For now, just refresh the list
-      onRefresh();
+      const response = await fetch(`/api/auth/local/admin/users/${username}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      
+      const data = await response.json();
+      
+      if (response.ok && data.success) {
+        onRefresh(); // Refresh the user list
+        alert(`User "${username}" deleted successfully`);
+      } else {
+        alert(data.detail || data.message || 'Failed to delete user');
+      }
     } catch (err) {
-      alert('Failed to delete user');
+      console.error('Error deleting user:', err);
+      alert('Failed to delete user: Network error');
     }
   };
 

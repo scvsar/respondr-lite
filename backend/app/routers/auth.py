@@ -11,8 +11,9 @@ from pydantic import BaseModel
 from ..config import ENABLE_LOCAL_AUTH, allowed_admin_users, is_testing
 from ..local_auth import (
     verify_local_user, create_session_token,
-    create_local_user, update_local_user_password, list_local_users, get_local_user
+    create_local_user, update_local_user_password, list_local_users, get_local_user, delete_local_user
 )
+from .responders import require_admin_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -56,17 +57,6 @@ def get_current_user_from_token(request: Request) -> Optional[dict]:
     
     return verify_session_token(token)
 
-
-async def require_local_admin(request: Request) -> dict:
-    """Dependency to require local admin authentication."""
-    user = get_current_user_from_token(request)
-    if not user:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    
-    if not user.get("is_admin", False):
-        raise HTTPException(status_code=403, detail="Admin access required")
-    
-    return user
 
 
 @router.post("/api/auth/local/login")
@@ -174,7 +164,7 @@ async def change_password(request: Request, password_request: PasswordChangeRequ
 @router.post("/api/auth/local/admin/create-user")
 async def admin_create_user(
     create_request: CreateUserRequest,
-    current_user: dict = Depends(require_local_admin)
+    _: bool = Depends(require_admin_access)
 ):
     """Create a new local user (admin only)."""
     success = await create_local_user(
@@ -199,7 +189,7 @@ async def admin_create_user(
 @router.post("/api/auth/local/admin/reset-password")
 async def admin_reset_password(
     reset_request: AdminPasswordResetRequest,
-    current_user: dict = Depends(require_local_admin)
+    _: bool = Depends(require_admin_access)
 ):
     """Reset a user's password (admin only)."""
     success = await update_local_user_password(reset_request.username, reset_request.new_password)
@@ -215,7 +205,7 @@ async def admin_reset_password(
 
 
 @router.get("/api/auth/local/admin/users")
-async def admin_list_users(current_user: dict = Depends(require_local_admin)):
+async def admin_list_users(_: bool = Depends(require_admin_access)):
     """List all local users (admin only)."""
     users = await list_local_users()
     
@@ -232,6 +222,17 @@ async def admin_list_users(current_user: dict = Depends(require_local_admin)):
             for user in users
         ]
     }
+
+
+@router.delete("/api/auth/local/admin/users/{username}")
+async def admin_delete_user(username: str, _: bool = Depends(require_admin_access)):
+    """Delete a local user (admin only)."""
+    success = await delete_local_user(username)
+    
+    if success:
+        return {"success": True, "message": f"User '{username}' deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="User not found or failed to delete")
 
 
 @router.get("/api/auth/local/enabled")

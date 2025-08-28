@@ -324,6 +324,38 @@ async def list_local_users() -> list[LocalUser]:
         return []
 
 
+async def delete_local_user(username: str) -> bool:
+    """Delete a local user (admin function)."""
+    if not ENABLE_LOCAL_AUTH and not is_testing:
+        return False
+    
+    try:
+        table_client = get_table_client(LOCAL_USERS_TABLE)
+        
+        if table_client is None:
+            # Use in-memory storage
+            if username in _local_users_memory_store:
+                del _local_users_memory_store[username]
+                logger.info(f"Deleted local user from memory: {username}")
+                return True
+            return False
+        
+        # Delete from Azure Table Storage
+        row_key = username
+        partition_key = "localuser"
+        
+        table_client.delete_entity(partition_key=partition_key, row_key=row_key)
+        logger.info(f"Deleted local user: {username}")
+        return True
+        
+    except ResourceNotFoundError:
+        logger.warning(f"User {username} not found for deletion")
+        return False
+    except Exception as e:
+        logger.error(f"Error deleting local user {username}: {e}")
+        return False
+
+
 def extract_session_token_from_request(request) -> Optional[str]:
     """Extract session token from request (header or cookie)."""
     # Try Authorization header first
