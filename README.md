@@ -13,6 +13,25 @@ This application has been completely refactored from Kubernetes to a lightweight
 - **Azure OpenAI GPT-5-nano**: AI-powered message parsing for vehicle and ETA extraction
 - **Azure Entra ID (Easy Auth)**: Built-in authentication replacing OAuth2 proxy sidecar
 
+### High-Level Architecture
+
+```mermaid
+graph LR
+  GM[GroupMe Bot] --> AF[Azure Functions<br/>groupme_ingest]
+  AF --> Q[Azure Storage Queue<br/>respondr-incoming]
+
+  subgraph ACA[Azure Container Apps Consumption]
+    APP[FastAPI + Worker<br/>single container]
+  end
+
+  Q -->|triggers scale-from-zero| ACA
+  APP --> Q
+  APP --> AOAI[Azure OpenAI<br/>gpt-5-nano deployment]
+  APP --> TS[Azure Table Storage<br/>ResponderMessages]
+
+  U[Browser] -.->|HTTPS| APP
+```
+
 ## Quick Start
 
 ```bash
@@ -38,43 +57,47 @@ cd deployment
 - **Multi-Tenant Support**: Domain-based allow list for organization access control
 - **Soft Delete**: Recovery capability for accidentally deleted messages
 
-## System Architecture
+### Message Processing Flow
 
-```
-┌─────────────────┐        ┌──────────────────────────────┐
-│                 │        │   Azure Functions            │
-│  GroupMe Bot    │───────▶│   groupme_ingest()          │
-│                 │ webhook│   - Validates API key        │
-└─────────────────┘        │   - Enqueues to Storage Queue│
-                           └──────────────┬───────────────┘
-                                         │
-                           ┌─────────────▼───────────────┐
-                           │  Azure Storage Queue        │
-                           │  (respondr-incoming)        │
-                           └─────────────┬───────────────┘
-                                         │ triggers scale-from-zero
-                           ┌─────────────▼───────────────────────────┐
-                           │  Azure Container Apps (Consumption)     │
-                           │  ┌─────────────────────────────────┐   │
-                           │  │  Queue Listener (background)    │   │
-                           │  │  - Polls queue for messages     │   │
-                           │  │  - Calls GPT-5-nano for parsing │   │
-                           │  │  - Writes to Table Storage     │   │
-                           │  └─────────────────────────────────┘   │
-                           │  ┌─────────────────────────────────┐   │
-                           │  │  FastAPI Backend + React UI     │   │
-                           │  │  - Dashboard & API endpoints    │   │
-                           │  │  - Admin panel & user mgmt      │   │
-                           │  │  - Webhook debugger             │   │
-                           │  └─────────────────────────────────┘   │
-                           └──────────────┬──────────────────────────┘
-                                         │
-                           ┌─────────────▼───────────────┐
-                           │  Azure Table Storage        │
-                           │  (ResponderMessages)        │
-                           └──────────────────────────────┘
+```mermaid
+sequenceDiagram
+  participant GM as GroupMe Bot
+  participant AF as Azure Functions<br/>groupme_ingest()
+  participant Q as Azure Storage Queue<br/>(respondr-incoming)
+  participant ACA as Azure Container Apps<br/>(FastAPI + Worker)
+  participant AOAI as Azure OpenAI<br/>gpt-5-nano deployment
+  participant TS as Azure Table Storage<br/>(ResponderMessages)
+
+  GM->>AF: webhook POST
+  AF->>Q: Enqueue message
+  Note over Q,ACA: azureQueue scaler triggers<br/>scale-from-zero (Consumption)
+  ACA->>Q: Poll & dequeue
+  ACA->>AOAI: Parse message (gpt-5-nano)
+  AOAI-->>ACA: vehicle, ETA, confidence
+  ACA->>TS: Upsert parsed record
 ```
 
+### User Authentication Flow
+
+```mermaid
+sequenceDiagram
+  participant U as User Browser
+  participant ACA as Azure Container Apps<br/>(FastAPI + React UI)
+  participant AAD as Entra ID (Azure AD)
+  participant API as ACA API (same app)
+  participant TS as Azure Table Storage<br/>(ResponderMessages)
+
+  U->>ACA: GET /
+  Note over ACA: Easy Auth (platform) evaluates policy
+  ACA-->>AAD: OIDC challenge (if not authenticated)
+  AAD-->>U: Sign-in (token issued)
+  U->>ACA: GET / (with token)
+  U->>API: /api/responders
+  API->>TS: Query responder data
+  TS-->>API: Entities
+  API-->>U: JSON
+  U-->>U: Render dashboard
+```
 ## Application Endpoints
 
 The Container App exposes these endpoints:
@@ -216,12 +239,6 @@ Built-in tool for testing GroupMe webhook integration:
 
 Access at: `https://<your-app>/webhook-debug`
 
-### GeoCities Theme
-
-Nostalgic 1990s-style theme option for the dashboard:
-- Retro visual design
-- Classic web aesthetics
-- Toggle via UI settings
 
 ## Local Development
 
