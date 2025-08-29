@@ -4,7 +4,7 @@ import './UserInfo.css';
 function UserInfo() {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
-  const [logoutUrl, setLogoutUrl] = useState('/oauth2/sign_out?rd=/');
+  const [logoutUrl, setLogoutUrl] = useState('/.auth/logout?post_logout_redirect_uri=/');
 
   useEffect(() => {
     const fetchUserInfo = async () => {
@@ -64,8 +64,8 @@ function UserInfo() {
   };
 
   const handleLogin = () => {
-    // Redirect to OAuth2 authorization endpoint
-    window.location.href = '/oauth2/start?rd=' + encodeURIComponent(window.location.pathname);
+    // Redirect to EasyAuth login endpoint
+    window.location.href = '/.auth/login/aad?post_login_redirect_uri=' + encodeURIComponent(window.location.pathname);
   };
 
   if (error) {

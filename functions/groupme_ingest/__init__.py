@@ -85,7 +85,8 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         # check if queue exists and if not, create it
         queue = QueueClient.from_connection_string(conn_str, queue_name)
         try:
-            queue.create_queue()
+            r = queue.create_queue()
+            print(r)
         except ResourceExistsError:
             pass  # Queue already exists
         logging.info("Sending message to queue '%s'", queue_name)

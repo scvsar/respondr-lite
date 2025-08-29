@@ -6,6 +6,8 @@ __pycache__/
 # C extensions
 *.so
 
+.claude/*
+
 # Distribution / packaging
 .Python
 develop-eggs/
@@ -266,3 +268,11 @@ values-preprod.yaml
 
 **/local.settings.json
 **/deploy-names.json
+
+private-notes.md
+
+*.crt
+*.pfx
+
+cookies.txt
+github-actions-setup-20250827-163919.txt

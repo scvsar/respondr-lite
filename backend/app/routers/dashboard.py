@@ -19,12 +19,19 @@ def generate_dashboard_html(messages: List[Dict[str, Any]], title: str = "Respon
         """Format minutes for display."""
         if minutes is None:
             return "Unknown"
-        if minutes <= 0:
+        
+        # Handle string values - convert to int
+        try:
+            minutes_int = int(minutes)
+        except (ValueError, TypeError):
+            return "Unknown"
+            
+        if minutes_int <= 0:
             return "Arrived"
-        if minutes < 60:
-            return f"{minutes} min"
-        hours = minutes // 60
-        remaining_minutes = minutes % 60
+        if minutes_int < 60:
+            return f"{minutes_int} min"
+        hours = minutes_int // 60
+        remaining_minutes = minutes_int % 60
         if remaining_minutes == 0:
             return f"{hours} hr"
         return f"{hours}h {remaining_minutes}m"

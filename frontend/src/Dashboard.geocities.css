@@ -1,0 +1,456 @@
+/* 🌐 WELCOME TO THE WORLD WIDE WEB CIRCA 1996! 🌐 */
+/* 💾 Best Viewed in Netscape Navigator 3.0 💾 */
+
+@import url('https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&display=swap');
+
+/* Animated starfield background */
+@keyframes twinkle {
+  0%, 100% { opacity: 0; }
+  50% { opacity: 1; }
+}
+
+@keyframes scroll-bg {
+  from { background-position: 0 0; }
+  to { background-position: -400px -400px; }
+}
+
+@keyframes rainbow {
+  0% { color: red; }
+  17% { color: orange; }
+  33% { color: yellow; }
+  50% { color: green; }
+  67% { color: blue; }
+  83% { color: indigo; }
+  100% { color: violet; }
+}
+
+@keyframes blink {
+  0%, 50%, 100% { opacity: 1; }
+  25%, 75% { opacity: 0; }
+}
+
+@keyframes flame {
+  0% { text-shadow: 0 0 10px #ff3300, 0 0 20px #ff6600, 0 0 30px #ff9900; }
+  50% { text-shadow: 0 0 20px #ff6600, 0 0 30px #ff9900, 0 0 40px #ffcc00; }
+  100% { text-shadow: 0 0 10px #ff3300, 0 0 20px #ff6600, 0 0 30px #ff9900; }
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-20px); }
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.geocities-theme {
+  /* Animated star background */
+  background: #000033;
+  background-image: 
+    radial-gradient(2px 2px at 20px 30px, white, transparent),
+    radial-gradient(2px 2px at 40px 70px, white, transparent),
+    radial-gradient(1px 1px at 50px 50px, white, transparent),
+    radial-gradient(1px 1px at 80px 10px, white, transparent),
+    radial-gradient(2px 2px at 130px 80px, white, transparent),
+    radial-gradient(1px 1px at 110px 120px, white, transparent),
+    url('data:image/gif;base64,R0lGODlhAQABAIAAAAUEBAAAACwAAAAAAQABAAACAkQBADs=');
+  background-repeat: repeat;
+  background-size: 200px 200px;
+  animation: scroll-bg 50s linear infinite;
+  min-height: 100vh;
+  font-family: 'Comic Neue', 'Comic Sans MS', cursive;
+  position: relative;
+  overflow-x: hidden;
+}
+
+/* Animated construction GIF */
+.under-construction {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  width: 50px;
+  height: 50px;
+  background: url('data:image/gif;base64,R0lGODlhMgAyAPcAAP////7+/v39/fz8/Pv7+/r6+vn5+fj4+Pf39/b29vX19fT09PPz8/Ly8vHx8fDw8O/v7+7u7u3t7ezs7Ovr6+rq6unp6ejo6Ofn5+bm5uXl5eTk5OPj4+Li4uHh4eDg4N/f397e3t3d3dzc3Nvb29ra2tnZ2djY2NfX19bW1tXV1dTU1NPT09LS0tHR0dDQ0M/Pz87Ozs3NzczMzMvLy8rKysnJycjIyMfHx8bGxsXFxcTExMPDw8LCwsHBwcDAwL+/v76+vr29vby8vLu7u7q6urm5ubi4uLe3t7a2trW1tbS0tLOzs7KysrGxsbCwsK+vr66urq2traysrKurq6qqqqmpqaioqKenp6ampqWlpaSkpKOjo6KioqGhoaCgoJ+fn56enp2dnZycnJubm5qampmZmZiYmJeXl5aWlpWVlZSUlJOTk5KSkpGRkZCQkI+Pj46Ojo2NjYyMjIuLi4qKiomJiYiIiIeHh4aGhoWFhYSEhIODg4KCgoGBgYCAgH9/f35+fn19fXx8fHt7e3p6enl5eXh4eHd3d3Z2dnV1dXR0dHNzc3JycnFxcXBwcG9vb25ubm1tbWxsbGtra2pqamlpaWhoaGdnZ2ZmZmVlZWRkZGNjY2JiYmFhYWBgYF9fX15eXl1dXVxcXFtbW1paWllZWVhYWFdXV1ZWVlVVVVRUVFNTU1JSUlFRUVBQUE9PT05OTk1NTUxMTEtLS0pKSklJSUhISEdHR0ZGRkVFRURERENDQ0JCQkFBQUBAQD8/Pz4+Pj09PTw8PDs7Ozo6Ojk5OTg4ODc3NzY2NjU1NTQ0NDMzMzIyMjExMTAwMC8vLy4uLi0tLSwsLCsrKyoqKikpKSgoKCcnJyYmJiUlJSQkJCMjIyIiIiEhISAgIB8fHx4eHh0dHRwcHBsbGxoaGhkZGRgYGBcXFxYWFhUVFRQUFBMTExISEhERERAQEA8PDw4ODg0NDQwMDAsLCwoKCgkJCQgICAcHBwYGBgUFBQQEBAMDAwICAgEBAQAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQFBQAAACwAAAAAMgAyAAAI/gABCBxIsKDBgwgTKlzIsKHDhxAjSpxIsaLFixgzatzIsaPHjyBDihxJsqTJkyhTqlzJsqXLlzBjypxJs6bNmzhz6tzJs6fPn0CDCh1KtKjRo0iTKl3KtKnTp1CjSp1KtarVq1izat3KtavXr2DDih1LtqzZs2jTql3Ltq3bt3Djyp1Lt67du3jz6t3Lt6/fv4ADCx5MuLDhw4gTK17MuLHjx5AjS55MubLly5gza97MubPnz6BDix5NurTp06hTq17NurXr17Bjy55Nu7bt27hz697Nu7fv38CDCx9OvLjx48iTK1/OvLnz59CjS59Ovbr169iza9/Ovbv37+DD/osfT768+fPo06tfz769+/fw48ufT7++/fv48+vfz7+///8ABijggAQWaOCBCCao4IIMNujggxBGKOGEFFZo4YUYZqjhhhx26OGHIIYo4ogklmjiiSimqOKKLLbo4oswxijjjDTWaOONOOao44489ujjj0AGKeSQRBZp5JFIJqnkkkw26eSTUEYp5ZRUVmnllVhmqeWWXHbp5ZdghinmmGSWaeaZaKap5ppstunmm3DGKeecdNZp55145qnnnnz26eefgAYq6KCEFmrooYgmquiijDbq6KOQRirppJRWaumlmGaq6aacdurpp6CGKuqopJZq6qmopqrqqqy26uqrsMYq66y01mrrrbjmquuuvPbq66/ABivssMQWa+yxyCar7LLMNuvss9BGK+201FZr7bXYZqvtttx26+234IYr7rjklmvuueimq+667Lbr7rvwxivvvPTWa++9+Oar77789uvvvwAHLPDABBds8MEIJ6zwwgw37PDDEEcs8cQUV2zxxRhnrPHGHHfs8ccghyzyyCSXbPLJKKes8sost+zyyzDHLPPMNNds88045w==');
+  background-size: contain;
+  animation: spin 10s linear infinite;
+  z-index: 1000;
+}
+
+/* Page title with flames */
+.geocities-header {
+  text-align: center;
+  padding: 20px;
+  position: relative;
+}
+
+.geocities-title {
+  font-size: 48px;
+  font-weight: bold;
+  background: linear-gradient(90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #0000ff, #4b0082, #8b00ff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: rainbow 3s linear infinite;
+  text-transform: uppercase;
+  letter-spacing: 5px;
+  margin: 20px 0;
+}
+
+/* Marquee for important messages */
+.geocities-marquee {
+  background: #ffff00;
+  color: #ff0000;
+  padding: 10px;
+  font-size: 20px;
+  font-weight: bold;
+  white-space: nowrap;
+  overflow: hidden;
+  position: relative;
+}
+
+.marquee-text {
+  display: inline-block;
+  padding-left: 100%;
+  animation: marquee 15s linear infinite;
+}
+
+@keyframes marquee {
+  0% { transform: translate(0, 0); }
+  100% { transform: translate(-100%, 0); }
+}
+
+/* Visitor counter */
+.visitor-counter {
+  background: #000;
+  color: #00ff00;
+  font-family: 'Courier New', monospace;
+  padding: 5px 10px;
+  border: 2px solid #00ff00;
+  display: inline-block;
+  margin: 10px;
+  font-size: 14px;
+  box-shadow: 0 0 10px #00ff00;
+}
+
+/* Table styling - classic HTML table look */
+.geocities-table {
+  width: 95%;
+  margin: 20px auto;
+  border: 3px ridge #ff00ff;
+  background: linear-gradient(45deg, #000080, #4b0082);
+  box-shadow: 0 0 20px rgba(255, 0, 255, 0.5);
+}
+
+.geocities-table table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 2px;
+}
+
+.geocities-table th {
+  background: linear-gradient(90deg, #ff0000, #ff00ff);
+  color: #ffff00;
+  padding: 10px;
+  font-size: 16px;
+  text-transform: uppercase;
+  border: 2px outset #ff00ff;
+  text-shadow: 2px 2px 4px #000;
+  animation: flame 2s infinite;
+}
+
+.geocities-table td {
+  background: #000066;
+  color: #00ff00;
+  padding: 8px;
+  border: 1px solid #00ffff;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+}
+
+.geocities-table tr:hover td {
+  background: #0000aa;
+  color: #ffff00;
+  animation: blink 1s infinite;
+}
+
+/* Buttons with that classic 3D look */
+.geocities-button {
+  background: linear-gradient(to bottom, #ffffff 0%, #e0e0e0 50%, #c0c0c0 100%);
+  border: 3px outset #c0c0c0;
+  padding: 8px 16px;
+  font-family: 'MS Sans Serif', sans-serif;
+  font-size: 14px;
+  color: #000;
+  cursor: pointer;
+  margin: 5px;
+  text-transform: uppercase;
+  font-weight: bold;
+}
+
+.geocities-button:active {
+  border-style: inset;
+  background: linear-gradient(to bottom, #c0c0c0 0%, #e0e0e0 50%, #ffffff 100%);
+}
+
+.geocities-button:hover {
+  animation: rainbow 1s linear infinite;
+}
+
+/* Navigation with that sweet hover effect */
+.geocities-nav {
+  background: linear-gradient(135deg, #000080, #4b0082);
+  padding: 10px;
+  text-align: center;
+  border: 5px ridge gold;
+  box-shadow: 0 0 20px rgba(255, 215, 0, 0.5);
+  position: relative;
+}
+
+.geocities-nav::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 40px,
+    rgba(255, 0, 0, 0.2) 40px,
+    rgba(255, 0, 0, 0.2) 50px,
+    transparent 50px,
+    transparent 90px,
+    rgba(0, 0, 255, 0.2) 90px,
+    rgba(0, 0, 255, 0.2) 100px
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+
+.geocities-nav > * {
+  position: relative;
+  z-index: 2;
+}
+
+.geocities-nav a {
+  color: #ffff00;
+  text-decoration: none;
+  font-size: 18px;
+  font-weight: bold;
+  margin: 0 20px;
+  text-shadow: 2px 2px 4px #000;
+  display: inline-block;
+  animation: bounce 2s infinite;
+}
+
+.geocities-nav a:hover {
+  animation: spin 0.5s linear infinite;
+  color: #00ff00;
+}
+
+/* Status badges with classic styling - only in GeoCities mode */
+.geocities-theme .status-responding {
+  background: #00ff00;
+  color: #000;
+  padding: 2px 8px;
+  border: 2px outset #00ff00;
+  font-weight: bold;
+  animation: blink 2s infinite;
+}
+
+.geocities-theme .status-cancelled {
+  background: #ff0000;
+  color: #ffff00;
+  padding: 2px 8px;
+  border: 2px outset #ff0000;
+  font-weight: bold;
+}
+
+.geocities-theme .status-available {
+  background: #ffff00;
+  color: #000;
+  padding: 2px 8px;
+  border: 2px outset #ffff00;
+  font-weight: bold;
+}
+
+/* Webring section */
+.webring {
+  margin: 30px auto;
+  text-align: center;
+  padding: 20px;
+  background: linear-gradient(135deg, #000033, #000066);
+  border: 3px double #00ffff;
+  width: 90%;
+}
+
+.webring-title {
+  color: #ffff00;
+  font-size: 24px;
+  animation: flame 1s infinite;
+  margin-bottom: 10px;
+}
+
+/* Email link with classic mailto styling */
+.email-me {
+  display: inline-block;
+  margin: 20px;
+  padding: 10px 20px;
+  background: #000;
+  border: 3px ridge #00ff00;
+  color: #00ff00;
+  text-decoration: none;
+  font-family: monospace;
+  font-size: 16px;
+  position: relative;
+}
+
+.email-me:before {
+  content: "📧";
+  margin-right: 5px;
+  animation: bounce 1s infinite;
+  display: inline-block;
+}
+
+.email-me:hover {
+  box-shadow: 0 0 20px #00ff00;
+  text-shadow: 0 0 10px #00ff00;
+}
+
+/* Guestbook styling */
+.guestbook {
+  background: url('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==');
+  border: 5px groove #ff00ff;
+  padding: 20px;
+  margin: 20px auto;
+  width: 80%;
+}
+
+.guestbook-title {
+  text-align: center;
+  font-size: 32px;
+  color: #ffff00;
+  text-shadow: 3px 3px 6px #ff00ff;
+  animation: rainbow 2s linear infinite;
+}
+
+/* Awards section */
+.awards {
+  text-align: center;
+  margin: 30px 0;
+  padding: 20px;
+  background: #000;
+  border: 3px ridge gold;
+}
+
+.award-badge {
+  display: inline-block;
+  margin: 10px;
+  padding: 10px;
+  background: radial-gradient(circle, gold, #ffff00);
+  border-radius: 50%;
+  width: 80px;
+  height: 80px;
+  line-height: 80px;
+  font-weight: bold;
+  color: #000;
+  animation: spin 5s linear infinite;
+  box-shadow: 0 0 20px gold;
+}
+
+/* Hit counter */
+.hit-counter {
+  position: fixed;
+  bottom: 10px;
+  left: 10px;
+  background: #000;
+  color: #00ff00;
+  padding: 5px 10px;
+  font-family: 'Courier New', monospace;
+  border: 2px solid #00ff00;
+  font-size: 12px;
+}
+
+.hit-counter:before {
+  content: "Hits: ";
+}
+
+/* Dancing baby GIF placeholder */
+.dancing-baby {
+  position: fixed;
+  bottom: 10px;
+  right: 60px;
+  width: 50px;
+  height: 50px;
+  background: url('data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==');
+  animation: bounce 1s infinite;
+}
+
+/* Scrollbar styling */
+.geocities-theme::-webkit-scrollbar {
+  width: 20px;
+}
+
+.geocities-theme::-webkit-scrollbar-track {
+  background: repeating-linear-gradient(
+    45deg,
+    #ff0000,
+    #ff0000 10px,
+    #ffff00 10px,
+    #ffff00 20px
+  );
+}
+
+.geocities-theme::-webkit-scrollbar-thumb {
+  background: linear-gradient(to bottom, #0000ff, #00ffff);
+  border: 2px outset #00ffff;
+}
+
+/* MIDI player mockup */
+.midi-player {
+  position: fixed;
+  bottom: 70px;
+  left: 10px;
+  background: #c0c0c0;
+  border: 2px outset #ffffff;
+  padding: 5px;
+  font-family: 'MS Sans Serif', sans-serif;
+  font-size: 11px;
+}
+
+.midi-player:before {
+  content: "🎵 Playing: awesome.mid";
+  color: #000;
+}
+
+/* Animated fire text */
+.fire-text {
+  font-size: 36px;
+  font-weight: bold;
+  color: #ffff00;
+  text-shadow: 
+    0 0 5px #ff3300, 
+    0 0 10px #ff6600, 
+    0 0 15px #ff9900,
+    0 0 20px #ffcc00,
+    2px 2px 4px #000000,
+    -1px -1px 2px #000000;
+  animation: flame 1s infinite;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 5px 10px;
+  border-radius: 5px;
+  display: inline-block;
+}
+
+/* Loading spinner - classic style */
+.geocities-loading {
+  display: inline-block;
+  width: 50px;
+  height: 50px;
+  border: 5px solid #ff00ff;
+  border-top: 5px solid #ffff00;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}

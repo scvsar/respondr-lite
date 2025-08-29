@@ -17,7 +17,13 @@ param(
   [int]$PollingSeconds = 30,
   [int]$MaxReplicas = 5,
   [int]$MinReplicas = 0,
-  [string]$DotEnvPath = ".env"
+  [string]$DotEnvPath = ".env",
+
+  # EasyAuth parameters
+  [switch]$EnableAuth,
+  [string]$AuthClientId = "",
+  [string]$AuthClientSecret = "",
+  [string]$AuthTenantId = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,7 +75,8 @@ $secretMap = $envParsed.SecretMap
 # Build a temp parameters file so we can pass complex arrays/objects cleanly
 $tempParams = Join-Path $env:TEMP "aca-params-$($ContainerAppName)-$(Get-Date -Format 'yyyyMMddHHmmss').json"
 
-@{
+# Build parameters object
+$params = @{
   saName            = @{ value = $StorageAccountName }
   functionAppName   = @{ value = $FunctionAppName }
   location          = @{ value = $Location }
@@ -87,7 +94,28 @@ $tempParams = Join-Path $env:TEMP "aca-params-$($ContainerAppName)-$(Get-Date -F
   containerMinReplicas     = @{ value = $MinReplicas }
   containerEnvPlain        = @{ value = $plainEnv }
   containerSecretMap       = @{ value = $secretMap }
-} | ConvertTo-Json -Depth 50 | Set-Content -Encoding UTF8 $tempParams
+
+  # EasyAuth
+  enableAuth         = @{ value = $EnableAuth.IsPresent }
+}
+
+# Add auth parameters if enabling auth
+if ($EnableAuth.IsPresent) {
+  if ([string]::IsNullOrWhiteSpace($AuthClientId)) {
+    throw "AuthClientId is required when EnableAuth is specified"
+  }
+  if ([string]::IsNullOrWhiteSpace($AuthClientSecret)) {
+    throw "AuthClientSecret is required when EnableAuth is specified"
+  }
+  
+  $params['authClientId'] = @{ value = $AuthClientId }
+  $params['authClientSecret'] = @{ value = $AuthClientSecret }
+  if (-not [string]::IsNullOrWhiteSpace($AuthTenantId)) {
+    $params['authTenantId'] = @{ value = $AuthTenantId }
+  }
+}
+
+$params | ConvertTo-Json -Depth 50 | Set-Content -Encoding UTF8 $tempParams
 
 
   Write-Host "Starting deployment..."

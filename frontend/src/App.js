@@ -1,11 +1,14 @@
 import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { BrowserRouter as Router, Route, Routes, Navigate, useLocation } from 'react-router-dom';
 import "./App.css";
+import "./Dashboard.geocities.css";
 import Logout from './Logout';
 import MobileView from './MobileView';
 import Profile from './Profile';
 import StatusTabs from './StatusTabs';
 import WebhookDebug from './WebhookDebug';
+import LoginChoice from './LoginChoice';
+import AdminPanel from './AdminPanel';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -22,7 +25,7 @@ function AuthGate({ children }) {
     if (isDevPort) {
       return `http://localhost:8000/oauth2/start?rd=${rd}`;
     }
-    return `/oauth2/start?rd=${rd}`;
+    return `/.auth/login/aad?post_login_redirect_uri=${rd}`;
   }, []);
 
   React.useEffect(() => {
@@ -35,8 +38,8 @@ function AuthGate({ children }) {
         if (cancelled) return;
         setUser(j);
         if (!j.authenticated) {
-          // Not authenticated: redirect to sign-in preserving target
-          window.location.href = signInUrl(loc.pathname || '/');
+          // Not authenticated: show Sign In option instead of auto-redirect (handles when EasyAuth is disabled)
+          setDenied({ error: 'Not authenticated' });
           return;
         }
         if (j.error === 'Access denied') {
@@ -54,15 +57,88 @@ function AuthGate({ children }) {
 
   if (loading) return <div className="empty">Checking sign-in…</div>;
   if (denied) {
+    // Show login choice page instead of simple sign-in button
+    return <LoginChoice />;
+  }
+  return children;
+}
+
+// Admin gate: ensures user is authenticated and has admin privileges
+function AdminGate({ children }) {
+  const [user, setUser] = React.useState(null);
+  const [loading, setLoading] = React.useState(true);
+  const [denied, setDenied] = React.useState(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const resp = await fetch("/api/user", { credentials: 'include' });
+        if (!resp.ok) {
+          if (!cancelled) {
+            setDenied("Failed to load user info");
+            setLoading(false);
+          }
+          return;
+        }
+        const userData = await resp.json();
+        if (!cancelled) {
+          if (!userData.authenticated) {
+            setDenied("Authentication required");
+          } else if (!userData.is_admin) {
+            setDenied("Admin privileges required");
+          } else {
+            setUser(userData);
+          }
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setDenied("Network error loading user info");
+          setLoading(false);
+        }
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (loading) {
+    return <div style={{ padding: '40px', textAlign: 'center', color: '#a0a0a0' }}>Loading...</div>;
+  }
+
+  if (denied) {
     return (
-      <div className="empty" role="alert">
-        {denied.message || 'Access denied'}
-        <div style={{marginTop:12}}>
-          <a className="btn" href="/oauth2/sign_out?rd=/">Sign out</a>
-        </div>
+      <div style={{ 
+        padding: '40px', 
+        textAlign: 'center', 
+        color: '#ff6b6b',
+        background: '#1a1a1a',
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column'
+      }}>
+        <h2 style={{ color: '#ffffff', marginBottom: '16px' }}>Access Denied</h2>
+        <p style={{ marginBottom: '24px' }}>{denied}</p>
+        <button 
+          onClick={() => window.location.href = '/'}
+          style={{
+            background: '#0078d4',
+            color: 'white',
+            border: 'none',
+            padding: '12px 24px',
+            borderRadius: '4px',
+            cursor: 'pointer'
+          }}
+        >
+          Return to Dashboard
+        </button>
       </div>
     );
   }
+
   return children;
 }
 
@@ -75,6 +151,17 @@ function MainApp() {
   // Defaults: All Messages tab should start with filters cleared; Current Status shows Responding by default
   const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
   const [activeTab, setActiveTab] = useState('all');
+  const [geocitiesMode, setGeocitiesMode] = useState(() => {
+    // Always start disabled by default for professional appearance
+    // Users must explicitly enable the retro mode each session
+    return false;
+  });
+
+  // Toggle GeoCities theme (session-only, resets on page refresh)
+  const toggleGeocitiesTheme = useCallback(() => {
+    setGeocitiesMode(prev => !prev);
+  }, []);
+
   const handleTabChange = useCallback((tab) => {
     setActiveTab(tab);
     if (tab === 'current') {
@@ -629,13 +716,49 @@ function MainApp() {
     >{label} {sortBy.key===key ? (sortBy.dir==='asc'?'▲':'▼') : ''}</button>
   );
 
+  // Visitor counter (fake but fun!)
+  const [visitorCount] = useState(() => Math.floor(Math.random() * 999999) + 100000);
+
   return (
-    <div className="App">
+    <div className={geocitiesMode ? "App geocities-theme" : "App"}>
+      {/* GeoCities Mode Enhancements */}
+      {geocitiesMode && (
+        <>
+          {/* Under Construction GIF */}
+          <div className="under-construction" title="Under Construction since 1996!" />
+          
+          {/* Marquee */}
+          <div className="geocities-marquee">
+            <span className="marquee-text">
+              🚨 WELCOME TO THE WORLD WIDE WEB! 🚨 BEST VIEWED IN NETSCAPE NAVIGATOR 3.0 🚨 
+              THIS SITE IS UNDER CONSTRUCTION 🔨 PLEASE SIGN MY GUESTBOOK! 📖 
+              YOU ARE VISITOR NUMBER {visitorCount}! 🎉 CHECK OUT MY WEBRING! 🔗
+            </span>
+          </div>
+          
+          {/* Visitor Counter */}
+          <div className="visitor-counter">
+            VISITOR COUNTER: {visitorCount.toLocaleString()}
+          </div>
+          
+          {/* Hit Counter */}
+          <div className="hit-counter">{Math.floor(Math.random() * 9999999)}</div>
+          
+          {/* MIDI Player */}
+          <div className="midi-player" />
+          
+          {/* Dancing Baby */}
+          <div className="dancing-baby" title="Dancing Baby!" />
+        </>
+      )}
+      
       {/* App Bar */}
-      <div className="app-bar">
+      <div className={geocitiesMode ? "app-bar geocities-nav" : "app-bar"}>
         <div className="left">
           <img src="/scvsar-logo.png" alt="SCVSAR" className="logo" onError={(e)=>e.currentTarget.style.display='none'} />
-          <div className="app-title">SCVSAR Response Tracker</div>
+          <div className={geocitiesMode ? "app-title fire-text" : "app-title"}>
+            {geocitiesMode ? "🔥 SCVSAR CYBER COMMAND CENTER 🔥" : "SCVSAR Response Tracker"}
+          </div>
         </div>
         <div className="center">
           { /* Optional mission title placeholder */ }
@@ -653,20 +776,41 @@ function MainApp() {
                 u.searchParams.set('mobile','1');
                 window.location.href = u.toString();
               }}>Mobile Site</div>
-              <div className="menu-item" onClick={()=>{ 
+              <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
-                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/' : '/oauth2/sign_out?rd=/oauth2/start?rd=/';
-                window.location.href = url; 
+                if (host.endsWith(':3100')) {
+                  window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/';
+                } else if (user?.auth_type === 'local') {
+                  await fetch('/api/auth/local/logout', { method: 'POST', credentials: 'include' });
+                  sessionStorage.clear();
+                  window.location.reload();
+                } else {
+                  window.location.href = '/.auth/logout?post_logout_redirect_uri=%2F.auth%2Flogin%2Faad%3Fpost_login_redirect_uri%3D%2F';
+                }
               }}>Switch Account</div>
+              {isAdmin && (
+                <div className="menu-item" onClick={()=>{ window.location.href = '/admin'; }}>Admin Panel</div>
+              )}
               {isAdmin && (
                 <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
               )}
-              <div className="menu-item" onClick={()=>{ 
+              <div className="menu-item" onClick={toggleGeocitiesTheme}>
+                {geocitiesMode ? '🌐 Disable GeoCities Mode' : '🔥 Enable GeoCities Mode'}
+              </div>
+              <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;
-                const url = host.endsWith(':3100') ? 'http://localhost:8000/oauth2/sign_out?rd=/' : (user?.logout_url || '/oauth2/sign_out?rd=/');
-                window.location.href = url; 
+                if (host.endsWith(':3100')) {
+                  window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/';
+                } else if (user?.auth_type === 'local') {
+                  await fetch('/api/auth/local/logout', { method: 'POST', credentials: 'include' });
+                  sessionStorage.clear();
+                  window.location.reload();
+                } else {
+                  const url = user?.logout_url || '/.auth/logout?post_logout_redirect_uri=/';
+                  window.location.href = url;
+                }
               }}>Logout</div>
             </div>
           )}
@@ -746,6 +890,7 @@ function MainApp() {
         error={error}
         selected={selected}
         editMode={editMode}
+        geocitiesMode={geocitiesMode}
         isAdmin={isAdmin}
         sortBy={sortBy}
         setSortBy={setSortBy}
@@ -766,6 +911,55 @@ function MainApp() {
         onTabChange={handleTabChange}
       />
       </div>
+
+      {/* GeoCities Webring & Guestbook */}
+      {geocitiesMode && (
+        <div className="geocities-footer" style={{padding: '40px 20px', textAlign: 'center'}}>
+          {/* Awards Section */}
+          <div className="awards">
+            <div className="award-badge">COOL SITE OF THE DAY</div>
+            <div className="award-badge">HOT SITE</div>
+            <div className="award-badge">NETSCAPE NOW!</div>
+            <div className="award-badge">5 STARS</div>
+          </div>
+          
+          {/* Webring */}
+          <div className="webring">
+            <div className="webring-title">🕸️ EMERGENCY SERVICES WEBRING 🕸️</div>
+            <div style={{margin: '20px 0'}}>
+              <button className="geocities-button" onClick={() => alert('Previous site in ring!')}>← PREVIOUS</button>
+              <button className="geocities-button" onClick={() => alert('List all sites!')}>LIST SITES</button>
+              <button className="geocities-button" onClick={() => alert('Random site!')}>RANDOM</button>
+              <button className="geocities-button" onClick={() => alert('Next site in ring!')}>NEXT →</button>
+            </div>
+          </div>
+          
+          {/* Guestbook */}
+          <div className="guestbook">
+            <div className="guestbook-title">📖 PLEASE SIGN MY GUESTBOOK! 📖</div>
+            <button className="geocities-button" onClick={() => alert('Thanks for signing my guestbook!')}>
+              SIGN GUESTBOOK
+            </button>
+          </div>
+          
+          {/* Email Me */}
+          <a href="mailto:webmaster@scvsar.geocities.com" className="email-me">
+            EMAIL THE WEBMASTER
+          </a>
+          
+          {/* Best Viewed In */}
+          <div style={{marginTop: '30px', color: '#ffff00', fontSize: '14px'}}>
+            <div>This page is best viewed with</div>
+            <div style={{fontSize: '18px', fontWeight: 'bold', animation: 'rainbow 2s linear infinite'}}>
+              NETSCAPE NAVIGATOR 3.0 OR HIGHER
+            </div>
+            <div>at 800x600 resolution</div>
+            <div style={{marginTop: '10px', fontSize: '12px'}}>
+              © 1996 SCVSAR CYBER COMMAND | All Rights Reserved | Under Construction Since 1996
+            </div>
+          </div>
+        </div>
+      )}
 
       {showEditor && (
         <div className="modal-backdrop" onClick={()=>setShowEditor(false)}>
@@ -860,7 +1054,8 @@ function App() {
           </AuthGate>
         } />
         <Route path="/logout" element={<Logout />} />
-  <Route path="/debug/webhook" element={<AuthGate><WebhookDebug /></AuthGate>} />
+        <Route path="/admin" element={<AdminGate><AdminPanel /></AdminGate>} />
+        <Route path="/debug/webhook" element={<AuthGate><WebhookDebug /></AuthGate>} />
       </Routes>
     </Router>
   );

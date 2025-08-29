@@ -23,20 +23,20 @@ def post_with_retries(url: str, payload: Dict[str, Any], headers: Dict[str, str]
 
 
 def test_post_valid_groupme_message():
-    #url = "https://respondrliteapp.azurewebsites.net/api/groupme_ingest?code=YOUR_FUNCTION_KEY_HERE"
-    url = "http://localhost:7071/api/groupme_ingest"
+    # url = "https://<your function>/api/groupme_ingest?code=<code>"
+    #url = "http://localhost:7071/api/groupme_ingest"
     payload: Dict[str, Any] = {
         "attachments": [],
         "avatar_url": None,
         "created_at": 1755621705,
-        "group_id": "12345567",
+        "group_id": "16649586",
         "id": "0623dc16-a13c-412f-98d3-58ff073e20a3",
-        "name": "Rudolf Carnap",
+        "name": "Bob Smith",
         "sender_id": "12345678",
         "sender_type": "user",
         "source_guid": "a8737e5e-fd69-41c1-b9ea-a37189613a8b",
         "system": False,
-        "text": "Responding in my car, ETA 30 minutes",
+        "text": "Responding in my car, ETA 30 minutes or so",
         "user_id": "12345678",
     }
 

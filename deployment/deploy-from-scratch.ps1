@@ -180,6 +180,7 @@ $Location           = "eastus2"
 $OpenAiLocation     = "eastus2"
 
 $ContainerImage = "docker.io/randytreit/respondr:2025-08-25"
+
 $DotEnvPath     = ".\.env"
 
 $StorageAccountBase = "respondrlitesg"     # storage: 3-24, a-z0-9 only

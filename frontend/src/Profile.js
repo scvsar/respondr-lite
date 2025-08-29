@@ -26,13 +26,13 @@ export default function Profile() {
 
   const onLogout = () => {
     sessionStorage.setItem('respondr_logging_out','true');
-    window.location.href = (user && user.logout_url) || '/oauth2/sign_out?rd=/';
+    window.location.href = (user && user.logout_url) || '/.auth/logout?post_logout_redirect_uri=/';
   };
 
   const onSwitch = () => {
-    // For OAuth2 Proxy, switching accounts is effectively logging out and back in
+    // For EasyAuth, switching accounts = logout then back to login
     sessionStorage.setItem('respondr_logging_out','true');
-    window.location.href = '/oauth2/sign_out?rd=/oauth2/start?rd=/';
+    window.location.href = '/.auth/logout?post_logout_redirect_uri=%2F.auth%2Flogin%2Faad%3Fpost_login_redirect_uri%3D%2F';
   };
 
   if (loading) return <div className="empty">Loading…</div>;
@@ -40,7 +40,7 @@ export default function Profile() {
     <div className="empty" role="alert">
       {error}
       <div style={{marginTop:12}}>
-  <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/start?rd=/profile' : '/oauth2/start?rd=/profile'}>Sign In</a>
+  <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/start?rd=/profile' : '/.auth/login/aad?post_login_redirect_uri=/profile'}>Sign In</a>
       </div>
     </div>
   );
@@ -50,7 +50,7 @@ export default function Profile() {
       <div className="empty">
         Not signed in.
         <div style={{marginTop:12}}>
-          <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/start?rd=/profile' : '/oauth2/start?rd=/profile'}>Sign In</a>
+          <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/start?rd=/profile' : '/.auth/login/aad?post_login_redirect_uri=/profile'}>Sign In</a>
         </div>
       </div>
     );

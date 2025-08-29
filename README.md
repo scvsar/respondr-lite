@@ -1,410 +1,437 @@
-# Respondr — SAR Response Tracker
+# Respondr Lite — SAR Response Tracker
 
-A web app to track responses to Search and Rescue call‑outs. It listens to GroupMe webhooks, uses Azure OpenAI to extract responder details (vehicle and ETA), normalizes data, and shows it on a secure, real‑time dashboard.
+A serverless web application to track responses to Search and Rescue call-outs. Built on Azure's consumption-based services for cost-efficient, scale-to-zero operation. The system listens to GroupMe webhooks, uses Azure OpenAI GPT-5-nano to extract responder details (vehicle and ETA), and displays data on a secure, real-time dashboard.
 
-## Quick start
+## Architecture Overview
 
-- **Run tests**: `./run-tests.ps1`
-- **Start local dev**: `./dev-local.ps1 -Full` for backend+frontend or `./dev-local.ps1` for backend only
-- **Deploy**: `./deployment/deploy-complete.ps1 -ResourceGroupName <rg> -Domain <domain>`
+This application has been completely refactored from Kubernetes to a lightweight serverless architecture:
 
-Archived scripts and experimental tests live under `_attic/` (see `_attic/WHY.md`).
+- **Azure Functions** (Consumption): Handles GroupMe webhook ingestion and message queuing
+- **Azure Container Apps** (Consumption): Runs the FastAPI backend + React frontend with scale-to-zero capability
+- **Azure Storage Queue**: Decouples webhook ingestion from processing, enables auto-scaling
+- **Azure Table Storage**: Primary data store for responder messages
+- **Azure OpenAI GPT-5-nano**: AI-powered message parsing for vehicle and ETA extraction
+- **Azure Entra ID (Easy Auth)**: Built-in authentication replacing OAuth2 proxy sidecar
 
-## Highlights
+### High-Level Architecture
 
-- Multi‑tenant Azure AD auth via OAuth2 Proxy sidecar (domain‑based allow list)
-- AI‑assisted message parsing (vehicle + ETA to HH:MM)
-- Azure Table Storage + Queue for shared state across replicas
-- Single, template‑driven Kubernetes manifest
-- Optional ACR webhook to auto‑rollout on new images
+```mermaid
+graph LR
+  GM[GroupMe Bot] --> AF[Azure Functions<br/>groupme_ingest]
+  AF --> Q[Azure Storage Queue<br/>respondr-incoming]
 
-## High level topology
+  subgraph ACA[Azure Container Apps Consumption]
+    APP[FastAPI + Worker<br/>single container]
+  end
 
-```
-GroupMe → Webhook Caller                    ACR → ACR Webhook  
-         (X-API-Key)                              (X-ACR-Token)
-              │                                        │
-              ▼                                        ▼
-        Ingress (AGIC) ←─────────────────────────── Ingress (AGIC)
-           │       └── TLS (Let’s Encrypt)
-           ▼
-    OAuth2 Proxy (sidecar)
-     ├─ /webhook → skipped (regex)
-     ├─ /internal/acr-webhook → skipped (regex)
-     └─ other paths → OAuth2 (Azure AD multi‑tenant)
-           │
-           ▼
-       Respondr Backend (FastAPI)
-        ├─ GroupMe: Azure OpenAI (extract vehicle, ETA)
-        ├─ Normalize ETA → HH:MM; compute minutes/status
-        ├─ Persist to Azure Table Storage
-        └─ ACR: Validate token & trigger K8s restart
-           │
-           ▼
-       Dashboard/API (OAuth2‑protected)
+  Q -->|triggers scale-from-zero| ACA
+  APP --> Q
+  APP --> AOAI[Azure OpenAI<br/>gpt-5-nano deployment]
+  APP --> TS[Azure Table Storage<br/>ResponderMessages]
+
+  U[Browser] -.->|HTTPS| APP
 ```
 
-## Application endpoints
+## Quick Start
 
-Examples (using respondr.example.com):
+```bash
+# Run tests
+./run-tests.ps1
 
-- Dashboard (OAuth2‑protected): https://respondr.example.com
-- API (OAuth2‑protected via ingress): https://respondr.example.com/api/responders
-- Webhook (API key header, OAuth2 bypassed): https://respondr.example.com/webhook
-- ACR Webhook (token header, OAuth2 bypassed): https://respondr.example.com/internal/acr-webhook
-- Health (proxy ping): https://respondr.example.com/ping
+# Local development (backend + frontend)
+./dev-local.ps1 -Full
 
-For your deployment, replace `respondr.example.com` with your actual host.
-
-Notes
-- OAuth2 Proxy protects routes by default. `/webhook` and `/internal/acr-webhook` are regex‑exempt and require headers `X-API-Key` and `X-ACR-Token` respectively.
-- `/api/responders` is protected when accessed through ingress; liveness/readiness probes target the pod directly.
-- `/ping` is served by OAuth2 Proxy and returns 200 without auth, useful for external health checks.
-
-## What’s included
-
-- FastAPI backend + React frontend
-- OAuth2 Proxy for Azure AD/Entra auth (multi‑tenant)
-- Azure Table Storage + Queue for shared state across replicas
-- Containerized, Kubernetes‑ready with AGIC + Let’s Encrypt
-
-## End‑to‑end deployment (recommended)
-
-One command flow for infra, OAuth2, templates, app deploy, and validation.
-
-```powershell
-# Prereqs: Azure CLI, Docker Desktop, kubectl, PowerShell 7+
-az login
-az account set --subscription <your-subscription-id>
-
+# Deploy complete infrastructure
 cd deployment
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
-
-# Include ACR webhook setup for automatic redeployments
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
-
-# OPTIONAL: Set auth policy up front (no manual edits to values.yaml)
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
-  -AllowedEmailDomains "contoso.org","fabrikam.org" `
-  -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
+./deploy-from-scratch.ps1 -ResourceGroup <rg-name> -Location <region>
 ```
 
-Note this script has some additional parameters:
-```powershell
-./deploy-complete.ps1 `
-  -ResourceGroupName "respondr" `
-  -Location "westus" `
-  -Domain "rtreit.com" `
-  -Namespace "respondr" `
-  -HostPrefix "respondr" `
-  -ImageTag "latest" `
-  -SkipInfrastructure `
-  -SkipImageBuild `
-  -DisableOAuth2 `
-  -DryRun `
-  -ServiceTreeId "12345678-abcd-1234-5678-123456789abc" `
-  -SetupAcrWebhook `
-  -SetupGithubOidc `
-  -GithubRepo "scvsar/respondr" `
-  -GithubBranch "main" `
-  -AllowedEmailDomains "contoso.org","fabrikam.org" `
-  -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
+## Key Features
+
+- **Cost-Optimized**: Scale-to-zero architecture with consumption-based billing
+- **AI-Powered**: GPT-5-nano extracts vehicle and ETA from natural language messages
+- **Dual Authentication**: Supports both Azure AD SSO and local accounts for external users
+- **Real-Time Dashboard**: Live updates with responder status and arrival times
+- **Admin Panel**: User management interface for local account administration
+- **Webhook Debugger**: Built-in tool for testing GroupMe webhook integration
+- **Multi-Tenant Support**: Domain-based allow list for organization access control
+- **Soft Delete**: Recovery capability for accidentally deleted messages
+
+### Message Processing Flow
+
+```mermaid
+sequenceDiagram
+  participant GM as GroupMe Bot
+  participant AF as Azure Functions<br/>groupme_ingest()
+  participant Q as Azure Storage Queue<br/>(respondr-incoming)
+  participant ACA as Azure Container Apps<br/>(FastAPI + Worker)
+  participant AOAI as Azure OpenAI<br/>gpt-5-nano deployment
+  participant TS as Azure Table Storage<br/>(ResponderMessages)
+
+  GM->>AF: webhook POST
+  AF->>Q: Enqueue message
+  Note over Q,ACA: azureQueue scaler triggers<br/>scale-from-zero (Consumption)
+  ACA->>Q: Poll & dequeue
+  ACA->>AOAI: Parse message (gpt-5-nano)
+  AOAI-->>ACA: vehicle, ETA, confidence
+  ACA->>TS: Upsert parsed record
 ```
 
-What this does:
-- Creates/uses the resource group; deploys AKS, ACR, OpenAI, networking
-- Enables AGIC and cert‑manager; waits for Application Gateway
-- Creates Azure AD app and configures OAuth2 Proxy
-- Generates tenant‑specific files from templates (gitignored)
-- Builds, pushes, and deploys the app with OAuth2
-- Prompts for DNS A record; obtains Let’s Encrypt certs
-- Runs validation and smoke checks
+### User Authentication Flow
 
-DNS step: When prompted, add an A record for your host (e.g., respondr.<your-domain>) to the shown App Gateway IP, then continue. Propagation typically takes 5–60 minutes.
+```mermaid
+sequenceDiagram
+  participant U as User Browser
+  participant ACA as Azure Container Apps<br/>(FastAPI + React UI)
+  participant AAD as Entra ID (Azure AD)
+  participant API as ACA API (same app)
+  participant TS as Azure Table Storage<br/>(ResponderMessages)
 
-## Multi‑tenant authentication
+  U->>ACA: GET /
+  Note over ACA: Easy Auth (platform) evaluates policy
+  ACA-->>AAD: OIDC challenge (if not authenticated)
+  AAD-->>U: Sign-in (token issued)
+  U->>ACA: GET / (with token)
+  U->>API: /api/responders
+  API->>TS: Query responder data
+  TS-->>API: Entities
+  API-->>U: JSON
+  U-->>U: Render dashboard
+```
+## Application Endpoints
 
-- Uses Azure AD “common” endpoint to accept users from any tenant
-- Application validates user email domains against allowed list
-- Allowed domains configured in `deployment/values.yaml` under `allowedEmailDomains`
+The Container App exposes these endpoints:
 
-Admin-only editing
-- All mutating actions (Add/Edit/Delete, bulk delete, deleted-items admin) require admin users.
-- Admins are configured via the environment variable `ALLOWED_ADMIN_USERS` (comma‑separated emails), which is populated from `deployment/values.yaml` key `allowedAdminUsers` by the template processor.
-- Non‑admin users are read‑only; the UI hides Edit controls based on `/api/user` → `is_admin`.
+- **Dashboard**: `https://<your-app>.azurecontainerapps.io/` - Main responder dashboard
+- **API**: `https://<your-app>.azurecontainerapps.io/api/responders` - RESTful API for responder data
+- **Admin Panel**: `https://<your-app>.azurecontainerapps.io/admin` - User management (admin only)
+- **Webhook Debugger**: `https://<your-app>.azurecontainerapps.io/webhook-debug` - Test webhook integration
+- **Health Check**: `https://<your-app>.azurecontainerapps.io/health` - Application health status
 
-To enable admins, add to `deployment/values.yaml`:
+The Azure Function exposes:
+- **GroupMe Webhook**: `https://<function-app>.azurewebsites.net/api/groupme_ingest` - Receives GroupMe messages
 
-allowedAdminUsers:
-  - "first.admin@yourdomain.org"
-  - "second.admin@yourdomain.org"
+## Prerequisites
 
-This yields multi‑tenant sign‑in with app‑level authorization.
+- Azure subscription with appropriate permissions
+- Azure CLI (`az`) installed and configured
+- PowerShell 7+ for deployment scripts
+- Docker (for local development and container builds)
+- Python 3.11+ (for local development)
+- Node.js 18+ (for frontend development)
 
-Auth policy quick‑set (generate up front)
+## Deployment
+
+### Complete Infrastructure Deployment
+
+Deploy all resources with a single command:
 
 ```powershell
 cd deployment
-./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
-  -AllowedEmailDomains "contoso.org","fabrikam.org" `
-  -AllowedAdminUsers "alice@contoso.org","bob@fabrikam.org"
+./deploy-from-scratch.ps1 `
+  -ResourceGroup "respondr-rg" `
+  -Location "eastus2"
 ```
 
-## Template‑based deployment (portable config)
+This script will:
+1. Create a resource group
+2. Deploy Azure Storage (Queue + Table)
+3. Deploy Azure Functions for webhook ingestion
+4. Deploy Azure OpenAI with GPT-5-nano model
+5. Deploy Azure Container Apps with auto-scaling rules
+6. Configure authentication (optional)
+7. Output connection details and endpoints
 
-Generated at deploy time (not committed):
-- `deployment/values.yaml` (environment discovery)
-- `deployment/secrets.yaml` (OAuth2 + app secrets)
-- `deployment/respondr-k8s-generated.yaml` (final manifest)
+### Configuration Options
 
-Source templates you can read and version:
-- `deployment/respondr-k8s-unified-template.yaml` (single source of truth)
-- `deployment/secrets-template.yaml`, `deployment/letsencrypt-issuer.yaml`, `deployment/redis-deployment.yaml`
+The deployment script supports these parameters:
 
-Manual template flow (optional):
 ```powershell
-cd deployment
-./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
-  -AllowedEmailDomains "your-org.org","partners.org" `
-  -AllowedAdminUsers "first.admin@your-org.org","second.admin@partners.org"
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>"
-
-# Include ACR webhook setup for automatic redeployments
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
+./deploy-from-scratch.ps1 `
+  -ResourceGroup "respondr-rg" `
+  -Location "eastus2" `
+  -ContainerImage "myregistry.azurecr.io/respondr:latest" `
+  -EnableAuth $true `
+  -AuthClientId "<azure-ad-app-id>" `
+  -AuthClientSecret "<azure-ad-app-secret>"
 ```
 
-## Validate, redeploy, and cleanup
+### Environment Variables
 
-Validate environment or app:
-```powershell
-cd deployment
-./validate.ps1 -ResourceGroupName respondr -Phase env   # AKS/AGIC/ACR/cert‑manager
-./validate.ps1 -ResourceGroupName respondr -Phase app   # Workload smoke
+Create a `.env` file for local development:
+
+```bash
+# Azure Storage
+AZURE_STORAGE_CONNECTION_STRING=<connection-string>
+STORAGE_QUEUE_NAME=respondr-incoming
+STORAGE_TABLE_NAME=ResponderMessages
+
+# Azure OpenAI
+AZURE_OPENAI_ENDPOINT=https://<your-instance>.openai.azure.com/
+AZURE_OPENAI_API_KEY=<api-key>
+AZURE_OPENAI_DEPLOYMENT=gpt-5-nano
+AZURE_OPENAI_API_VERSION=2025-08-07
+
+# Authentication
+WEBHOOK_API_KEY=<secure-random-key>
+ALLOWED_EMAIL_DOMAINS=contoso.org,fabrikam.org
+ALLOWED_ADMIN_USERS=admin@contoso.org
+
+# Local Auth (optional)
+ENABLE_LOCAL_AUTH=true
+LOCAL_AUTH_SECRET_KEY=<secure-random-key>
+LOCAL_AUTH_SESSION_HOURS=24
 ```
 
-Redeploy after code changes (build, push, rollout):
-```powershell
-cd deployment
-./redeploy.ps1 -Action build -ResourceGroupName respondr
+## Authentication
+
+### Dual Authentication System
+
+The application supports two authentication methods:
+
+1. **Azure AD / Entra ID (SSO)**: For organization staff with Azure AD accounts
+2. **Local Accounts**: For external users (deputies, volunteers) who cannot use SSO
+
+### Azure AD Configuration
+
+- Uses Azure AD "common" endpoint to accept users from any tenant
+- Domain-based allow list via `ALLOWED_EMAIL_DOMAINS` environment variable
+- Admin users specified via `ALLOWED_ADMIN_USERS` environment variable
+
+### Local Authentication
+
+Enable local authentication for external users:
+
+```bash
+# Enable in environment
+ENABLE_LOCAL_AUTH=true
+LOCAL_AUTH_SECRET_KEY=<secure-random-key>
+
+# Create admin user
+cd backend
+python create_local_user.py admin admin@example.org "Admin User" --admin
+
+# Create regular user
+python create_local_user.py deputy1 deputy1@sheriff.org "Deputy John" --organization "Sheriff Dept"
 ```
 
-Cleanup:
-```powershell
-cd deployment
-./cleanup.ps1 -ResourceGroupName respondr -Force   # full resource group cleanup
-```
+See [LOCAL_AUTH_README.md](LOCAL_AUTH_README.md) for detailed setup instructions.
 
-## Automatic rollouts on new images (ACR webhook)
+## New Features
 
-When a new image is pushed to ACR, an ACR Webhook calls the backend to trigger a rolling restart so pods pull the latest image.
+### Admin Panel
 
-- Endpoint: `POST /internal/acr-webhook`
-  - Header: `X-ACR-Token: <token>` (or `?token=<token>`)
-  - Token stored in secret `respondr-secrets` key `ACR_WEBHOOK_TOKEN`
-- Handler patches the Deployment pod template with a restart timestamp → rolling restart
-- OAuth2 Proxy skips auth for this path (regex exempt)
+Web-based interface for managing local user accounts:
+- Create, update, and delete users
+- Reset passwords
+- Manage admin privileges
+- View user activity
 
-Environment‑scoped webhooks (recommended):
-- Production (main): webhook name `respondrmain`, scope `respondr:latest`, URL `https://respondr.<domain>/internal/acr-webhook`
-- Pre‑production: webhook name `respondrpreprod`, scope `respondr:preprod*`, URL `https://respondr-preprod.<domain>/internal/acr-webhook`
+Access at: `https://<your-app>/admin` (admin authentication required)
 
-Automated setup:
-```powershell
-# Detects your environment and configures a correctly-scoped ACR webhook
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
-# OR
-./deploy-template-based.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -SetupAcrWebhook
+### Webhook Debugger
 
-# Direct call (examples)
-./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -Environment main   -HostPrefix respondr
-./configure-acr-webhook.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -Environment preprod -HostPrefix respondr-preprod
-```
+Built-in tool for testing GroupMe webhook integration:
+- Send test messages
+- Override AI prompts for debugging
+- View real-time processing results
+- Test different message formats
 
-Manual ACR wiring (Portal):
-1) Container Registry → Webhooks → Add
-   - Name: `respondrmain`  | `respondrpreprod`
-   - Service URI: `https://respondr.<domain>/internal/acr-webhook` | `https://respondr-preprod.<domain>/internal/acr-webhook`
-   - Actions: Push
-   - Scope: `respondr:latest` (prod) | `respondr:preprod*` (preprod)
-   - Custom header: `X-ACR-Token: <same token as in Kubernetes secret>`
-2) Ensure `imagePullPolicy: Always`
-3) Push an image and watch rollout: `kubectl rollout status deploy/respondr-deployment -n <namespace>`
+Access at: `https://<your-app>/webhook-debug`
 
-## CI/CD with GitHub Actions
 
-Automated tests run on PRs, and on merge to `main` an image is built and pushed to ACR.
+## Local Development
 
-What runs
-- PRs to main: Backend tests with a uv virtualenv (no deploy)
- - PRs to main: Backend tests using a Python virtual environment (no deploy)
-- Push to main: Build Docker image, login to ACR, push `latest` and commit SHA tags
+### Full Stack Development
 
-Setup (recommended: OIDC, no client secret)
-Prereqs: Azure CLI (`az login`), GitHub CLI (`gh auth login`), Owner/Admin on the repo, and Contributor on the Azure subscription.
-
-Option A — One‑time automated setup
-1) From `deployment/`, run the OIDC + secrets setup:
-   - `./setup-github-oidc.ps1 -ResourceGroupName <rg> -Repo <owner/repo>`
-   - This will:
-     - Create/find an Azure App Registration + Service Principal
-     - Add federated credentials for the repo (branch and pull_request)
-     - Assign AcrPush on your ACR
-     - Set these repo secrets: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, ACR_NAME, ACR_LOGIN_SERVER
-
-Option B — Service Principal (JSON secret)
-- Create an App Registration + Client Secret manually, assign AcrPush to your ACR, then set one secret:
-  - AZURE_CREDENTIALS: JSON with clientId, clientSecret, subscriptionId, tenantId
-- You can omit the OIDC secrets if you use AZURE_CREDENTIALS.
-
-Minimal required secrets
-- Prefer OIDC: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
-- Or Service Principal: AZURE_CREDENTIALS (JSON)
-- ACR resolution: ACR_NAME (e.g., respondracr) or ACR_LOGIN_SERVER (e.g., respondracr.azurecr.io)
-
-How the workflow works
-- Tests job (PRs and pushes):
-  - Installs uv, creates `.venv`, installs `backend/requirements.txt`
- - Tests job (PRs and pushes):
-   - Creates a Python virtual environment (`.venv`) and installs `backend/requirements.txt`
-  - Sets `WEBHOOK_API_KEY=test-key` and runs `pytest` for `backend` while ignoring `backend/test_system.py`
-- Build job (push to main only):
-  - Logs into Azure via OIDC or AZURE_CREDENTIALS
-  - Resolves ACR login server using ACR_NAME or ACR_LOGIN_SERVER
-  - `az acr login`, then Docker build and push with two tags: `latest` and the commit SHA
-
-Troubleshooting
-- Azure login fails:
-  - OIDC: Ensure federated credentials exist for your repo/branch, and the repo secrets AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_SUBSCRIPTION_ID are set
-  - SP JSON: Ensure AZURE_CREDENTIALS is valid JSON with the four fields and the SP has AcrPush on the ACR
-- ACR not found or login server empty:
-  - Set ACR_NAME or ACR_LOGIN_SERVER as a repo secret; confirm the ACR exists in the target subscription
-- Push denied:
-  - Verify AcrPush role assignment to the SP/App; re‑run `setup-github-oidc.ps1` if needed
-- Webhook doesn’t redeploy:
-  - Confirm ACR webhook is configured to POST to `/internal/acr-webhook` with header `X-ACR-Token`
-  - Check the token in the ACR webhook matches the one stored in Kubernetes secret `respondr-secrets` (key `ACR_WEBHOOK_TOKEN`)
-
-## Local development
-
-Pick a mode:
-```powershell
-# Full stack (backend + frontend)
+```bash
+# Backend + Frontend with hot reload
 ./dev-local.ps1 -Full
 
 # Backend only
 ./dev-local.ps1
 
-# Containerized (compose)
+# Using Docker Compose
 ./dev-local.ps1 -Docker
 ```
 
-Tests:
-```powershell
-./run-tests.ps1                # all
-(cd backend; python run_tests.py)
-(cd frontend; npm test)
+### Testing
+
+```bash
+# Run all tests
+./run-tests.ps1
+
+# Backend tests only
+cd backend
+python run_tests.py
+
+# Frontend tests only
+cd frontend
+npm test
+
+# Integration tests
+cd functions/tests
+python test_integration_groupme_ingest.py
 ```
 
-## Testing across environments (local, preprod, prod)
+## CI/CD with GitHub Actions
 
-Quick guidance to exercise webhooks, APIs, and the UI in each environment.
+The repository includes GitHub Actions workflows for automated testing and deployment:
 
-Prereqs
-- WEBHOOK_API_KEY configured (via environment or `deployment/create-secrets.ps1` which writes Kubernetes secrets and a local `.env`)
-- Python deps installed for backend tests: `(cd backend; pip install -r requirements.txt)`
+### Workflows
 
-Key URLs (replace hosts for your setup)
-- Local: http://localhost:8000 (webhook: `/webhook`, API: `/api/responders`, UI: `/`)
-- Preprod: https://respondr-preprod.<your-domain> (webhook: `/webhook`, API: `/api/responders`)
-- Production: https://respondr.<your-domain> (webhook: `/webhook`, API: `/api/responders`)
+- **Pull Requests**: Runs backend tests automatically
+- **Main Branch**: Builds and pushes Docker images to registry
 
-Common test flows (from `backend/`)
- - Webhook, local default: `python tests/test_webhook.py`
- - Webhook, production: `python tests/test_webhook.py --production`
- - Preprod smoke and custom message: `python tests/test_preprod.py [--name "Your Name" --message "Your test message"]`
-- ACR webhook unit tests: `pytest test_acr_webhook.py -v`
+### Container Registry Integration
 
-Manual verification (preprod/prod)
-1) Open the environment host in a browser and sign in via Azure AD
-2) Confirm your test message appears on the dashboard and fields (vehicle, ETA) look correct
-3) API spot check (requires OAuth via ingress): `GET /api/responders`
+For automatic deployments when using Azure Container Registry:
 
-Troubleshooting
-- 401 on webhook: ensure `X-API-Key` header matches `WEBHOOK_API_KEY`; regenerate secrets if needed (`deployment/create-secrets.ps1`)
-- Connection errors: verify DNS points to App Gateway IP and cert-manager has issued TLS
-- OAuth2 issues: try a private window, or validate the Azure AD app registration and allowed domains
-
-## Pre‑production environment (separate namespace + host)
-
-Deploy a fully isolated pre‑production environment that shares the same Application Gateway/Public IP using host‑based routing and a unique DNS name.
-
-Key points:
-- Separate Kubernetes namespace (e.g., `respondr-preprod`)
-- Separate DNS host (e.g., `respondr-preprod.<domain>`) via `-HostPrefix`
-- Separate image tag (e.g., `preprod`) to avoid impacting `latest`
-- Separate ACR webhook, scoped to `respondr:preprod*` (see ACR section above)
-
-Deploy (automated):
-```powershell
-cd deployment
-./deploy-complete.ps1 -ResourceGroupName respondr -Domain "<your-domain>" `
-  -Namespace respondr-preprod -HostPrefix respondr-preprod -ImageTag preprod -SkipInfrastructure
+1. Build and push your image:
+```bash
+docker build -t myregistry.azurecr.io/respondr:latest .
+docker push myregistry.azurecr.io/respondr:latest
 ```
 
-Manual flow (condensed):
-```powershell
-cd deployment
-./generate-values.ps1 -ResourceGroupName respondr -Domain "<your-domain>" -Namespace respondr-preprod -HostPrefix respondr-preprod -ImageTag preprod
-./process-template.ps1 -TemplateFile respondr-k8s-unified-template.yaml -OutputFile respondr-k8s-generated.yaml
-kubectl create namespace respondr-preprod --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n respondr get secret respondr-secrets -o yaml | `
-  sed 's/namespace: respondr/namespace: respondr-preprod/' | kubectl apply -f -
-kubectl apply -f respondr-k8s-generated.yaml -n respondr-preprod
+2. Update Container App with new image:
+```bash
+az containerapp update \
+  --name respondr-app \
+  --resource-group respondr-rg \
+  --image myregistry.azurecr.io/respondr:latest
 ```
 
-Add a DNS A record for your preprod host to the same App Gateway IP and wait for cert‑manager to issue TLS.
+## Monitoring and Operations
 
-## Soft delete and recovery (safety net for deletes)
+### Health Monitoring
 
-Deletes in the UI are “soft deletes.” Instead of permanently removing data, entries are moved to a separate Azure Table partition so you can review and restore if needed.
+- **Application Health**: `https://<your-app>/health` - Returns application status
+- **Queue Metrics**: Monitor via Azure Portal → Storage Account → Queue metrics
+- **Container App Logs**: View in Azure Portal → Container App → Log stream
+- **Function Logs**: Azure Portal → Function App → Monitor → Logs
 
-- Active messages partition: `messages`
-- Deleted messages partition: `deleted`
+### Troubleshooting
 
-New endpoints (OAuth2‑protected via ingress):
-- `GET /api/deleted-responders` → list deleted messages (includes `deleted_at` timestamps)
-- `POST /api/deleted-responders/undelete` → restore messages; body: `{ "ids": ["<id1>", "<id2>"] }`
-- `DELETE /api/deleted-responders/{id}` → permanently remove an entry from deleted storage
+Common issues and solutions:
 
-Web views:
-- Active dashboard: `/dashboard`
-- Deleted dashboard: `/deleted-dashboard` (also linked from the main toolbar)
+**GroupMe webhook not receiving messages:**
+- Verify `WEBHOOK_API_KEY` matches between Function and GroupMe bot
+- Check Function App logs for authentication errors
+- Ensure Function URL is correctly configured in GroupMe bot
 
-Typical recovery flow:
-1) Open `/deleted-dashboard`, copy the message IDs you want to restore
-2) Call `POST /api/deleted-responders/undelete` with those IDs
-3) Verify the entries appear again on the main page and dashboard
+**Messages not appearing in dashboard:**
+- Check Storage Queue for message backlog
+- Verify Container App is running (may need manual start if scaled to zero)
+- Review Container App logs for processing errors
 
-## How AI processes responder messages
+**Authentication issues:**
+- For SSO: Verify Azure AD app registration and redirect URIs
+- For local auth: Check `ENABLE_LOCAL_AUTH` and `LOCAL_AUTH_SECRET_KEY` are set
+- Ensure allowed domains/users are correctly configured
 
-- Inbound message via `/webhook` (requires `X-API-Key`)
-- Backend builds a time‑aware prompt to extract:
-  - `vehicle` (exact SAR unit, POV, Unknown)
-  - `eta` → strict `HH:MM` (normalize clock times and durations)
-- Response parsed and validated; post‑process to compute:
-  - `eta_timestamp`, `minutes_until_arrival`, `arrival_status`
-- Append message to storage and serve via API/dashboard
+**AI parsing errors:**
+- Verify Azure OpenAI endpoint and API key
+- Check GPT-5-nano deployment is active
+- Review message format in webhook debugger
 
-Model/runtime
-- Azure OpenAI Chat Completions via Azure `openai` client
-- Deployment, endpoint, API key, and version from env vars
+## Data Management
+
+### Soft Delete and Recovery
+
+Deletes in the UI are "soft deletes" - data is moved to a separate partition for recovery:
+
+- **Active messages**: Stored in main partition
+- **Deleted messages**: Moved to `deleted` partition with timestamp
+
+Recovery endpoints:
+- `GET /api/deleted-responders` - List deleted messages
+- `POST /api/deleted-responders/undelete` - Restore messages
+- `DELETE /api/deleted-responders/{id}` - Permanently delete
+
+Access deleted items at: `https://<your-app>/deleted-dashboard`
+
+### Data Retention
+
+- Messages older than 30 days are automatically purged (configurable via `RETENTION_DAYS`)
+- Deleted items are retained separately and must be manually purged
+
+## How It Works
+
+### Message Processing Flow
+
+1. **GroupMe sends webhook** to Azure Function endpoint
+2. **Function validates** API key and enqueues message to Storage Queue
+3. **Queue triggers** Container App to scale from zero
+4. **Background worker** polls queue and processes messages:
+   - Extracts text from GroupMe message
+   - Calls GPT-5-nano to parse vehicle and ETA
+   - Normalizes time information
+   - Stores in Azure Table Storage
+5. **Dashboard updates** in real-time with new responder data
+
+### AI Message Parsing
+
+GPT-5-nano processes natural language messages to extract:
+- **Vehicle**: SAR unit number, POV, or Unknown
+- **ETA**: Normalized to HH:MM format
+- **Status**: Computed arrival status based on current time
+- **Confidence**: AI confidence level in parsing
+
+Example transformations:
+- "Responding SAR-78, ETA 25" → Vehicle: "SAR-78", ETA: "14:25"
+- "Taking POV, be there in 45 min" → Vehicle: "POV", ETA: "14:45"
+- "On my way" → Vehicle: "Unknown", ETA: null
+
+## Cost Optimization
+
+This serverless architecture minimizes costs through:
+
+- **Scale-to-zero**: All components scale down when idle
+- **Consumption billing**: Pay only for actual usage
+- **No infrastructure overhead**: No VMs, load balancers, or always-on services
+- **Efficient resource usage**: Queue-based processing prevents over-provisioning
+
+Typical monthly costs (low usage):
+- Azure Functions: ~$0 (free tier covers most scenarios)
+- Container Apps: ~$5-10 (scales to zero when idle)
+- Storage: ~$1-2 (minimal data storage)
+- Azure OpenAI: Usage-based (~$0.001 per message)
+
+## Security Considerations
+
+- **API Key Protection**: Webhook API keys stored securely in environment variables
+- **Managed Identity**: Preferred over connection strings for Azure service access
+- **HTTPS Only**: All endpoints use TLS encryption
+- **Input Validation**: Comprehensive validation on all inputs
+- **Rate Limiting**: Built-in protection against abuse
+- **Audit Logging**: All authentication and data modification events logged
+
+## Migration from Kubernetes
+
+If migrating from the original Kubernetes-based deployment:
+
+1. **Export existing data** from Redis/previous storage
+2. **Deploy new infrastructure** using deployment scripts
+3. **Import data** to Azure Table Storage
+4. **Update GroupMe bot** webhook URL to Function endpoint
+5. **Verify processing** with webhook debugger
+6. **Decommission old infrastructure** once validated
+
+## Support and Documentation
+
+- **Architecture Details**: See [docs/serverless-refactor-brief.md](docs/serverless-refactor-brief.md)
+- **Local Auth Setup**: See [LOCAL_AUTH_README.md](LOCAL_AUTH_README.md)
+- **Storage Configuration**: See [backend/STORAGE_CONFIG.md](backend/STORAGE_CONFIG.md)
+- **Deployment Scripts**: See [deployment/](deployment/) directory
 
 ## Contributing
 
-1. Fork and create a feature branch
-2. Make changes and test locally
-3. Open a pull request
+1. Fork the repository
+2. Create a feature branch
+3. Make changes and test locally
+4. Ensure all tests pass
+5. Open a pull request
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE) file for details.
