@@ -156,6 +156,27 @@ function MainApp() {
     // Users must explicitly enable the retro mode each session
     return false;
   });
+  const [geocitiesConfig, setGeocitiesConfig] = useState({ force_mode: false, enable_toggle: false });
+
+  // Fetch configuration on component mount
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const response = await fetch('/api/config');
+        if (response.ok) {
+          const config = await response.json();
+          setGeocitiesConfig(config.geocities || { force_mode: false, enable_toggle: false });
+          // If force mode is enabled, automatically enable GeoCities mode
+          if (config.geocities?.force_mode) {
+            setGeocitiesMode(true);
+          }
+        }
+      } catch (error) {
+        console.warn('Failed to fetch configuration:', error);
+      }
+    };
+    fetchConfig();
+  }, []);
 
   // Toggle GeoCities theme (session-only, resets on page refresh)
   const toggleGeocitiesTheme = useCallback(() => {
@@ -795,9 +816,11 @@ function MainApp() {
               {isAdmin && (
                 <div className="menu-item" onClick={()=>{ window.location.href = '/debug/webhook'; }}>Webhook Debug</div>
               )}
-              <div className="menu-item" onClick={toggleGeocitiesTheme}>
-                {geocitiesMode ? '🌐 Disable GeoCities Mode' : '🔥 Enable GeoCities Mode'}
-              </div>
+              {geocitiesConfig.enable_toggle && (
+                <div className="menu-item" onClick={toggleGeocitiesTheme}>
+                  {geocitiesMode ? '🌐 Disable GeoCities Mode' : '🔥 Enable GeoCities Mode'}
+                </div>
+              )}
               <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
                 const host = window.location.host;

@@ -89,6 +89,10 @@ LOCAL_USERS_TABLE = os.getenv("LOCAL_USERS_TABLE", "LocalUsers")
 LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_KEY", "your-secret-key-change-this")
 LOCAL_AUTH_SESSION_HOURS = int(os.getenv("LOCAL_AUTH_SESSION_HOURS", "24"))
 
+# GeoCities theme configuration
+FORCE_GEOCITIES_MODE = os.getenv("FORCE_GEOCITIES_MODE", "false").lower() == "true"
+ENABLE_GEOCITIES_TOGGLE = os.getenv("ENABLE_GEOCITIES_TOGGLE", "false").lower() == "true"
+
 # JWT token configuration for local auth
 import secrets
 if LOCAL_AUTH_SECRET_KEY == "your-secret-key-change-this" and not is_testing:

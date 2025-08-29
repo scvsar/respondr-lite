@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Request
 from typing import List, Optional
 
-from ..config import allowed_email_domains, allowed_admin_users, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing, ENABLE_LOCAL_AUTH
+from ..config import allowed_email_domains, allowed_admin_users, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing, ENABLE_LOCAL_AUTH, FORCE_GEOCITIES_MODE, ENABLE_GEOCITIES_TOGGLE
 import logging
 from urllib.parse import quote
 from fastapi.responses import JSONResponse
@@ -136,3 +136,15 @@ def get_user_info(request: Request) -> JSONResponse:
         response_data["auth_type"] = auth_type
 
     return JSONResponse(content=response_data)
+
+
+@router.get("/api/config")
+def get_client_config() -> JSONResponse:
+    """Get configuration settings for the frontend."""
+    config = {
+        "geocities": {
+            "force_mode": FORCE_GEOCITIES_MODE,
+            "enable_toggle": ENABLE_GEOCITIES_TOGGLE
+        }
+    }
+    return JSONResponse(content=config)
