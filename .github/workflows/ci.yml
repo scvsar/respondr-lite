@@ -122,3 +122,35 @@ jobs:
           echo "${{ steps.tags.outputs.TAGS }}" | sed 's/,/\n/g' | sed 's/^/- `/' | sed 's/$/`/' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+
+  deploy-prod:
+    name: Deploy to Production
+    needs: [build-and-push]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Azure CLI Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - name: Deploy to Production Container App
+        run: |
+          # Use latest tag for production deployments
+          IMAGE_TAG="${{ env.DOCKER_REPO }}:latest"
+          
+          # Get current timestamp for revision suffix
+          TIMESTAMP=$(date -u +"%Y%m%d%H%M%S")
+          
+          echo "Deploying to production with image: ${IMAGE_TAG}"
+          
+          az containerapp update \
+            --resource-group respondrlite \
+            --name respondr-prod-app \
+            --image "${IMAGE_TAG}" \
+            --revision-suffix "main-${TIMESTAMP}"
+          
+          echo "Production deployment completed with revision suffix: main-${TIMESTAMP}"

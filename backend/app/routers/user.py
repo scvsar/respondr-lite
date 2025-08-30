@@ -145,6 +145,12 @@ def get_client_config() -> JSONResponse:
         "geocities": {
             "force_mode": FORCE_GEOCITIES_MODE,
             "enable_toggle": ENABLE_GEOCITIES_TOGGLE
+        },
+        "debug": {
+            "allow_local_auth_bypass": ALLOW_LOCAL_AUTH_BYPASS,
+            "local_bypass_is_admin": LOCAL_BYPASS_IS_ADMIN,
+            "enable_local_auth": ENABLE_LOCAL_AUTH,
+            "is_testing": is_testing,
         }
     }
     return JSONResponse(content=config)

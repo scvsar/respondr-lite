@@ -187,11 +187,13 @@
   transition: all 0.2s ease;
 }
 
+/*
 .sort-btn:hover {
   background: var(--hover);
   border-color: var(--accent);
   color: var(--text);
 }
+*/
 
 .sort-btn[aria-sort="ascending"],
 .sort-btn[aria-sort="descending"] {
@@ -200,10 +202,27 @@
   border-color: var(--accent);
 }
 
-/* Fix: Keep active sort button text dark on hover */
+/* Prevent any visual changes on hover/focus/active for sort buttons */
+.sort-btn:hover,
+.sort-btn:focus,
+.sort-btn:active {
+  background: inherit;
+  color: inherit;
+  border-color: inherit;
+  box-shadow: none;
+  transform: none;
+}
+
+/* Keep aria-sorted buttons accented even on hover/focus/active */
 .sort-btn[aria-sort="ascending"]:hover,
-.sort-btn[aria-sort="descending"]:hover {
-  color: var(--bg) !important;
+.sort-btn[aria-sort="ascending"]:focus,
+.sort-btn[aria-sort="ascending"]:active,
+.sort-btn[aria-sort="descending"]:hover,
+.sort-btn[aria-sort="descending"]:focus,
+.sort-btn[aria-sort="descending"]:active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
 }
 
 /* Error state */

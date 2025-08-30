@@ -186,7 +186,7 @@ def test_user_info():
 def test_user_info_minimal_headers():
     """Test the /api/user endpoint with minimal OAuth2 headers"""
     headers = {
-        "X-User": "minimal@rtreit.com"  # Use allowed domain
+        "X-User": "minimal@respondr.local"  # Use allowed domain
     }
     
     response = client.get("/api/user", headers=headers)
@@ -194,8 +194,8 @@ def test_user_info_minimal_headers():
     
     data = response.json()
     assert data["authenticated"] == True
-    assert data["email"] == "minimal@rtreit.com"
-    assert data["name"] == "minimal@rtreit.com"  # Should fallback to email
+    assert data["email"] == "minimal@respondr.local"
+    assert data["name"] == "minimal@respondr.local"  # Should fallback to email
     assert data["groups"] == []
     assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
 
