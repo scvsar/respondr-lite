@@ -25,10 +25,15 @@ def is_email_domain_allowed(email: str) -> bool:
         return True
     try:
         if not email or "@" not in email:
+            logger.warning(f"Invalid email format: {email}")
             return False
         domain = email.split("@")[-1].strip().lower()
-        return domain in [d.lower() for d in allowed_email_domains]
-    except Exception:
+        allowed_domains = [d.lower() for d in allowed_email_domains]
+        is_allowed = domain in allowed_domains
+        logger.info(f"Domain check - Email: {email}, Domain: {domain}, Allowed domains: {allowed_domains}, Result: {is_allowed}")
+        return is_allowed
+    except Exception as e:
+        logger.error(f"Error checking domain for email {email}: {e}")
         return False
 
 

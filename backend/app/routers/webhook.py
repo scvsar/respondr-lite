@@ -12,6 +12,7 @@ from ..config import webhook_api_key, disable_api_key_check, APP_TZ, GROUP_ID_TO
 from ..llm import extract_details_from_text, build_prompts
 from ..utils import parse_datetime_like
 from ..storage import add_message, get_messages
+from .responders import require_admin_access
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -209,15 +210,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         if debug:
             # Admin-only: require authenticated admin for debug payloads
             try:
-                from .user import is_admin  # local import to avoid circulars at module load
-                user_email = (
-                    request.headers.get("X-Auth-Request-Email")
-                    or request.headers.get("X-Auth-Request-User")
-                    or request.headers.get("x-forwarded-email")
-                    or request.headers.get("X-User")
-                ) if request else None
-                if not is_admin(user_email):
-                    raise HTTPException(status_code=403, detail="Debug access requires admin")
+                # Use the same admin check as other endpoints
+                require_admin_access(request)
             except HTTPException:
                 raise
             except Exception:
@@ -249,25 +243,10 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
 
 
 @router.get("/api/debug/default-prompts")
-async def get_default_prompts(request: Request, text: str, created_at: Optional[int] = None, prev_eta_iso: Optional[str] = None):
+async def get_default_prompts(text: str, created_at: Optional[int] = None, prev_eta_iso: Optional[str] = None, _: bool = Depends(require_admin_access)):
     """Return the default system and user prompts the server would use for a given input.
     Helpful for the UI to prefill editable prompts.
     """
-    # Admin-only safeguard
-    try:
-        from .user import is_admin
-        user_email = (
-            request.headers.get("X-Auth-Request-Email")
-            or request.headers.get("X-Auth-Request-User")
-            or request.headers.get("x-forwarded-email")
-            or request.headers.get("X-User")
-        ) if request else None
-        if not is_admin(user_email):
-            raise HTTPException(status_code=403, detail="Debug access requires admin")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=403, detail="Debug access requires admin")
     
     base = parse_datetime_like(created_at) if created_at else datetime.now(APP_TZ)
     if base is None:
@@ -277,22 +256,8 @@ async def get_default_prompts(request: Request, text: str, created_at: Optional[
 
 
 @router.get("/api/config/groups")
-async def get_config_groups(request: Request):
+async def get_config_groups(_: bool = Depends(require_admin_access)):
     """Return configured Group IDs and their team names. Admin-only."""
-    try:
-        from .user import is_admin
-        user_email = (
-            request.headers.get("X-Auth-Request-Email")
-            or request.headers.get("X-Auth-Request-User")
-            or request.headers.get("x-forwarded-email")
-            or request.headers.get("X-User")
-        ) if request else None
-        if not is_admin(user_email):
-            raise HTTPException(status_code=403, detail="Admin only")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=403, detail="Admin only")
 
     try:
         items = [{"group_id": gid, "team": GROUP_ID_TO_TEAM.get(gid, "Unknown")} for gid in sorted(GROUP_ID_TO_TEAM.keys())]
