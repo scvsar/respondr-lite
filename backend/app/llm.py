@@ -26,33 +26,13 @@ if azure_openai_api_key and azure_openai_endpoint:
         )
     except Exception as e:
         logger.error(f"Failed to initialize Azure OpenAI client: {e}")
-# Ensure a non-None client for tests even when real credentials are missing
-if client is None:
-    client = object()
 
 
 def _normalize_vehicle_name(vehicle_raw: str) -> str:
-    """Normalize various vehicle name inputs into canonical forms.
-
-    Supports flexible POV synonyms ("P.O.V", "personal vehicle" etc.) and
-    extraction of SAR unit numbers from noisy strings like "SAR-78 Truck".
-    Returns an empty string for empty input to match legacy behaviour.
-    """
     s = (vehicle_raw or "").strip()
-    if not s:
-        return ""
 
-    # POV synonyms – strip punctuation and compare lowercased tokens
-    normalized = re.sub(r"[^a-zA-Z0-9 ]", "", s).lower()
-    pov_keywords = {
-        "pov", "personal vehicle", "personal", "own vehicle", "my vehicle", "my pov",
-    }
-    for kw in pov_keywords:
-        if kw in normalized:
-            return "POV"
-
-    # Extract SAR-<num> from anywhere in the string
-    m = re.search(r"sar[\s-]*0*(\d{1,3})", normalized)
+    # clamp weird LLM outputs like "SAR-1022"
+    m = re.match(r"^\s*sar[\s-]?0*(\d{1,3})\s*$", s, re.I)
     if m:
         num = int(m.group(1))
         if 1 <= num <= MAX_SAR_UNIT:
@@ -60,13 +40,13 @@ def _normalize_vehicle_name(vehicle_raw: str) -> str:
         return "Unknown"
 
     # If the model tried to bake the code into vehicle (e.g., "SAR-1022")
-    if re.search(r"\b10\s*-?\s*22\b|\b1022\b", normalized):
+    if re.search(r"\b10\s*-?\s*22\b|\b1022\b", s.lower()):
         return "Unknown"
 
-    if normalized == "sar rig":
-        return "SAR Rig"
+    if s.upper() in {"POV", "SAR RIG"}:
+        return s.upper().replace("SAR RIG", "SAR Rig")
 
-    return s
+    return s if s else "Unknown"
 
 
 
@@ -150,8 +130,7 @@ def _is_standdown(text: str) -> bool:
 def _select_kwargs_for_model(model_name: str) -> Dict[str, Any]:
     kw: Dict[str, Any] = {
         "max_completion_tokens": int(DEFAULT_MAX_COMPLETION_TOKENS or 768),
-        # Use a low temperature for deterministic behaviour in tests
-        "temperature": 0.1,
+        "temperature": 1,
         "top_p": 1,
         "presence_penalty": 0,
         "frequency_penalty": 0,
@@ -293,16 +272,7 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                     messages=messages_payload,
                     **kwargs
                 )
-
-            # Support responses using function calling
-            message = resp.choices[0].message
-            content = (getattr(message, "content", "") or "").strip()
-            if not content and getattr(message, "function_call", None):
-                try:
-                    content = getattr(message.function_call, "arguments", "") or ""
-                except Exception:
-                    content = ""
-
+            
             # Log token usage
             if hasattr(resp, 'usage') and resp.usage:
                 call_info["tokens_used"] = {
@@ -310,11 +280,12 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                     "completion_tokens": getattr(resp.usage, 'completion_tokens', None),
                     "total_tokens": getattr(resp.usage, 'total_tokens', None)
                 }
-                logger.info(
-                    f"LLM tokens used - prompt: {call_info['tokens_used']['prompt_tokens']}, "
-                    f"completion: {call_info['tokens_used']['completion_tokens']}, "
-                    f"total: {call_info['tokens_used']['total_tokens']}")
-
+                logger.info(f"LLM tokens used - prompt: {call_info['tokens_used']['prompt_tokens']}, "
+                           f"completion: {call_info['tokens_used']['completion_tokens']}, "
+                           f"total: {call_info['tokens_used']['total_tokens']}")
+            
+            content = (resp.choices[0].message.content or "").strip()
+            
             if not content:
                 call_info["error"] = "empty_response"
                 logger.warning(f"LLM returned empty response on attempt {attempt}")
@@ -568,8 +539,13 @@ def extract_details_from_text(
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
-    # Use module-level client; tests may patch app.llm.client directly
-    active_client = client
+    # Allow tests to inject main.client
+    active_client = None
+    try:
+        import main as _main
+        active_client = getattr(_main, "client", None)
+    except ImportError:
+        active_client = client
 
     llm_data = _call_llm_only(
         text,
@@ -590,18 +566,20 @@ def extract_details_from_text(
 
     if isinstance(llm_data, dict) and (llm_data.get("_llm_unavailable") or llm_data.get("_llm_error")):
         logger.warning(f"LLM unavailable or error: {llm_data}")
-        # Provide legacy-compatible fields for callers and tests
         return {
             "vehicle": "Unknown",
             "eta": "Unknown",
-            "confidence": 0.0,
+            "raw_status": "Unknown",
+            "arrival_status": "Unknown",
+            "status_source": "LLM-Only",
+            "status_confidence": 0.0,
             "eta_timestamp": None,
-            "eta_minutes": None,
-            "error": llm_data.get("_llm_error") or "LLM unavailable",
+            "eta_timestamp_utc": None,
+            "minutes_until_arrival": None,
+            "parse_source": "LLM",
         }
 
-    vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or ""))
-    eta_text = str(llm_data.get("eta") or "")
+    vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or "Unknown"))
     orig_status = str(llm_data.get("status") or "Unknown").strip()
     status = orig_status
     status_source = "LLM"
@@ -629,18 +607,6 @@ def extract_details_from_text(
         status_source = "Rule"
 
     eta_fields, eta_source = _derive_eta_fields(text, llm_data, anchor, prev_eta_iso, status)
-    eta_minutes = eta_fields.get("minutes_until_arrival")
-    eta_timestamp_norm = eta_fields.get("eta_timestamp")
-    if eta_timestamp_norm:
-        try:
-            eta_str = str(eta_timestamp_norm).replace("Z", "+00:00")
-            eta_dt = datetime.fromisoformat(eta_str)
-            if eta_dt.tzinfo is None:
-                eta_dt = eta_dt.replace(tzinfo=APP_TZ)
-            eta_minutes = int(round((eta_dt - anchor).total_seconds() / 60))
-            eta_timestamp_norm = eta_dt.isoformat()
-        except Exception:
-            pass
 
     # If Not Responding/Cancelled, ensure ETA is cleared regardless of LLM
     if status in ("Not Responding", "Cancelled"):
@@ -650,13 +616,7 @@ def extract_details_from_text(
             "eta_timestamp_utc": None,
             "minutes_until_arrival": None
         }
-        eta_timestamp_norm = None
-        eta_minutes = None
         eta_source = "Rule"
-
-    # Use derived ETA text if model did not supply one
-    if not eta_text and eta_fields.get("eta") and eta_fields.get("eta") != "Unknown":
-        eta_text = eta_fields.get("eta")
 
     if DEBUG_FULL_LLM_LOG:
         try:
@@ -668,18 +628,14 @@ def extract_details_from_text(
 
     result = {
         "vehicle": vehicle,
-        # Preserve the raw ETA text from the model for backward compatibility
-        "eta": eta_text,
+        "eta": eta_fields.get("eta", "Unknown"),
         "raw_status": status,
         "arrival_status": status,  # webhook may flip to "Arrived" based on minutes
         "status_source": status_source,
         "status_confidence": confidence,
-        # Legacy compatibility fields expected by tests
-        "confidence": confidence,
-        "eta_timestamp": eta_timestamp_norm,
+        "eta_timestamp": eta_fields.get("eta_timestamp"),
         "eta_timestamp_utc": eta_fields.get("eta_timestamp_utc"),
-        "minutes_until_arrival": eta_minutes,
-        "eta_minutes": eta_minutes,
+        "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
         "parse_source": eta_source,
         "parse_evidence": evidence,
         # "rules_applied": rules_applied,  # optional, very helpful in /api/parse-debug

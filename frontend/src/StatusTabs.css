@@ -190,6 +190,7 @@
 .sort-btn:hover {
   background: var(--hover);
   border-color: var(--accent);
+  color: var(--text);
 }
 
 .sort-btn[aria-sort="ascending"],

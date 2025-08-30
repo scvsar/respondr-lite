@@ -80,8 +80,7 @@ def test_webhook_endpoint(mock_openai_response):
         if test_user_message:
             assert test_user_message["vehicle"] == "SAR-78"
             assert re.match(r"\d{2}:\d{2}", test_user_message["eta"])  # HH:MM after LLM iso conversion
-            # Timestamp should be in ISO format
-            assert re.match(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])
+            assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])  # legacy format in tests
 
 def test_extract_details_with_vehicle_and_eta():
     """Test extracting details with both vehicle and ETA present"""
