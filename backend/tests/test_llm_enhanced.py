@@ -188,9 +188,9 @@ class TestLLMTextExtraction:
             mock_client.chat.completions.create.side_effect = Exception("API Error")
             
             result = extract_details_from_text("SAR-78 responding")
-            
-            assert result["vehicle"] == ""
-            assert result["eta"] == ""
+
+            assert result["vehicle"] == "Unknown"
+            assert result["eta"] == "Unknown"
             assert result["confidence"] == 0.0
             assert "error" in result
 
@@ -209,10 +209,10 @@ class TestLLMTextExtraction:
             mock_client.chat.completions.create.return_value = mock_response
             
             result = extract_details_from_text("SAR-78 responding, 15 minutes")
-            
-            # Should fall back to empty values on JSON parse error
-            assert result["vehicle"] == ""
-            assert result["eta"] == ""
+
+            # Should fall back to default values on JSON parse error
+            assert result["vehicle"] == "Unknown"
+            assert result["eta"] == "Unknown"
             assert result["confidence"] == 0.0
 
     def test_extract_details_partial_information(self):
@@ -441,8 +441,8 @@ class TestLLMPerformance:
             
             # Should handle timeout gracefully and not hang
             assert end_time - start_time < 5.0  # Should not take more than 5 seconds
-            assert result["vehicle"] == ""
-            assert result["eta"] == ""
+            assert result["vehicle"] == "Unknown"
+            assert result["eta"] == "Unknown"
             assert "error" in result
 
     def test_llm_large_message_handling(self):
