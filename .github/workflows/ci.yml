@@ -45,6 +45,7 @@ jobs:
         shell: bash
         env:
           WEBHOOK_API_KEY: test-key
+          ALLOWED_EMAIL_DOMAINS: scvsar.org,rtreit.com,respondr.local
         run: |
           source .venv/bin/activate
           cd backend
