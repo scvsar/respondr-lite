@@ -209,6 +209,11 @@
 .dashboard-table th.col-time { position: sticky; left: 0; background-color: var(--bg-elev); z-index: 800; }
 .dashboard-table td.col-time { position: sticky; left: 0; background: inherit; z-index: 700; }
 
+/* Fix: Ensure Time column text stays readable on hover */
+.dashboard-table tbody tr:hover td.col-time {
+  color: var(--text) !important;
+}
+
 .status-pill { 
   display:inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; 
 }
