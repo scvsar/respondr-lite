@@ -200,6 +200,12 @@
   border-color: var(--accent);
 }
 
+/* Fix: Keep active sort button text dark on hover */
+.sort-btn[aria-sort="ascending"]:hover,
+.sort-btn[aria-sort="descending"]:hover {
+  color: var(--bg) !important;
+}
+
 /* Error state */
 .empty.error {
   color: var(--red);
