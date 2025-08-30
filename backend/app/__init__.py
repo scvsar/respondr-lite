@@ -8,6 +8,7 @@ from fastapi.responses import RedirectResponse
 from .config import PRIMARY_HOSTNAME, LEGACY_HOSTNAMES
 from .routers import webhook, responders, dashboard, acr, user, frontend, auth
 from .queue_listener import listen_to_queue
+from .retention_scheduler import retention_cleanup_task
 
 logger = logging.getLogger(__name__)
 
@@ -69,3 +70,9 @@ frontend.add_spa_catch_all(app)
 async def _start_queue_listener() -> None:
     """Launch background task to process queue messages."""
     asyncio.create_task(listen_to_queue())
+
+
+@app.on_event("startup")
+async def _start_retention_cleanup() -> None:
+    """Launch background task for retention cleanup."""
+    asyncio.create_task(retention_cleanup_task())

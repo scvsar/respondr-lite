@@ -10,13 +10,14 @@ import json
 import logging
 import os
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 
 from .storage_backends import (
     BaseStorage, StorageBackend, MemoryStorage,
     FileStorage, AzureTableStorage
 )
-from .config import is_testing
+from .config import is_testing, RETENTION_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -422,3 +423,88 @@ def bulk_delete_messages(msg_ids: List[str]) -> int:
     save_deleted_messages(deleted_messages)
     
     return deleted_count
+
+
+def purge_old_messages() -> Dict[str, int]:
+    """
+    Purge messages older than RETENTION_DAYS from both active and deleted messages.
+    
+    Returns:
+        Dict with counts of purged active and deleted messages
+    """
+    if RETENTION_DAYS <= 0:
+        logger.info("Message retention is disabled (RETENTION_DAYS <= 0)")
+        return {"active": 0, "deleted": 0}
+    
+    cutoff_time = time.time() - (RETENTION_DAYS * 24 * 60 * 60)
+    
+    # Purge old active messages
+    messages = get_messages()
+    active_to_keep = []
+    active_purged = 0
+    
+    for msg in messages:
+        # Check if message has created_at timestamp
+        created_at = msg.get("created_at")
+        if created_at is None:
+            # Keep messages without timestamps
+            active_to_keep.append(msg)
+            continue
+        
+        # Convert created_at to float if it's a string
+        try:
+            created_timestamp = float(created_at)
+        except (ValueError, TypeError):
+            # Keep messages with invalid timestamps
+            active_to_keep.append(msg)
+            continue
+        
+        if created_timestamp >= cutoff_time:
+            active_to_keep.append(msg)
+        else:
+            active_purged += 1
+            logger.debug(f"Purging old message: {msg.get('id', 'unknown')} from {msg.get('timestamp', 'unknown')}")
+    
+    # Purge old deleted messages
+    deleted_messages = get_deleted_messages()
+    deleted_to_keep = []
+    deleted_purged = 0
+    
+    for msg in deleted_messages:
+        # Check deleted_at first, fall back to created_at
+        timestamp_field = msg.get("deleted_at") or msg.get("created_at")
+        
+        if timestamp_field is None:
+            # Keep messages without timestamps
+            deleted_to_keep.append(msg)
+            continue
+        
+        # Parse ISO format deleted_at or Unix timestamp created_at
+        try:
+            if isinstance(timestamp_field, str) and "T" in timestamp_field:
+                # ISO format datetime string
+                deleted_timestamp = datetime.fromisoformat(timestamp_field.replace("Z", "+00:00")).timestamp()
+            else:
+                # Unix timestamp
+                deleted_timestamp = float(timestamp_field)
+        except (ValueError, TypeError):
+            # Keep messages with invalid timestamps
+            deleted_to_keep.append(msg)
+            continue
+        
+        if deleted_timestamp >= cutoff_time:
+            deleted_to_keep.append(msg)
+        else:
+            deleted_purged += 1
+            logger.debug(f"Purging old deleted message: {msg.get('id', 'unknown')}")
+    
+    # Save the filtered messages
+    if active_purged > 0:
+        save_messages(active_to_keep)
+        logger.info(f"Purged {active_purged} old active messages")
+    
+    if deleted_purged > 0:
+        save_deleted_messages(deleted_to_keep)
+        logger.info(f"Purged {deleted_purged} old deleted messages")
+    
+    return {"active": active_purged, "deleted": deleted_purged}

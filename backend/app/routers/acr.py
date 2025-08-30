@@ -169,3 +169,28 @@ def cleanup_invalid_timestamps():
         "cleaned_count": 0,
         "timestamp": datetime.now(APP_TZ).isoformat()
     }
+
+
+@router.post("/cleanup/retention")
+async def trigger_retention_cleanup():
+    """Manually trigger retention cleanup to purge old messages."""
+    from ..retention_scheduler import run_retention_cleanup_now
+    from ..config import RETENTION_DAYS
+    
+    logger.info(f"Manual retention cleanup triggered (RETENTION_DAYS={RETENTION_DAYS})")
+    
+    try:
+        result = await run_retention_cleanup_now()
+        return {
+            "status": "success",
+            "message": f"Retention cleanup completed (RETENTION_DAYS={RETENTION_DAYS})",
+            "purged": result,
+            "timestamp": datetime.now(APP_TZ).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error during manual retention cleanup: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "timestamp": datetime.now(APP_TZ).isoformat()
+        }

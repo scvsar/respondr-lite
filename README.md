@@ -352,7 +352,7 @@ Access deleted items at: `https://<your-app>/deleted-dashboard`
 
 ### Data Retention
 
-- Messages older than 30 days are automatically purged (configurable via `RETENTION_DAYS`)
+- Messages older than 365 days are automatically purged (configurable via `RETENTION_DAYS`)
 - Deleted items are retained separately and must be manually purged
 
 ## How It Works

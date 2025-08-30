@@ -15,7 +15,8 @@ def main():
         "tests/test_main.py",
         "tests/test_acr_webhook.py",
         "tests/test_hostname_redirect_direct.py",
-        "tests/test_hostname_redirect_integration.py"
+        "tests/test_hostname_redirect_integration.py",
+        "tests/test_retention.py"
     ]
     
     # Import pytest and run tests directly to avoid subprocess hanging

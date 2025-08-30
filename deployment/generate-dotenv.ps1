@@ -317,7 +317,7 @@ $kv = [ordered]@{
   # App behavior
   "TIMEZONE"                        = _pick $TIMEZONE           "America/Los_Angeles"
   "DEBUG_FULL_LLM_LOG"              = _pick $DEBUG_FULL_LLM_LOG "false"
-  "RETENTION_DAYS"                  = _pick $RETENTION_DAYS     "30"
+  "RETENTION_DAYS"                  = _pick $RETENTION_DAYS     "365"
 
   # LLM tuning / limits
   "DEFAULT_MAX_COMPLETION_TOKENS"   = _pick $DEFAULT_MAX_COMPLETION_TOKENS "4096"
