@@ -64,6 +64,7 @@ jobs:
       - name: Run backend tests
         env:
           WEBHOOK_API_KEY: test-key
+          ALLOWED_EMAIL_DOMAINS: scvsar.org,rtreit.com,respondr.local
           ENABLE_LOCAL_AUTH: true
           LOCAL_AUTH_SECRET_KEY: test-secret-key
           PYTEST_CURRENT_TEST: true
