@@ -425,6 +425,114 @@
   color: #000;
 }
 
+/* 🎯 SUPER FUNKY ANIMATED CURSORS! 🎯 */
+/* Main cursor - animated sparkle trail */
+.geocities-theme {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">✨</text></svg>'), auto;
+}
+
+/* Links get the classic pointing hand with flames */
+.geocities-theme a {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">👉</text></svg>'), pointer;
+}
+
+/* Buttons get a retro crosshair */
+.geocities-theme button,
+.geocities-theme .geocities-button {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="none" stroke="lime" stroke-width="2"/><line x1="16" y1="2" x2="16" y2="30" stroke="lime" stroke-width="2"/><line x1="2" y1="16" x2="30" y2="16" stroke="lime" stroke-width="2"/><circle cx="16" cy="16" r="4" fill="red"/></svg>') 16 16, crosshair;
+}
+
+/* Table cells get a magic wand */
+.geocities-theme td:hover {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🪄</text></svg>'), cell;
+}
+
+/* Text inputs get a pencil */
+.geocities-theme input[type="text"],
+.geocities-theme textarea {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">✏️</text></svg>'), text;
+}
+
+/* Loading states get spinning CD-ROM */
+.geocities-theme .loading,
+.geocities-theme .geocities-loading {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">💿</text></svg>'), wait;
+}
+
+/* Headers get flame cursor */
+.geocities-theme h1,
+.geocities-theme h2,
+.geocities-theme .geocities-title {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🔥</text></svg>'), default;
+}
+
+/* Navigation items get rocket ship */
+.geocities-theme .geocities-nav a {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🚀</text></svg>'), pointer;
+}
+
+/* Disabled elements get stop sign */
+.geocities-theme [disabled],
+.geocities-theme .disabled {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🛑</text></svg>'), not-allowed;
+}
+
+/* Help/info areas get question mark */
+.geocities-theme [title],
+.geocities-theme .help,
+.geocities-theme .info {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">❓</text></svg>'), help;
+}
+
+/* Draggable items get grabbing hand */
+.geocities-theme .draggable {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🤏</text></svg>'), grab;
+}
+
+/* Email link gets envelope */
+.geocities-theme .email-me {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">📮</text></svg>'), pointer;
+}
+
+/* Status badges get different cursors */
+.geocities-theme .status-responding {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🚨</text></svg>'), pointer;
+}
+
+.geocities-theme .status-available {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">✅</text></svg>'), pointer;
+}
+
+.geocities-theme .status-cancelled {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">❌</text></svg>'), pointer;
+}
+
+/* Special cursor for marquee */
+.geocities-theme .geocities-marquee {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">📢</text></svg>'), default;
+}
+
+/* Awards section gets trophy */
+.geocities-theme .awards,
+.geocities-theme .award-badge {
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🏆</text></svg>'), pointer;
+}
+
+/* Animated cursor trail effect using CSS */
+@keyframes cursor-sparkle {
+  0% { transform: translate(0, 0) scale(1); opacity: 1; }
+  100% { transform: translate(20px, -20px) scale(0); opacity: 0; }
+}
+
+/* Add cursor trail particles */
+.geocities-theme::after {
+  content: '✨';
+  position: fixed;
+  pointer-events: none;
+  animation: cursor-sparkle 1s infinite;
+  z-index: 9999;
+}
+
 /* Animated fire text */
 .fire-text {
   font-size: 36px;
@@ -442,6 +550,7 @@
   padding: 5px 10px;
   border-radius: 5px;
   display: inline-block;
+  cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><text x="0" y="24" font-size="24">🔥</text></svg>'), default;
 }
 
 /* Loading spinner - classic style */
