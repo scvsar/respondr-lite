@@ -166,6 +166,14 @@ test('calculates average ETA correctly', async () => {
         ])
       });
     }
+    if (url === '/api/config') {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          geocities: { force_mode: false, enable_toggle: false }
+        })
+      });
+    }
     return Promise.reject(new Error('Unknown URL'));
   });
 

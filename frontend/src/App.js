@@ -157,6 +157,12 @@ function MainApp() {
     return false;
   });
   const [geocitiesConfig, setGeocitiesConfig] = useState({ force_mode: false, enable_toggle: false });
+  
+  // Inactivity detection state
+  const INACTIVITY_TIMEOUT = parseInt(process.env.REACT_APP_INACTIVITY_MINUTES || '10') * 60 * 1000; // Default 10 minutes
+  const [isInactive, setIsInactive] = useState(false);
+  const [lastActivity, setLastActivity] = useState(Date.now());
+  const inactivityTimerRef = useRef(null);
 
   // Fetch configuration on component mount
   useEffect(() => {
@@ -193,6 +199,7 @@ function MainApp() {
     }
   }, []);
   const [live, setLive] = useState(true);
+  const [autoPaused, setAutoPaused] = useState(false); // Track if paused due to inactivity
   const [useUTC, setUseUTC] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -214,6 +221,50 @@ function MainApp() {
     eta: '',       // free text HH:MM or words
     eta_timestamp: '', // datetime-local string
   });
+
+  // Track user activity
+  const handleUserActivity = useCallback(() => {
+    setLastActivity(Date.now());
+    if (isInactive) {
+      setIsInactive(false);
+      setAutoPaused(false);
+      // Resume live updates if they were on before
+      if (live) {
+        console.log('Resuming live updates after user activity');
+      }
+    }
+  }, [isInactive, live]);
+
+  // Set up activity listeners
+  useEffect(() => {
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach(event => {
+      document.addEventListener(event, handleUserActivity);
+    });
+    
+    return () => {
+      events.forEach(event => {
+        document.removeEventListener(event, handleUserActivity);
+      });
+    };
+  }, [handleUserActivity]);
+
+  // Monitor for inactivity
+  useEffect(() => {
+    const checkInactivity = () => {
+      const timeSinceActivity = Date.now() - lastActivity;
+      if (timeSinceActivity >= INACTIVITY_TIMEOUT && !isInactive && live) {
+        console.log(`No activity for ${INACTIVITY_TIMEOUT / 60000} minutes, pausing live updates`);
+        setIsInactive(true);
+        setAutoPaused(true);
+      }
+    };
+
+    // Check every 30 seconds
+    const intervalId = setInterval(checkInactivity, 30000);
+    
+    return () => clearInterval(intervalId);
+  }, [lastActivity, isInactive, live, INACTIVITY_TIMEOUT]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -264,8 +315,8 @@ function MainApp() {
       fetchData();
     }
 
-    // If Live is off, do not schedule polling
-    if (!live) {
+    // If Live is off or auto-paused due to inactivity, do not schedule polling
+    if (!live || autoPaused) {
       return;
     }
 
@@ -277,9 +328,15 @@ function MainApp() {
 
     const pollData = () => {
       if (isCancelled) return;
+      
+      // Don't schedule polling if auto-paused
+      if (autoPaused) return;
 
       currentTimeoutId = setTimeout(async () => {
         if (isCancelled) return;
+        
+        // Double-check we're not paused before fetching
+        if (autoPaused) return;
 
         try {
           await fetchData();
@@ -289,13 +346,16 @@ function MainApp() {
           pollInterval = Math.min(pollInterval * 2, maxInterval);
         }
 
-        if (!isCancelled && live) {
-          pollData(); // Schedule next poll only if still Live
+        if (!isCancelled && live && !autoPaused) {
+          pollData(); // Schedule next poll only if still Live and not paused
         }
       }, pollInterval);
     };
 
-    pollData();
+    // Only start polling if not auto-paused
+    if (!autoPaused) {
+      pollData();
+    }
 
     return () => {
       isCancelled = true;
@@ -303,7 +363,7 @@ function MainApp() {
         clearTimeout(currentTimeoutId);
       }
     };
-  }, [fetchData, live]);
+  }, [fetchData, live, autoPaused]);
 
   // User info (for avatar initials)
   useEffect(() => {
@@ -745,6 +805,139 @@ function MainApp() {
 
   return (
     <div className={geocitiesMode ? "App geocities-theme" : "App"}>
+      {/* DEBUG: Sleepy mode visual indicators */}
+      {autoPaused && (
+        <>
+          {/* Bouncing sleepy emoji */}
+          <div style={{
+            position: 'fixed',
+            fontSize: '120px',
+            zIndex: 9999,
+            pointerEvents: 'none',
+            animation: 'bounce-around 8s linear infinite',
+          }}>
+            😴
+          </div>
+          
+          {/* Multiple floating Z's */}
+          {[...Array(5)].map((_, i) => (
+            <div key={i} style={{
+              position: 'fixed',
+              fontSize: `${40 + i * 10}px`,
+              left: `${20 + i * 15}%`,
+              top: `${10 + i * 12}%`,
+              zIndex: 9997,
+              pointerEvents: 'none',
+              animation: `float-z ${3 + i}s ease-in-out infinite`,
+              animationDelay: `${i * 0.5}s`,
+              opacity: 0.7,
+            }}>
+              💤
+            </div>
+          ))}
+          
+          {/* Central sleep message */}
+          <div style={{
+            position: 'fixed',
+            top: '50%',
+            left: '50%',
+            transform: 'translate(-50%, -50%)',
+            fontSize: '48px',
+            fontWeight: 'bold',
+            color: '#ff6b6b',
+            backgroundColor: 'rgba(255, 255, 255, 0.95)',
+            padding: '30px',
+            borderRadius: '20px',
+            border: '5px dashed #ff6b6b',
+            zIndex: 9998,
+            textAlign: 'center',
+            animation: 'pulse 2s ease-in-out infinite',
+            pointerEvents: 'none',
+            boxShadow: '0 0 50px rgba(255, 107, 107, 0.3)',
+          }}>
+            🛌 SHHH... I'M SLEEPING! 🛌
+            <br />
+            <span style={{fontSize: '24px', color: '#666'}}>
+              (Move your mouse to wake me up!)
+            </span>
+            <br />
+            <span style={{fontSize: '16px', color: '#999', marginTop: '10px', display: 'block'}}>
+              💸 Saving Azure costs... 💸
+            </span>
+          </div>
+          
+          {/* Animated snoring text */}
+          <div style={{
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            fontSize: '36px',
+            fontWeight: 'bold',
+            color: '#ff9800',
+            zIndex: 9996,
+            pointerEvents: 'none',
+            animation: 'snore 3s ease-in-out infinite',
+          }}>
+            Zzz... Zzz... Zzz...
+          </div>
+          
+          {/* CSS animations */}
+          <style>{`
+            @keyframes bounce-around {
+              0% {
+                transform: translate(0, 0) rotate(0deg) scale(1);
+              }
+              25% {
+                transform: translate(calc(100vw - 200px), calc(100vh - 200px)) rotate(180deg) scale(1.2);
+              }
+              50% {
+                transform: translate(calc(100vw - 200px), 0) rotate(360deg) scale(0.8);
+              }
+              75% {
+                transform: translate(0, calc(100vh - 200px)) rotate(540deg) scale(1.1);
+              }
+              100% {
+                transform: translate(0, 0) rotate(720deg) scale(1);
+              }
+            }
+            
+            @keyframes float-z {
+              0%, 100% {
+                transform: translateY(0) rotate(-10deg);
+              }
+              50% {
+                transform: translateY(-30px) rotate(10deg);
+              }
+            }
+            
+            @keyframes pulse {
+              0%, 100% {
+                transform: translate(-50%, -50%) scale(1);
+              }
+              50% {
+                transform: translate(-50%, -50%) scale(1.05);
+              }
+            }
+            
+            @keyframes snore {
+              0%, 100% {
+                opacity: 0.3;
+                transform: scale(0.9);
+              }
+              50% {
+                opacity: 1;
+                transform: scale(1.1);
+              }
+            }
+            
+            @keyframes blink {
+              0%, 100% { opacity: 1; }
+              50% { opacity: 0.3; }
+            }
+          `}</style>
+        </>
+      )}
+      
       {/* GeoCities Mode Enhancements */}
       {geocitiesMode && (
         <>
@@ -864,7 +1057,16 @@ function MainApp() {
           ))}
         </div>
         <div className="controls">
-          <label className="toggle"><input type="checkbox" checked={live} onChange={e=>setLive(e.target.checked)} /> Live</label>
+          <label className="toggle">
+            <input type="checkbox" checked={live && !autoPaused} onChange={e => {
+              setLive(e.target.checked);
+              if (e.target.checked) {
+                setAutoPaused(false);
+                handleUserActivity();
+              }
+            }} /> 
+            Live {autoPaused && <span style={{color: '#ff9800', fontSize: '0.9em'}}>(Paused - Inactive)</span>}
+          </label>
           <label className="toggle"><input type="checkbox" checked={useUTC} onChange={e=>setUseUTC(e.target.checked)} /> UTC</label>
           <button className="btn" onClick={()=>fetchData()} title="Refresh now">Refresh</button>
           <button className="btn" onClick={exportCsv} title="Export CSV">Export</button>

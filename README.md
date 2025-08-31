@@ -19,6 +19,7 @@ This application has been completely refactored from Kubernetes to a lightweight
 graph LR
   GM[GroupMe Bot] --> AF[Azure Functions<br/>groupme_ingest]
   AF --> Q[Azure Storage Queue<br/>respondr-incoming]
+  AF -.->|Wake if scaled to zero| ACA
 
   subgraph ACA[Azure Container Apps Consumption]
     APP[FastAPI + Worker<br/>single container]
@@ -70,7 +71,9 @@ sequenceDiagram
 
   GM->>AF: webhook POST
   AF->>Q: Enqueue message
-  Note over Q,ACA: azureQueue scaler triggers<br/>scale-from-zero (Consumption)
+  AF-->>ACA: GET /api/wake (if configured)
+  Note over ACA: Wakes from scale-to-zero if needed
+  Note over Q,ACA: Queue scaler also triggers<br/>scale-from-zero (if configured)
   ACA->>Q: Poll & dequeue
   ACA->>AOAI: Parse message (gpt-5-nano)
   AOAI-->>ACA: vehicle, ETA, confidence
@@ -158,6 +161,97 @@ The deployment script supports these parameters:
 
 ### Environment Variables
 
+The application uses numerous environment variables for configuration. Below is a comprehensive reference table:
+
+#### Core Configuration
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `TIMEZONE` | Application timezone | `America/Los_Angeles` | No |
+| `RETENTION_DAYS` | Data retention period in days | `365` | No |
+
+#### Authentication & Security
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `WEBHOOK_API_KEY` | API key for GroupMe webhook authentication | - | Yes |
+| `ALLOWED_EMAIL_DOMAINS` | Comma-separated allowed email domains | `scvsar.org,rtreit.com` | No |
+| `ALLOWED_ADMIN_USERS` | Comma-separated admin user emails | - | No |
+| `ALLOWED_GROUPME_GROUP_IDS` | Comma-separated allowed GroupMe group IDs | - | No |
+| `DISABLE_API_KEY_CHECK` | Bypass API key validation (dev only) | `false` | No |
+
+#### Local Authentication
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `ENABLE_LOCAL_AUTH` | Enable local JWT authentication | `false` | No |
+| `LOCAL_AUTH_SECRET_KEY` | JWT token signing key | Random | If local auth enabled |
+| `LOCAL_AUTH_SESSION_HOURS` | Session duration in hours | `24` | No |
+| `LOCAL_USERS_TABLE` | Table name for local users | `LocalUsers` | No |
+| `ALLOW_LOCAL_AUTH_BYPASS` | Allow auth bypass (dev only) | `false` | No |
+| `LOCAL_BYPASS_IS_ADMIN` | Grant admin when bypassing | `false` | No |
+
+#### Azure Storage
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `AZURE_STORAGE_CONNECTION_STRING` | Storage account connection string | - | Yes |
+| `STORAGE_TABLE_NAME` | Table name for messages | `ResponderMessages` | No |
+| `STORAGE_QUEUE_NAME` | Queue name for incoming messages | `RespondrIncoming` | No |
+| `STORAGE_BACKEND` | Primary storage backend | `azure_table` | No |
+| `STORAGE_FALLBACK` | Fallback storage backend | `memory` | No |
+
+#### Azure OpenAI
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `AZURE_OPENAI_ENDPOINT` | OpenAI service endpoint URL | - | Yes |
+| `AZURE_OPENAI_API_KEY` | OpenAI API key | - | Yes |
+| `AZURE_OPENAI_DEPLOYMENT` | Model deployment name | - | Yes |
+| `AZURE_OPENAI_API_VERSION` | API version | `2024-12-01-preview` | No |
+
+#### LLM Tuning
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `DEFAULT_MAX_COMPLETION_TOKENS` | Default completion tokens | `1024` | No |
+| `MIN_COMPLETION_TOKENS` | Minimum completion tokens | `128` | No |
+| `MAX_COMPLETION_TOKENS_CAP` | Maximum completion tokens | `2048` | No |
+| `LLM_MAX_RETRIES` | Max retry attempts | `3` | No |
+| `LLM_TOKEN_INCREASE_FACTOR` | Token increase on retry | `1.5` | No |
+| `LLM_REASONING_EFFORT` | Reasoning effort level | `medium` | No |
+| `LLM_VERBOSITY` | Response verbosity | `low` | No |
+
+#### Container & Scaling
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `CONTAINER_APP_WAKE_URL` | URL to wake Container App | - | No |
+
+#### Frontend
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `REACT_APP_INACTIVITY_MINUTES` | Dashboard inactivity timeout | `10` | No |
+
+#### Debug & Development
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `DEBUG` | Enable debug mode | `false` | No |
+| `DEBUG_LOG_HEADERS` | Log HTTP headers | `false` | No |
+| `DEBUG_FULL_LLM_LOG` | Full LLM logging | `false` | No |
+| `ALLOW_CLEAR_ALL` | Allow clearing all messages | `false` | No |
+
+#### Theme & UI
+
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `FORCE_GEOCITIES_MODE` | Force retro GeoCities theme | `false` | No |
+| `ENABLE_GEOCITIES_TOGGLE` | Enable theme toggle button | `false` | No |
+
+### Example `.env` File
+
 Create a `.env` file for local development:
 
 ```bash
@@ -170,7 +264,7 @@ STORAGE_TABLE_NAME=ResponderMessages
 AZURE_OPENAI_ENDPOINT=https://<your-instance>.openai.azure.com/
 AZURE_OPENAI_API_KEY=<api-key>
 AZURE_OPENAI_DEPLOYMENT=gpt-5-nano
-AZURE_OPENAI_API_VERSION=2025-08-07
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
 # Authentication
 WEBHOOK_API_KEY=<secure-random-key>
@@ -181,7 +275,39 @@ ALLOWED_ADMIN_USERS=admin@contoso.org
 ENABLE_LOCAL_AUTH=true
 LOCAL_AUTH_SECRET_KEY=<secure-random-key>
 LOCAL_AUTH_SESSION_HOURS=24
+
+# Container Wake (for Azure Functions)
+CONTAINER_APP_WAKE_URL=https://<your-app>.azurecontainerapps.io/api/wake
+
+# Frontend Inactivity Detection
+REACT_APP_INACTIVITY_MINUTES=10
 ```
+
+## Scale-to-Zero Configuration
+
+### Container Wake Setup
+
+The Azure Function can wake the Container App when new messages arrive:
+
+1. **Set Environment Variable** in your Azure Function:
+   ```
+   CONTAINER_APP_WAKE_URL=https://your-container-app.azurecontainerapps.io/api/wake
+   ```
+
+2. **Wake Endpoints** (no authentication required):
+   - `GET /api/wake`
+   - `POST /api/wake`
+
+### Inactivity Detection
+
+The dashboard automatically pauses API calls after user inactivity:
+
+- **Default timeout**: 10 minutes (configurable via `REACT_APP_INACTIVITY_MINUTES`)
+- **Activity detection**: Mouse movement, clicks, keyboard input, scrolling
+- **Visual indicator**: Shows "(Paused - Inactive)" in orange when paused
+- **Auto-resume**: Any user interaction resumes live updates
+
+This allows Azure Container Apps to scale to zero when truly idle, reducing costs while maintaining responsiveness for active users and new messages.
 
 ## Authentication
 

@@ -20,12 +20,12 @@ try:
     
     if os.path.exists(env_path):
         load_dotenv(env_path)
-        print(f"📁 Loaded environment from: {env_path}")
+        print(f"Loaded environment from: {env_path}")
     else:
         load_dotenv()
-        print("📁 Loaded environment from default locations")
+        print("Loaded environment from default locations")
 except ImportError:
-    print("⚠️  python-dotenv not installed, using system environment variables only")
+    print("python-dotenv not installed, using system environment variables only")
 
 WEBHOOK_API_KEY = os.getenv('WEBHOOK_API_KEY')
 

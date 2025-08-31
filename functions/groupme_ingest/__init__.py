@@ -1,6 +1,8 @@
 import logging
 import os
 import traceback
+import urllib.request
+import urllib.error
 
 import azure.functions as func
 from azure.storage.queue import QueueClient
@@ -101,6 +103,28 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         except Exception as e:
             logging.error("Failed to send message to queue: %s", e)
             raise
+        
+        # Wake up the container app if configured
+        wake_url = os.getenv("CONTAINER_APP_WAKE_URL")
+        if wake_url:
+            try:
+                logging.info(f"Waking container app at: {wake_url}")
+                wake_req = urllib.request.Request(wake_url, method='GET')
+                wake_req.add_header('User-Agent', 'Azure-Function-Wake-Request')
+                
+                # Short timeout since we just want to trigger the wake
+                with urllib.request.urlopen(wake_req, timeout=5) as response:
+                    if response.status == 200:
+                        logging.info("Container app wake request successful")
+                    else:
+                        logging.warning(f"Container app wake request returned status: {response.status}")
+            except urllib.error.URLError as e:
+                # Log but don't fail - the container might already be awake
+                logging.warning(f"Failed to wake container app: {e}")
+            except Exception as e:
+                logging.warning(f"Unexpected error waking container app: {e}")
+        else:
+            logging.info("CONTAINER_APP_WAKE_URL not configured, skipping wake request")
             
         return func.HttpResponse("OK", status_code=200)       
     except Exception as e:

@@ -462,3 +462,48 @@ async def get_storage_status() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get storage info: {e}")
         raise HTTPException(status_code=500, detail="Failed to get storage info")
+
+
+@router.get("/api/wake")
+async def wake_container() -> Dict[str, str]:
+    """
+    Wake endpoint to keep container warm when messages are enqueued.
+    This endpoint requires no authentication and is called by Azure Function.
+    """
+    logger.info("Container wake request received")
+    return {"status": "awake", "message": "Container is running"}
+
+
+@router.post("/api/wake")
+async def wake_container_post() -> Dict[str, str]:
+    """
+    POST version of wake endpoint for flexibility.
+    This endpoint requires no authentication and is called by Azure Function.
+    """
+    logger.info("Container wake request received (POST)")
+    return {"status": "awake", "message": "Container is running"}
+
+
+@router.post("/api/retention/cleanup")
+def trigger_retention_cleanup():
+    """
+    Manually trigger retention cleanup to purge old messages.
+    This endpoint requires admin authentication.
+    """
+    from ..retention_scheduler import run_retention_cleanup_now
+    from ..config import RETENTION_DAYS
+    
+    try:
+        result = run_retention_cleanup_now()
+        return {
+            "status": "success",
+            "message": f"Retention cleanup completed (RETENTION_DAYS={RETENTION_DAYS})",
+            "purged": result
+        }
+    except Exception as e:
+        logger.error(f"Manual retention cleanup failed: {e}")
+        return {
+            "status": "error", 
+            "message": f"Cleanup failed: {str(e)}",
+            "purged": {}
+        }

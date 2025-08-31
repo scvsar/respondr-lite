@@ -10,12 +10,8 @@ def main():
     
     # Run only our working test files to avoid hanging/broken tests
     working_tests = [
-        "tests/test_hostname_redirects_working.py",
         "tests/test_storage_working.py", 
         "tests/test_main.py",
-        "tests/test_acr_webhook.py",
-        "tests/test_hostname_redirect_direct.py",
-        "tests/test_hostname_redirect_integration.py",
         "tests/test_retention.py"
     ]
     

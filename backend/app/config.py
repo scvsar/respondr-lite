@@ -148,15 +148,6 @@ def _validate_llm_config():
 
 LLM_REASONING_EFFORT, LLM_VERBOSITY = _validate_llm_config()
 
-# ACR webhook configuration
-ACR_WEBHOOK_TOKEN = os.getenv("ACR_WEBHOOK_TOKEN")
-K8S_NAMESPACE = os.getenv("K8S_NAMESPACE", "respondr")
-K8S_DEPLOYMENT = os.getenv("K8S_DEPLOYMENT", "respondr-deployment")
-
-# Hostname redirect configuration
-PRIMARY_HOSTNAME = os.getenv("PRIMARY_HOSTNAME", "respondr.scvsar.app")
-_raw_legacy_hostnames = os.getenv("LEGACY_HOSTNAMES", "").split(",")
-LEGACY_HOSTNAMES = [h.strip() for h in _raw_legacy_hostnames if h.strip()]
 
 # GroupMe Group ID to Team mapping
 GROUP_ID_TO_TEAM: Dict[str, str] = {
