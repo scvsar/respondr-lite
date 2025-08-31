@@ -321,7 +321,7 @@ function MainApp() {
   const avgMinutes = () => {
     const times = data
       .map((entry) => entry.minutes_until_arrival)
-      .filter((x) => typeof x === "number");
+      .filter((x) => typeof x === "number" && x > 0);
 
     if (times.length === 0) return "N/A";
     const avg = times.reduce((a, b) => a + b, 0) / times.length;
@@ -577,7 +577,10 @@ function MainApp() {
       if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
     }
     const base = Array.from(latest.values());
-    const times = base.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
+    // Only include people who are actively responding with positive ETA
+    const times = base
+      .map(e => e.minutes_until_arrival)
+      .filter(x => typeof x === 'number' && x > 0);
     if (!times.length) return null;
     const total = times.reduce((a,b)=>a+b,0);
     return Math.round(total / times.length);

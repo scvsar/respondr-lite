@@ -119,6 +119,74 @@ test('renders responder stats', async () => {
   expect(avgEtaElement).toBeInTheDocument();
 });
 
+test('calculates average ETA correctly', async () => {
+  // Mock fetch for both user authentication and responder data
+  global.fetch = jest.fn((url) => {
+    if (url.includes('/api/user')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          authenticated: true,
+          email: 'test@scvsar.org',
+          name: 'Test User'
+        })
+      });
+    }
+    if (url.includes('/api/responders')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([
+          {
+            id: '1',
+            name: 'Responder 1',
+            text: 'On my way',
+            vehicle: 'SAR1',
+            eta: '10:30',
+            minutes_until_arrival: 30,
+            timestamp: '2023-01-01 10:00:00'
+          },
+          {
+            id: '2', 
+            name: 'Responder 2',
+            text: 'Responding',
+            vehicle: 'SAR2',
+            eta: '10:45',
+            minutes_until_arrival: 45,
+            timestamp: '2023-01-01 10:00:00'
+          },
+          {
+            id: '3',
+            name: 'Responder 3', 
+            text: 'Already there',
+            vehicle: 'SAR3',
+            eta: '09:30',
+            minutes_until_arrival: -30, // Negative = already arrived
+            timestamp: '2023-01-01 10:00:00'
+          }
+        ])
+      });
+    }
+    return Promise.reject(new Error('Unknown URL'));
+  });
+
+  await act(async () => {
+    render(<App />);
+  });
+
+  // Wait for data to load
+  await waitFor(() => {
+    expect(screen.getByText('Responder 1')).toBeInTheDocument();
+  });
+
+  // Average should be (30 + 45) / 2 = 37.5, rounded to 38 minutes = 0h 38m
+  // Should exclude the negative value (-30)
+  await waitFor(() => {
+    expect(screen.getByText('0h 38m')).toBeInTheDocument();
+  });
+
+  global.fetch.mockRestore();
+});
+
 test('renders table headers', async () => {
   await act(async () => {
     render(<App />);

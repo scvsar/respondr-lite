@@ -207,7 +207,7 @@ export default function MobileView() {
   }, [data]);
   const uniqueFilteredResponders = deduped.length;
   const avgMinutes = useMemo(() => {
-    const times = deduped.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number');
+    const times = deduped.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number' && x > 0);
     if (!times.length) return null;
     const avg = Math.round(times.reduce((a,b)=>a+b,0) / times.length);
     return avg; // minutes

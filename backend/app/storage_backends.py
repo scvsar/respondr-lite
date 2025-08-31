@@ -248,7 +248,24 @@ class AzureTableStorage(BaseStorage):
                 parsed_key = key[7:]  # Remove "parsed_" prefix
                 parsed_data[parsed_key] = value
             else:
-                message[key] = value
+                # Convert specific fields back to their proper types
+                if key == "minutes_until_arrival":
+                    try:
+                        message[key] = int(value) if value is not None else None
+                    except (ValueError, TypeError):
+                        message[key] = value
+                elif key == "created_at":
+                    try:
+                        message[key] = int(value) if value is not None else None
+                    except (ValueError, TypeError):
+                        message[key] = value
+                elif key == "status_confidence":
+                    try:
+                        message[key] = float(value) if value is not None else None
+                    except (ValueError, TypeError):
+                        message[key] = value
+                else:
+                    message[key] = value
         
         if parsed_data:
             message["parsed"] = parsed_data
