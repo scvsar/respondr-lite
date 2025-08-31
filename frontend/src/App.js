@@ -159,7 +159,8 @@ function MainApp() {
   const [geocitiesConfig, setGeocitiesConfig] = useState({ force_mode: false, enable_toggle: false });
   
   // Inactivity detection state
-  const INACTIVITY_TIMEOUT = parseInt(process.env.REACT_APP_INACTIVITY_MINUTES || '10') * 60 * 1000; // Default 10 minutes
+  const [inactivityTimeoutMinutes, setInactivityTimeoutMinutes] = useState(10); // Default 10 minutes
+  const INACTIVITY_TIMEOUT = inactivityTimeoutMinutes * 60 * 1000;
   const [isInactive, setIsInactive] = useState(false);
   const [lastActivity, setLastActivity] = useState(Date.now());
   const inactivityTimerRef = useRef(null);
@@ -175,6 +176,10 @@ function MainApp() {
           // If force mode is enabled, automatically enable GeoCities mode
           if (config.geocities?.force_mode) {
             setGeocitiesMode(true);
+          }
+          // Set inactivity timeout from backend config
+          if (config.inactivity?.timeout_minutes) {
+            setInactivityTimeoutMinutes(config.inactivity.timeout_minutes);
           }
         }
       } catch (error) {
@@ -254,7 +259,7 @@ function MainApp() {
     const checkInactivity = () => {
       const timeSinceActivity = Date.now() - lastActivity;
       if (timeSinceActivity >= INACTIVITY_TIMEOUT && !isInactive && live) {
-        console.log(`No activity for ${INACTIVITY_TIMEOUT / 60000} minutes, pausing live updates`);
+        console.log(`No activity for ${inactivityTimeoutMinutes} minutes, pausing live updates`);
         setIsInactive(true);
         setAutoPaused(true);
       }
@@ -264,7 +269,7 @@ function MainApp() {
     const intervalId = setInterval(checkInactivity, 30000);
     
     return () => clearInterval(intervalId);
-  }, [lastActivity, isInactive, live, INACTIVITY_TIMEOUT]);
+  }, [lastActivity, isInactive, live, INACTIVITY_TIMEOUT, inactivityTimeoutMinutes]);
 
   const fetchData = useCallback(async () => {
     try {

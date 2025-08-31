@@ -93,6 +93,9 @@ LOCAL_AUTH_SESSION_HOURS = int(os.getenv("LOCAL_AUTH_SESSION_HOURS", "24"))
 FORCE_GEOCITIES_MODE = os.getenv("FORCE_GEOCITIES_MODE", "false").lower() == "true"
 ENABLE_GEOCITIES_TOGGLE = os.getenv("ENABLE_GEOCITIES_TOGGLE", "false").lower() == "true"
 
+# Frontend configuration
+INACTIVITY_TIMEOUT_MINUTES = int(os.getenv("INACTIVITY_TIMEOUT_MINUTES", "10"))
+
 # Data retention configuration
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "365"))
 
