@@ -242,6 +242,8 @@ The application uses numerous environment variables for configuration. Below is 
 | `DEBUG_LOG_HEADERS` | Log HTTP headers | `false` | No |
 | `DEBUG_FULL_LLM_LOG` | Full LLM logging | `false` | No |
 | `ALLOW_CLEAR_ALL` | Allow clearing all messages | `false` | No |
+| `ENABLE_REQUEST_LOGGING` | Log HTTP requests to Azure Table Storage | `false` | No |
+| `REQUEST_LOG_TABLE` | Table name for request logs | `RequestLogs` | No |
 
 #### Theme & UI
 

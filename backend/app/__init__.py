@@ -1,12 +1,13 @@
 import os
 import logging
 import asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routers import webhook, responders, dashboard, user, frontend, auth
 from .queue_listener import listen_to_queue
 from .retention_scheduler import retention_cleanup_task
+from .request_logger import log_request
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,44 @@ if _allow_dev_cors:
         allow_methods=["*"],
         allow_headers=["*"]
     )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log HTTP requests for debugging, especially wake probes."""
+    
+    # Determine if this is a wake-related request
+    path = str(request.url.path)
+    is_wake = "/wake" in path or path == "/"
+    is_storage_info = "/storage-info" in path
+    is_health = "/health" in path or "/ready" in path
+    
+    # Tag the request appropriately
+    if is_wake:
+        tag = "WAKE_REQUEST"
+    elif is_storage_info:
+        tag = "STORAGE_INFO_PROBE"
+    elif is_health:
+        tag = "HEALTH_CHECK"
+    elif path.startswith("/api/"):
+        tag = "API_REQUEST"
+    else:
+        tag = "OTHER_REQUEST"
+    
+    # Process the request
+    response = await call_next(request)
+    
+    # Log interesting requests (not static files)
+    if not path.startswith("/static/") and not path.endswith((".js", ".css", ".png", ".ico", ".map")):
+        # Check if request logging is enabled
+        enable_logging = os.getenv("ENABLE_REQUEST_LOGGING", "false").lower() == "true"
+        if enable_logging:
+            try:
+                await log_request(request, response, tag)
+            except Exception as e:
+                logger.error(f"Failed to log request {path}: {e}")
+    
+    return response
 
 
 app.include_router(webhook.router)

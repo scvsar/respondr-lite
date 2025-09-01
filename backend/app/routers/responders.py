@@ -492,6 +492,100 @@ async def wake_container_post() -> Dict[str, str]:
     return {"status": "awake", "message": "Container is running"}
 
 
+@router.get("/api/request-logs")
+async def get_request_logs(_: bool = Depends(require_admin_access)) -> List[Dict[str, Any]]:
+    """Get recent request logs from Azure Table Storage (admin only)."""
+    import os
+    from azure.data.tables import TableServiceClient
+    from datetime import datetime, timedelta
+    
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str:
+        raise HTTPException(status_code=503, detail="Request logging not configured")
+    
+    try:
+        table_name = os.getenv("REQUEST_LOG_TABLE", "RequestLogs")
+        service_client = TableServiceClient.from_connection_string(conn_str)
+        table_client = service_client.get_table_client(table_name)
+        
+        # Query recent logs (last 24 hours)
+        partition_key = datetime.utcnow().strftime("%Y%m%d")
+        yesterday_key = (datetime.utcnow() - timedelta(days=1)).strftime("%Y%m%d")
+        
+        logs = []
+        # Today's logs
+        for entity in table_client.query_entities(f"PartitionKey eq '{partition_key}'", results_per_page=100):
+            logs.append(dict(entity))
+            if len(logs) >= 100:
+                break
+        # Yesterday's logs if we have room
+        if len(logs) < 100:
+            for entity in table_client.query_entities(f"PartitionKey eq '{yesterday_key}'", results_per_page=100-len(logs)):
+                logs.append(dict(entity))
+                if len(logs) >= 100:
+                    break
+        
+        # Sort by timestamp descending
+        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        return logs[:100]  # Return max 100 most recent
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch request logs: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch request logs")
+
+
+@router.get("/api/request-logs-debug")
+async def get_request_logs_debug() -> Dict[str, Any]:
+    """DEBUG: Get recent request logs without auth requirement (REMOVE IN PRODUCTION)."""
+    import os
+    from azure.data.tables import TableServiceClient
+    from datetime import datetime, timedelta
+    
+    conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    if not conn_str:
+        return {"error": "Request logging not configured", "conn_str_exists": False}
+    
+    try:
+        table_name = os.getenv("REQUEST_LOG_TABLE", "RequestLogs")
+        service_client = TableServiceClient.from_connection_string(conn_str)
+        table_client = service_client.get_table_client(table_name)
+        
+        # Query recent logs (last 24 hours)
+        partition_key = datetime.utcnow().strftime("%Y%m%d")
+        yesterday_key = (datetime.utcnow() - timedelta(days=1)).strftime("%Y%m%d")
+        
+        logs = []
+        # Today's logs
+        query = f"PartitionKey eq '{partition_key}'"
+        for entity in table_client.query_entities(query, results_per_page=100):
+            logs.append(dict(entity))
+            if len(logs) >= 100:
+                break
+        
+        # Yesterday's logs if we have room
+        if len(logs) < 100:
+            query = f"PartitionKey eq '{yesterday_key}'"
+            for entity in table_client.query_entities(query, results_per_page=100-len(logs)):
+                logs.append(dict(entity))
+                if len(logs) >= 100:
+                    break
+        
+        # Sort by timestamp descending
+        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+        
+        return {
+            "table_name": table_name,
+            "partition_keys_checked": [partition_key, yesterday_key],
+            "log_count": len(logs),
+            "logs": logs[:100]
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to fetch request logs: {e}")
+        return {"error": str(e), "table_name": table_name}
+
+
 @router.post("/api/retention/cleanup")
 def trigger_retention_cleanup():
     """
