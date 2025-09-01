@@ -157,7 +157,8 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
     Context & assumptions:
     - Messages are from SAR responders coordinating by chat.
     - Typical pattern: whether they are responding, a vehicle type, and an ETA.
-    - Consider the user's recent message history (provided in the input) to maintain consistency across updates.
+    - CRITICAL: The user's recent message history is provided showing their previous messages, statuses, and ETAs.
+      Use this history to maintain consistency - especially preserving "Responding" status for follow-up messages.
     - Current time is provided in BOTH UTC and local time below.
     - Local timezone: {TIMEZONE}
     - IMPORTANT: Assume times mentioned in messages are LOCAL ({TIMEZONE}) unless explicitly marked otherwise. Convert local times to UTC for the final eta_iso.
@@ -170,9 +171,13 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
 
     Status classification:
     - "Responding": actively responding / ETA updates while already responding.
+      IMPORTANT: If the user's previous status was "Responding" and the current message doesn't explicitly cancel/standdown, 
+      MAINTAIN "Responding" status even for follow-up questions or informational messages (e.g., "park at trailhead?", "bringing extra gear").
+      Only change from "Responding" if there's clear evidence they're cancelling or standing down.
     - "Cancelled": the person cancels their own response ("can't make it", "backing out").
     - "Not Responding": acknowledges stand down / "10-22" / "1022" / mission canceled acknowledgements.
-    - "Informational": logistics/questions/assignments (not a commitment to respond).
+    - "Informational": logistics/questions/assignments (not a commitment to respond). 
+      Only use this if they were NOT previously "Responding" or if they explicitly cancelled.
     - "Available": willing to respond if needed, not committed (no ETA).
     - "Unknown": unclear intent.
 
@@ -207,7 +212,7 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
         f"Current time (UTC): {cur_utc.isoformat().replace('+00:00','Z')}\n"
         f"Current time (Local {TIMEZONE}): {cur_loc.isoformat()}\n"
         f"Previous ETA (UTC, optional): {prev_eta_iso or 'None'}\n"
-        f"(History snapshot may be appended in the message body if available.)\n"
+        f"Note: Message history is included in the message text below when available.\n"
         f"Message: {text}\n"
         "Return ONLY the JSON."
     )

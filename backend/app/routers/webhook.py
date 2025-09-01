@@ -91,36 +91,60 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             # Non-fatal: proceed without prev ETA
             prev_eta_iso = None
         
-        # Build a compact history snapshot to help the LLM maintain continuity (monolith parity)
+        # Build full message history for this user to help the LLM maintain continuity
+        # Include messages from the last 12 hours to avoid mixing different missions
+        message_history_hours = 12  # Configurable time window
+        cutoff_timestamp = message.created_at - (message_history_hours * 3600)
+        
+        user_history = []
         latest_eta: Optional[str] = None
         latest_vehicle: Optional[str] = None
         try:
             history = get_messages() or []
-            # Sort by created_at ascending to easily scan from end
+            # Sort by created_at ascending to build chronological history
             sorted_hist = sorted(history, key=lambda x: x.get("created_at", 0))
-            # Find most recent non-cancelled ETA and vehicle for this user in this group
-            for m in reversed(sorted_hist):
+            
+            for m in sorted_hist:
+                # Only include messages from same group and user within time window
                 if (m.get("group_id") or "unknown") != group_id:
                     continue
                 if str(m.get("name", "")).strip().lower() != name_l:
                     continue
-                # vehicle
-                if latest_vehicle is None:
-                    if (m.get("vehicle") and m.get("vehicle") != "Unknown" and (m.get("arrival_status") or m.get("raw_status")) != "Cancelled"):
-                        latest_vehicle = str(m.get("vehicle"))
-                # eta
-                if latest_eta is None:
-                    if (m.get("eta") and m.get("eta") != "Unknown" and (m.get("arrival_status") or m.get("raw_status")) != "Cancelled"):
-                        latest_eta = str(m.get("eta"))
-                if latest_vehicle is not None and latest_eta is not None:
-                    break
-        except Exception:
+                if m.get("created_at", 0) < cutoff_timestamp:
+                    continue
+                    
+                # Build history entry
+                hist_entry = {
+                    "text": m.get("text", ""),
+                    "status": m.get("raw_status") or m.get("arrival_status", "Unknown"),
+                    "vehicle": m.get("vehicle", "Unknown"),
+                    "eta": m.get("eta", "Unknown"),
+                    "timestamp": m.get("timestamp", "")
+                }
+                user_history.append(hist_entry)
+                
+                # Track latest values for fallback
+                if m.get("vehicle") and m.get("vehicle") != "Unknown" and (m.get("arrival_status") or m.get("raw_status")) != "Cancelled":
+                    latest_vehicle = str(m.get("vehicle"))
+                if m.get("eta") and m.get("eta") != "Unknown" and (m.get("arrival_status") or m.get("raw_status")) != "Cancelled":
+                    latest_eta = str(m.get("eta"))
+                    
+        except Exception as e:
+            logger.warning(f"Failed to build user history: {e}")
+            user_history = []
             latest_eta = None
             latest_vehicle = None
 
+        # Format history for LLM
         enriched_text = message.text
-        if latest_eta or latest_vehicle:
-            # Keep it short; the LLM prompt explicitly allows a history snapshot in the message body
+        if user_history:
+            # Include recent message history to give LLM full context
+            history_text = "Previous messages from this user:\n"
+            for h in user_history[-5:]:  # Last 5 messages max to avoid token overflow
+                history_text += f"- [{h['timestamp']}] \"{h['text']}\" -> Status: {h['status']}, Vehicle: {h['vehicle']}, ETA: {h['eta']}\n"
+            enriched_text = f"{history_text}\nCurrent message: {message.text}"
+        elif latest_eta or latest_vehicle:
+            # Fallback to compact snapshot if no full history
             parts = []
             if latest_eta:
                 parts.append(f"last ETA was {latest_eta}")
