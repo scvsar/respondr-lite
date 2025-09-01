@@ -178,6 +178,8 @@ The application uses numerous environment variables for configuration. Below is 
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated allowed email domains | `scvsar.org,rtreit.com` | No |
 | `ALLOWED_ADMIN_USERS` | Comma-separated admin user emails | - | No |
 | `ALLOWED_GROUPME_GROUP_IDS` | Comma-separated allowed GroupMe group IDs | - | No |
+| `ENABLE_FUNCTION_PAYLOAD_LOGGING` | Enable logging of incoming payloads to table storage | `false` | No |
+| `FUNCTION_PAYLOAD_TABLE` | Table name for function payload logs | `FunctionIncoming` | No |
 | `DISABLE_API_KEY_CHECK` | Bypass API key validation (dev only) | `false` | No |
 
 #### Local Authentication
@@ -244,6 +246,7 @@ The application uses numerous environment variables for configuration. Below is 
 | `ALLOW_CLEAR_ALL` | Allow clearing all messages | `false` | No |
 | `ENABLE_REQUEST_LOGGING` | Log HTTP requests to Azure Table Storage | `false` | No |
 | `REQUEST_LOG_TABLE` | Table name for request logs | `RequestLogs` | No |
+| `FUNCTION_PAYLOAD_TABLE` | Table name for function payload logs | `FunctionIncoming` | No |
 
 #### Theme & UI
 

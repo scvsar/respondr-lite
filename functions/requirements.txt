@@ -1,5 +1,6 @@
 azure-functions
 azure-storage-queue
+azure-data-tables
 azure-core
 python-dotenv
 pydantic

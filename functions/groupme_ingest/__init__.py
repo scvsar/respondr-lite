@@ -9,6 +9,7 @@ from azure.storage.queue import QueueClient
 from azure.core.exceptions import ResourceExistsError
 
 from .schemas import GroupMeMessage
+from .payload_logger import log_payload
 from pydantic import ValidationError
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
@@ -51,8 +52,18 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         body = req.get_json()
         logging.info("Request JSON parsed; keys: %s", list(body.keys())[:10])
+        
+        # Log the exact incoming payload to storage table
+        log_payload(body, dict(req.headers), req.method)
+        
     except ValueError as e:
         logging.exception("Failed to parse JSON from request")
+        # Log failed parsing attempts too
+        try:
+            raw_body = req.get_body().decode('utf-8')
+            log_payload({"_parse_error": str(e), "_raw_body": raw_body}, dict(req.headers), req.method)
+        except:
+            pass
         return func.HttpResponse(f"Invalid JSON: {e}", status_code=400)
     
 
