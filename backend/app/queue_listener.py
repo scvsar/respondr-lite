@@ -70,17 +70,21 @@ async def listen_to_queue() -> None:
                 queue.receive_messages, messages_per_page=5, visibility_timeout=30
             )
             for msg in messages:
+                processing_success = False
                 try:
                     payload = json.loads(msg.content)
                     web_msg = WebhookMessage(**payload)
                     await webhook_handler(web_msg, request=None, debug=False)
+                    processing_success = True
                 except Exception:
                     logger.exception("Failed processing queue message")
+                    # Don't delete failed messages - let them retry after visibility timeout
                 finally:
-                    try:
-                        await asyncio.to_thread(queue.delete_message, msg)
-                    except Exception:
-                        logger.exception("Failed to delete processed message")
+                    if processing_success:
+                        try:
+                            await asyncio.to_thread(queue.delete_message, msg)
+                        except Exception:
+                            logger.exception("Failed to delete processed message")
         except Exception as e:
             error_msg = str(e).lower()
             if "not found" in error_msg or "does not exist" in error_msg:

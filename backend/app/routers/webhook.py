@@ -23,6 +23,15 @@ class WebhookMessage(BaseModel):
     text: str
     created_at: int
     group_id: Optional[str] = None
+    # GroupMe fields (optional to maintain backward compatibility)
+    id: Optional[str] = None  # GroupMe message ID
+    sender_id: Optional[str] = None
+    sender_type: Optional[str] = None
+    source_guid: Optional[str] = None
+    user_id: Optional[str] = None
+    avatar_url: Optional[str] = None
+    attachments: Optional[list] = None
+    system: Optional[bool] = False
     # Admin-only debug extras (optional)
     debug_sys_prompt: Optional[str] = None
     debug_user_prompt: Optional[str] = None
@@ -182,6 +191,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             arrival_status = "Arrived"
         new_message = {
             "id": str(uuid.uuid4()),
+            "groupme_id": message.id,  # Store GroupMe message ID for debugging
             "name": message.name,
             "text": message.text,
             "timestamp": message_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -239,7 +249,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         return {"status": "ok"}
     except Exception as e:
         logger.error(f"Webhook processing failed: {e}")
-    raise HTTPException(status_code=500, detail="Processing failed")
+        raise HTTPException(status_code=500, detail="Processing failed")
 
 
 @router.get("/api/debug/default-prompts")

@@ -172,7 +172,6 @@ function MainApp() {
         const response = await fetch('/api/config');
         if (response.ok) {
           const config = await response.json();
-          console.log('DEBUG: Fetched config:', config);
           setGeocitiesConfig(config.geocities || { force_mode: false, enable_toggle: false });
           // If force mode is enabled, automatically enable GeoCities mode
           if (config.geocities?.force_mode) {
@@ -180,13 +179,8 @@ function MainApp() {
           }
           // Set inactivity timeout from backend config
           if (config.inactivity?.timeout_minutes) {
-            console.log('DEBUG: Setting inactivity timeout to', config.inactivity.timeout_minutes, 'minutes');
             setInactivityTimeoutMinutes(config.inactivity.timeout_minutes);
-          } else {
-            console.log('DEBUG: No inactivity timeout in config, using default 10 minutes');
           }
-        } else {
-          console.warn('DEBUG: Failed to fetch config, status:', response.status);
         }
       } catch (error) {
         console.warn('Failed to fetch configuration:', error);
@@ -816,24 +810,6 @@ function MainApp() {
 
   return (
     <div className={geocitiesMode ? "App geocities-theme" : "App"}>
-      {/* Debug overlay for inactivity timeout */}
-      <div style={{
-        position: 'fixed',
-        top: '10px',
-        right: '10px',
-        background: 'rgba(0, 0, 0, 0.8)',
-        color: '#00ff00',
-        padding: '8px 12px',
-        borderRadius: '4px',
-        fontSize: '12px',
-        fontFamily: 'monospace',
-        zIndex: 9999,
-        border: '1px solid #00ff00'
-      }}>
-        DEBUG: Timeout={inactivityTimeoutMinutes}min
-        {isInactive && <span style={{color: '#ff0000'}}> [INACTIVE]</span>}
-      </div>
-      
       {/* GeoCities Mode Enhancements */}
       {geocitiesMode && (
         <>

@@ -455,8 +455,16 @@ async def clear_all_deleted(_: bool = Depends(require_admin_access)) -> Dict[str
 @router.get("/api/storage-info")
 async def get_storage_status() -> Dict[str, Any]:
     """Get current storage backend status and configuration."""
+    import socket
+    import os
     try:
         storage_info = get_storage_info()
+        # Add instance information for debugging
+        storage_info["instance"] = {
+            "hostname": socket.gethostname(),
+            "replica": os.getenv("CONTAINER_APP_REPLICA_NAME", "unknown"),
+            "revision": os.getenv("CONTAINER_APP_REVISION", "unknown"),
+        }
         return storage_info
         
     except Exception as e:

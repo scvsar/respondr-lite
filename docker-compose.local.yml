@@ -12,6 +12,7 @@ services:
       - LOCAL_BYPASS_IS_ADMIN=true
       - ALLOW_CLEAR_ALL=true
       - ENABLE_LOCAL_AUTH=true
+      - INACTIVITY_TIMEOUT_MINUTES=1
     env_file:
       - .env
     volumes:
