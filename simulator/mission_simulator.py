@@ -487,13 +487,14 @@ class MissionSimulator:
                         if self.auth_token:
                             headers["Authorization"] = f"Bearer {self.auth_token}"
                             
+                        # Use a public endpoint for keepalive instead of protected /api/responders
                         response = requests.get(
-                            f"{PREPROD_WEB_ENDPOINT}/api/responders",
+                            f"{PREPROD_WEB_ENDPOINT}/api/storage-info",
                             timeout=30,
                             headers=headers
                         )
                         if response.status_code == 200:
-                            logger.info(f"✓ Website keepalive ping successful ({len(response.json().get('responders', []))} responders)")
+                            logger.info("✓ Website keepalive ping successful")
                         else:
                             logger.warning(f"Website keepalive ping returned {response.status_code}")
                 except Exception as e:
@@ -563,9 +564,8 @@ class MissionSimulator:
         # Select mission group (real SAR team)
         mission_group_id = self._select_mission_group()
         
-        # Authenticate for API access
-        if not self._authenticate():
-            logger.warning("Authentication failed, keepalive may not work properly")
+        # Skip authentication for local development (using public endpoints)
+        logger.info("Skipping authentication for local development")
         
         # Start website keepalive to keep Container App warm
         keepalive_thread = self.start_website_keepalive()

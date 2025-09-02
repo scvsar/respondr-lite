@@ -208,6 +208,57 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             reasoning_override = None
             max_tokens_override = None
 
+        # Get recent responders for ETA validation context
+        other_responders = []
+        try:
+            # Get all recent messages from this group for context
+            recent_messages = get_messages() or []
+            cutoff_time = message.created_at - (6 * 3600)  # 6 hours ago
+            
+            for m in recent_messages:
+                # Only include messages from same group, within time window, with valid ETAs
+                if (m.get("group_id") or "unknown") != group_id:
+                    continue
+                if m.get("created_at", 0) < cutoff_time:
+                    continue
+                    
+                # Skip current user's own messages to avoid self-comparison
+                if str(m.get("name", "")).strip().lower() == name_l:
+                    continue
+                    
+                # Only include responding users with reasonable ETAs
+                status = m.get("arrival_status") or m.get("raw_status")
+                mins = m.get("minutes_until_arrival")
+                eta_str = m.get("eta", "Unknown")
+                
+                if (status in ("Responding", "Available") and 
+                    isinstance(mins, int) and 
+                    -30 <= mins <= 600 and  # Within reasonable range
+                    eta_str != "Unknown"):
+                    
+                    other_responders.append({
+                        "name": m.get("name", "Unknown"),
+                        "minutes_until_arrival": mins,
+                        "eta": eta_str,
+                        "vehicle": m.get("vehicle", "Unknown"),
+                        "status": status
+                    })
+            
+            # Keep only the most recent entry per responder
+            seen_names = set()
+            filtered_responders = []
+            for r in sorted(other_responders, key=lambda x: x.get("minutes_until_arrival", 999), reverse=True):
+                name_key = r["name"].lower().strip()
+                if name_key not in seen_names:
+                    seen_names.add(name_key)
+                    filtered_responders.append(r)
+            
+            other_responders = filtered_responders[:10]  # Limit to 10 most relevant
+            
+        except Exception as e:
+            logger.warning(f"Failed to get responder context for ETA validation: {e}")
+            other_responders = []
+
         parsed = extract_details_from_text(
             enriched_text,
             base_time=message_dt,
@@ -218,6 +269,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             verbosity_override=verbosity_override,
             reasoning_effort_override=reasoning_override,
             max_tokens_override=max_tokens_override,
+            other_responders=other_responders,
         )
         
         # Create message object
