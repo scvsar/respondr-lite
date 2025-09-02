@@ -94,7 +94,9 @@ LLM_VERBOSITY = os.getenv("LLM_VERBOSITY", "medium")               # low|medium|
 # Azure Storage configuration
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_STORAGE_ACCOUNT = os.getenv("AZURE_STORAGE_ACCOUNT")
-STORAGE_TABLE_NAME = os.getenv("STORAGE_TABLE_NAME", "respondermessagespreprod")
+# Force the correct table name for post-mission analysis
+STORAGE_TABLE_NAME = "respondermessagespreprod"  # Always use preprod table for analysis
+logger.info(f"Using table: {STORAGE_TABLE_NAME}")
 
 
 # -----------------------------------------------------------
@@ -861,8 +863,9 @@ class MissionSimulator:
             start_timestamp = start_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
             end_timestamp = end_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
             
-            # Build query filter for the specific group and time range
-            query_filter = f"PartitionKey eq '{mission_group_id}' and Timestamp ge datetime'{start_timestamp}' and Timestamp le datetime'{end_timestamp}'"
+            # Build query filter for the time range only (don't filter by group)
+            # The simulator sends messages to multiple groups, so we need all messages in the time window
+            query_filter = f"PartitionKey eq 'messages' and Timestamp ge datetime'{start_timestamp}' and Timestamp le datetime'{end_timestamp}'"
             
             logger.info(f"Querying Azure Table Storage with filter: {query_filter}")
             
@@ -875,9 +878,10 @@ class MissionSimulator:
             total_messages = 0
             
             for entity in entities:
-                sender_name = entity.get('SenderName', 'Unknown')
-                message_text = entity.get('MessageText', '')
-                message_type = entity.get('MessageType', 'unknown')
+                # Use the actual field names from the table
+                sender_name = entity.get('name', 'Unknown')
+                message_text = entity.get('text', '')
+                message_type = entity.get('arrival_status', 'unknown')
                 
                 if sender_name not in responders:
                     responders[sender_name] = {
