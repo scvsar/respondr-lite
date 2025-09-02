@@ -421,47 +421,73 @@ Constraints:
             return None
 
         system = (
-            "You are a SAR mission analyst. Analyze how well the system parsed and interpreted "
-            "SAR communication messages. Grade each message and provide comprehensive analysis. "
+            "You are evaluating the performance of a SAR response parsing system (GPT-5-nano) that extracts THREE specific fields from "
+            "SAR communication messages: VEHICLE (POV/SAR-X/SAR Rig/Unknown), ETA (timestamp or Unknown), and STATUS (Responding/Cancelled/Not Responding/Informational/Available/Unknown). "
+            "Your job is to measure how accurately the system extracted these three fields from each message. "
+            "Focus ONLY on grading these extraction tasks - not other aspects like UI, timing, or features not in the system. "
             "Produce ONLY a JSON object with your analysis."
         )
 
         user = f"""
-Analyze this SAR mission performance:
+Analyze how well the GPT-5-nano LLM extracted VEHICLE, ETA, and STATUS from these SAR messages:
 
-MISSION DATA:
+MISSION DATA (contains original messages sent):
 {json.dumps(mission_data, indent=2)}
 
-RESPONDER RESULTS FROM /api/responders:
+SYSTEM EXTRACTION RESULTS (what GPT-5-nano extracted):
 {json.dumps(responder_results, indent=2)}
 
-Provide a comprehensive analysis including:
-1. Overall parsing accuracy
-2. Common sense interpretation quality  
-3. Message-by-message grading (A-F scale)
-4. Identification of parsing errors or misinterpretations
-5. Recommendations for improvement
+Evaluate ONLY these three extraction tasks for each message:
+1. VEHICLE extraction accuracy: Did it correctly identify POV, SAR-X number, SAR Rig, or Unknown?
+2. ETA extraction accuracy: Did it correctly parse time/duration into a timestamp (or correctly identify as Unknown)?
+3. STATUS extraction accuracy: Did it correctly classify as Responding/Cancelled/Not Responding/Informational/Available/Unknown?
 
-Format as JSON with this structure:
+Grading criteria:
+- A: All 3 fields extracted perfectly
+- B: 2 fields correct, 1 minor error
+- C: 2 fields correct, 1 major error OR all fields mostly correct with minor issues
+- D: Only 1 field correct
+- F: All fields incorrect or message not processed
+
+Calculate metrics:
+- Vehicle accuracy: X/Y messages had vehicle correctly extracted (percentage)
+- ETA accuracy: X/Y messages had ETA correctly parsed (percentage)  
+- Status accuracy: X/Y messages had status correctly classified (percentage)
+- Overall accuracy: Average of the three percentages
+
+Format as JSON:
 {{
-  "overall_score": "A-F grade",
-  "parsing_accuracy": "percentage or description",
-  "interpretation_quality": "assessment",
+  "overall_score": "A-F grade based on overall accuracy percentage (90-100%=A, 80-89%=B, 70-79%=C, 60-69%=D, <60%=F)",
+  "metrics": {{
+    "vehicle_accuracy": "X/Y (XX%)",
+    "eta_accuracy": "X/Y (XX%)",
+    "status_accuracy": "X/Y (XX%)",
+    "overall_accuracy": "XX%"
+  }},
   "message_grades": [
     {{
-      "message_index": 0,
       "message_text": "original message",
       "sender": "sender name",
+      "expected": {{
+        "vehicle": "what it should have extracted",
+        "eta": "what it should have extracted",
+        "status": "what it should have extracted"
+      }},
+      "actual": {{
+        "vehicle": "what system actually extracted",
+        "eta": "what system actually extracted", 
+        "status": "what system actually extracted"
+      }},
       "grade": "A-F",
-      "parsing_quality": "assessment",
-      "interpretation_notes": "detailed analysis",
-      "errors_found": ["list of errors if any"]
+      "errors": ["vehicle wrong: expected SAR-78 got Unknown", "etc"]
     }}
   ],
   "summary": {{
-    "strengths": ["list of strengths"],
-    "weaknesses": ["list of weaknesses"],
-    "recommendations": ["list of recommendations"]
+    "total_messages": N,
+    "grade_distribution": {{"A": X, "B": Y, "C": Z, "D": W, "F": V}},
+    "common_errors": ["list of recurring extraction errors"],
+    "strengths": ["what the system did well"],
+    "weaknesses": ["what the system struggled with"]
   }}
 }}
 """
@@ -823,12 +849,43 @@ class MissionSimulator:
             logger.info("[DRY RUN] Would fetch responder results from Azure Table Storage")
             # Return mock data for dry run
             return {
-                "responders": [
-                    {"name": "Mock Responder", "status": "responded", "messages": 3, "message_texts": ["Responding POV", "At TH", "Heading up"]},
-                    {"name": "Another Responder", "status": "cancelled", "messages": 1, "message_texts": ["Can't make it"]}
+                "messages": [
+                    {
+                        "name": "Mock Responder",
+                        "text": "Responding POV",
+                        "vehicle": "POV",
+                        "eta": "Unknown",
+                        "eta_timestamp_utc": "Unknown",
+                        "status": "Responding",
+                        "raw_status": "Responding",
+                        "timestamp": "2025-09-02 15:30:00",
+                        "timestamp_utc": "2025-09-02T22:30:00+00:00",
+                        "status_confidence": 0.9,
+                        "status_source": "LLM",
+                        "team": "MOCK",
+                        "group_id": "12345",
+                        "minutes_until_arrival": None
+                    },
+                    {
+                        "name": "Another Responder", 
+                        "text": "Can't make it",
+                        "vehicle": "Unknown",
+                        "eta": "Unknown", 
+                        "eta_timestamp_utc": "Unknown",
+                        "status": "Cancelled",
+                        "raw_status": "Cancelled",
+                        "timestamp": "2025-09-02 15:35:00",
+                        "timestamp_utc": "2025-09-02T22:35:00+00:00",
+                        "status_confidence": 0.8,
+                        "status_source": "LLM",
+                        "team": "MOCK",
+                        "group_id": "12345",
+                        "minutes_until_arrival": None
+                    }
                 ],
-                "total_messages": 4,
-                "response_rate": 0.75,
+                "total_messages": 2,
+                "unique_responders": 2,
+                "response_rate": 0.5,
                 "mission_group_id": mission_group_id,
                 "time_range": {
                     "start": start_time.isoformat(),
@@ -840,12 +897,43 @@ class MissionSimulator:
             logger.warning("Azure Storage not configured or SDK not available, using mock data")
             # Return mock data directly instead of recursive call
             return {
-                "responders": [
-                    {"name": "Mock Responder", "status": "responded", "messages": 3, "message_texts": ["Responding POV", "At TH", "Heading up"]},
-                    {"name": "Another Responder", "status": "cancelled", "messages": 1, "message_texts": ["Can't make it"]}
+                "messages": [
+                    {
+                        "name": "Mock Responder",
+                        "text": "Responding POV", 
+                        "vehicle": "POV",
+                        "eta": "Unknown",
+                        "eta_timestamp_utc": "Unknown",
+                        "status": "Responding",
+                        "raw_status": "Responding",
+                        "timestamp": "2025-09-02 15:30:00",
+                        "timestamp_utc": "2025-09-02T22:30:00+00:00",
+                        "status_confidence": 0.9,
+                        "status_source": "LLM",
+                        "team": "MOCK",
+                        "group_id": "12345",
+                        "minutes_until_arrival": None
+                    },
+                    {
+                        "name": "Another Responder",
+                        "text": "Can't make it",
+                        "vehicle": "Unknown", 
+                        "eta": "Unknown",
+                        "eta_timestamp_utc": "Unknown",
+                        "status": "Cancelled",
+                        "raw_status": "Cancelled", 
+                        "timestamp": "2025-09-02 15:35:00",
+                        "timestamp_utc": "2025-09-02T22:35:00+00:00",
+                        "status_confidence": 0.8,
+                        "status_source": "LLM",
+                        "team": "MOCK",
+                        "group_id": "12345",
+                        "minutes_until_arrival": None
+                    }
                 ],
-                "total_messages": 4,
-                "response_rate": 0.75,
+                "total_messages": 2,
+                "unique_responders": 2,
+                "response_rate": 0.5,
                 "mission_group_id": mission_group_id,
                 "time_range": {
                     "start": start_time.isoformat(),
@@ -873,40 +961,40 @@ class MissionSimulator:
             entities = list(table_client.query_entities(query_filter=query_filter))
             logger.info(f"Found {len(entities)} entities in table storage")
             
-            # Process results into responder summary
-            responders = {}
+            # Process results into detailed message extraction data for analysis
+            messages = []
             total_messages = 0
             
             for entity in entities:
-                # Use the actual field names from the table
-                sender_name = entity.get('name', 'Unknown')
-                message_text = entity.get('text', '')
-                message_type = entity.get('arrival_status', 'unknown')
+                # Extract all available fields from the table entity
+                message_data = {
+                    "name": entity.get('name', 'Unknown'),
+                    "text": entity.get('text', ''),
+                    "vehicle": entity.get('vehicle', 'Unknown'),
+                    "eta": entity.get('eta', 'Unknown'),
+                    "eta_timestamp_utc": entity.get('eta_timestamp_utc', 'Unknown'),
+                    "status": entity.get('arrival_status', 'Unknown'),
+                    "raw_status": entity.get('raw_status', 'Unknown'),
+                    "timestamp": entity.get('timestamp', ''),
+                    "timestamp_utc": entity.get('timestamp_utc', ''),
+                    "status_confidence": entity.get('status_confidence', 0.0),
+                    "status_source": entity.get('status_source', 'Unknown'),
+                    "team": entity.get('team', 'Unknown'),
+                    "group_id": entity.get('group_id', 'Unknown'),
+                    "minutes_until_arrival": entity.get('minutes_until_arrival', None)
+                }
                 
-                if sender_name not in responders:
-                    responders[sender_name] = {
-                        "name": sender_name,
-                        "messages": 0,
-                        "message_texts": [],
-                        "message_types": [],
-                        "status": "responded"
-                    }
-                
-                responders[sender_name]["messages"] += 1
-                responders[sender_name]["message_texts"].append(message_text)
-                responders[sender_name]["message_types"].append(message_type)
+                messages.append(message_data)
                 total_messages += 1
-                
-                # Determine status based on message content
-                if any(word in message_text.lower() for word in ['cancel', 'backing out', 'can\'t make', 'unable']):
-                    responders[sender_name]["status"] = "cancelled"
             
-            # Calculate response rate
-            response_rate = len([r for r in responders.values() if r["status"] == "responded"]) / max(len(responders), 1)
+            # Calculate basic response statistics
+            unique_responders = len(set(msg["name"] for msg in messages))
+            response_rate = 1.0  # Since we're only getting actual responses from storage
             
             result = {
-                "responders": list(responders.values()),
+                "messages": messages,
                 "total_messages": total_messages,
+                "unique_responders": unique_responders,
                 "response_rate": response_rate,
                 "mission_group_id": mission_group_id,
                 "time_range": {
@@ -919,7 +1007,7 @@ class MissionSimulator:
                 }
             }
             
-            logger.info(f"Processed {len(responders)} responders with {total_messages} total messages")
+            logger.info(f"Processed {total_messages} messages from {unique_responders} unique responders")
             return result
             
         except Exception as e:
@@ -974,14 +1062,15 @@ class MissionSimulator:
         logger.info("MISSION PERFORMANCE ANALYSIS")
         logger.info("=" * 60)
         
-        # Overall scores
+        # Overall scores and metrics
         overall_score = analysis.get("overall_score", "N/A")
-        parsing_accuracy = analysis.get("parsing_accuracy", "N/A")
-        interpretation_quality = analysis.get("interpretation_quality", "N/A")
+        metrics = analysis.get("metrics", {})
         
         logger.info(f"Overall Score: {overall_score}")
-        logger.info(f"Parsing Accuracy: {parsing_accuracy}")
-        logger.info(f"Interpretation Quality: {interpretation_quality}")
+        logger.info(f"Vehicle Extraction Accuracy: {metrics.get('vehicle_accuracy', 'N/A')}")
+        logger.info(f"ETA Extraction Accuracy: {metrics.get('eta_accuracy', 'N/A')}")
+        logger.info(f"Status Extraction Accuracy: {metrics.get('status_accuracy', 'N/A')}")
+        logger.info(f"Overall Accuracy: {metrics.get('overall_accuracy', 'N/A')}")
         logger.info("")
         
         # Message grades table
@@ -1002,26 +1091,39 @@ class MissionSimulator:
         
         # Summary
         summary = analysis.get("summary", {})
+        total_messages = summary.get("total_messages", 0)
+        grade_dist = summary.get("grade_distribution", {})
+        common_errors = summary.get("common_errors", [])
         strengths = summary.get("strengths", [])
         weaknesses = summary.get("weaknesses", [])
-        recommendations = summary.get("recommendations", [])
+        
+        if total_messages:
+            logger.info(f"TOTAL MESSAGES EVALUATED: {total_messages}")
+        
+        if grade_dist:
+            logger.info("GRADE DISTRIBUTION:")
+            for grade in ["A", "B", "C", "D", "F"]:
+                count = grade_dist.get(grade, 0)
+                if count > 0:
+                    logger.info(f"  {grade}: {count} messages")
+            logger.info("")
+        
+        if common_errors:
+            logger.info("COMMON EXTRACTION ERRORS:")
+            for error in common_errors:
+                logger.info(f"  ⚠ {error}")
+            logger.info("")
         
         if strengths:
             logger.info("STRENGTHS:")
             for strength in strengths:
-                logger.info(f"  + {strength}")
+                logger.info(f"  ✓ {strength}")
             logger.info("")
         
         if weaknesses:
             logger.info("WEAKNESSES:")
             for weakness in weaknesses:
-                logger.info(f"  - {weakness}")
-            logger.info("")
-        
-        if recommendations:
-            logger.info("RECOMMENDATIONS:")
-            for rec in recommendations:
-                logger.info(f"  → {rec}")
+                logger.info(f"  ✗ {weakness}")
             logger.info("")
         
         logger.info("=" * 60)
