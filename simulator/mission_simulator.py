@@ -39,6 +39,12 @@ except Exception:
     OpenAI = None
     AzureOpenAI = None
 
+# Azure Table Storage client
+try:
+    from azure.data.tables import TableServiceClient
+except Exception:
+    TableServiceClient = None
+
 # Load environment variables
 load_dotenv()
 
@@ -80,10 +86,15 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-5-nano")  # if using Azure
 
 # --- Model defaults (OpenAI preferred, Azure fallback) ---
-LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o")  # Use actual OpenAI model name
-LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "gpt-4o-mini")
+LLM_MODEL = os.getenv("LLM_MODEL", "gpt-5")  # Use GPT-5 with reasoning
+LLM_FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "gpt-5-mini")
 LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "medium")  # minimal|low|medium|high
 LLM_VERBOSITY = os.getenv("LLM_VERBOSITY", "medium")               # low|medium|high
+
+# Azure Storage configuration
+AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+AZURE_STORAGE_ACCOUNT = os.getenv("AZURE_STORAGE_ACCOUNT")
+STORAGE_TABLE_NAME = os.getenv("STORAGE_TABLE_NAME", "respondermessagespreprod")
 
 
 # -----------------------------------------------------------
@@ -262,7 +273,7 @@ class LLMPlanner:
         }
 
     def _chat_with_schema(self, *, model: str, system: str, user: str, schema: dict,
-                          max_tokens: int = 3500) -> Optional[Dict[str, Any]]:
+                          max_tokens: int = 50000) -> Optional[Dict[str, Any]]:
         """
         Try strict JSON Schema → JSON object → freeform+extract, stripping unsupported params on retry.
         """
@@ -313,19 +324,40 @@ class LLMPlanner:
         for i, t in enumerate(tries):
             try:
                 resp = try_call(**t)
-                content = resp.choices[0].message.content
-                obj = extract_json_object(content)
-                if obj:
-                    if i > 0:  # Log if we had to fallback
-                        logger.info(f"LLM call succeeded using strategy {i+1}/5")
-                    return obj
+                
+                # Debug logging for OpenAI responses
+                logger.info(f"OpenAI API Response (strategy {i+1}/5):")
+                logger.info(f"  Model: {model}")
+                logger.info(f"  Response ID: {getattr(resp, 'id', 'N/A')}")
+                logger.info(f"  Usage: {getattr(resp, 'usage', 'N/A')}")
+                logger.info(f"  Choices count: {len(resp.choices) if resp.choices else 0}")
+                
+                if resp.choices and len(resp.choices) > 0:
+                    choice = resp.choices[0]
+                    logger.info(f"  Finish reason: {getattr(choice, 'finish_reason', 'N/A')}")
+                    content = choice.message.content
+                    logger.info(f"  Content length: {len(content) if content else 0}")
+                    logger.info(f"  Content preview: {content[:200] if content else 'None'}...")
+                    
+                    obj = extract_json_object(content)
+                    if obj:
+                        logger.info(f"  JSON extraction: SUCCESS")
+                        if i > 0:  # Log if we had to fallback
+                            logger.info(f"LLM call succeeded using strategy {i+1}/5")
+                        return obj
+                    else:
+                        logger.warning(f"  JSON extraction: FAILED - could not parse JSON from content")
+                        logger.warning(f"  Full content: {content}")
+                else:
+                    logger.warning(f"  No choices in response")
+                    
             except Exception as e:
                 # If Azure or older backends reject unknown params, just continue to the next strategy
                 error_msg = str(e).lower()
+                logger.warning(f"LLM call failed (strategy {i+1}/5): {e}")
+                logger.warning(f"  Exception type: {type(e).__name__}")
                 if "bad request" in error_msg or "invalid" in error_msg:
-                    logger.warning(f"LLM call failed (strategy {i+1}/5): {e}")
-                else:
-                    logger.warning(f"LLM call failed (strategy {i+1}/5): {e}")
+                    logger.warning(f"  Likely parameter compatibility issue")
                 continue
         
         logger.error("All LLM call strategies failed, falling back to template plan")
@@ -369,9 +401,95 @@ Constraints:
 
         # Try primary then fallback model with the strategy above
         for model in [self.model_primary, self.model_fallback]:
-            plan = self._chat_with_schema(model=model, system=system, user=user, schema=schema, max_tokens=4000)
+            plan = self._chat_with_schema(model=model, system=system, user=user, schema=schema, max_tokens=50000)
             if plan:
                 return plan
+        return None
+
+    def analyze_mission_performance(
+        self,
+        mission_data: Dict[str, Any],
+        responder_results: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Analyze how well the LLM performed in parsing messages and applying common sense.
+        Returns a structured analysis with message grading.
+        """
+        if not self.available():
+            return None
+
+        system = (
+            "You are a SAR mission analyst. Analyze how well the system parsed and interpreted "
+            "SAR communication messages. Grade each message and provide comprehensive analysis. "
+            "Produce ONLY a JSON object with your analysis."
+        )
+
+        user = f"""
+Analyze this SAR mission performance:
+
+MISSION DATA:
+{json.dumps(mission_data, indent=2)}
+
+RESPONDER RESULTS FROM /api/responders:
+{json.dumps(responder_results, indent=2)}
+
+Provide a comprehensive analysis including:
+1. Overall parsing accuracy
+2. Common sense interpretation quality  
+3. Message-by-message grading (A-F scale)
+4. Identification of parsing errors or misinterpretations
+5. Recommendations for improvement
+
+Format as JSON with this structure:
+{{
+  "overall_score": "A-F grade",
+  "parsing_accuracy": "percentage or description",
+  "interpretation_quality": "assessment",
+  "message_grades": [
+    {{
+      "message_index": 0,
+      "message_text": "original message",
+      "sender": "sender name",
+      "grade": "A-F",
+      "parsing_quality": "assessment",
+      "interpretation_notes": "detailed analysis",
+      "errors_found": ["list of errors if any"]
+    }}
+  ],
+  "summary": {{
+    "strengths": ["list of strengths"],
+    "weaknesses": ["list of weaknesses"],
+    "recommendations": ["list of recommendations"]
+  }}
+}}
+"""
+
+        # Use a simpler approach for analysis - no complex schema needed
+        for model in [self.model_primary, self.model_fallback]:
+            try:
+                kwargs = {
+                    "model": model,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    "response_format": {"type": "json_object"}
+                }
+                
+                # Handle model-specific parameters
+                if model.startswith("gpt-5"):
+                    kwargs["max_completion_tokens"] = 50000
+                else:
+                    kwargs["max_tokens"] = 50000
+                    kwargs["temperature"] = 0.7
+
+                resp = self.client.chat.completions.create(**kwargs)
+                content = resp.choices[0].message.content
+                analysis = extract_json_object(content)
+                if analysis:
+                    return analysis
+            except Exception as e:
+                logger.warning(f"Mission analysis failed with model {model}: {e}")
+                continue
+        
+        logger.error("Mission analysis failed for all models")
         return None
 
 
@@ -694,6 +812,216 @@ class MissionSimulator:
         messages.sort(key=lambda x: x.offset_sec)
         return team, messages, window_minutes
 
+    # ---------------- Post-mission analysis ----------------
+    def _fetch_responder_results_from_storage(self, mission_group_id: str, start_time: datetime) -> Optional[Dict[str, Any]]:
+        """
+        Fetch responder results directly from Azure Table Storage for post-mission analysis.
+        """
+        if self.dry_run:
+            logger.info("[DRY RUN] Would fetch responder results from Azure Table Storage")
+            # Return mock data for dry run
+            return {
+                "responders": [
+                    {"name": "Mock Responder", "status": "responded", "messages": 3, "message_texts": ["Responding POV", "At TH", "Heading up"]},
+                    {"name": "Another Responder", "status": "cancelled", "messages": 1, "message_texts": ["Can't make it"]}
+                ],
+                "total_messages": 4,
+                "response_rate": 0.75,
+                "mission_group_id": mission_group_id,
+                "time_range": {
+                    "start": start_time.isoformat(),
+                    "end": now_utc().isoformat()
+                }
+            }
+        
+        if not AZURE_STORAGE_CONNECTION_STRING or not TableServiceClient:
+            logger.warning("Azure Storage not configured or SDK not available, using mock data")
+            # Return mock data directly instead of recursive call
+            return {
+                "responders": [
+                    {"name": "Mock Responder", "status": "responded", "messages": 3, "message_texts": ["Responding POV", "At TH", "Heading up"]},
+                    {"name": "Another Responder", "status": "cancelled", "messages": 1, "message_texts": ["Can't make it"]}
+                ],
+                "total_messages": 4,
+                "response_rate": 0.75,
+                "mission_group_id": mission_group_id,
+                "time_range": {
+                    "start": start_time.isoformat(),
+                    "end": now_utc().isoformat()
+                }
+            }
+        
+        try:
+            # Initialize table service client
+            table_service = TableServiceClient.from_connection_string(AZURE_STORAGE_CONNECTION_STRING)
+            table_client = table_service.get_table_client(table_name=STORAGE_TABLE_NAME)
+            
+            # Query for messages in the time range and group
+            end_time = now_utc()
+            start_timestamp = start_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            end_timestamp = end_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            
+            # Build query filter for the specific group and time range
+            query_filter = f"PartitionKey eq '{mission_group_id}' and Timestamp ge datetime'{start_timestamp}' and Timestamp le datetime'{end_timestamp}'"
+            
+            logger.info(f"Querying Azure Table Storage with filter: {query_filter}")
+            
+            # Execute query
+            entities = list(table_client.query_entities(query_filter=query_filter))
+            logger.info(f"Found {len(entities)} entities in table storage")
+            
+            # Process results into responder summary
+            responders = {}
+            total_messages = 0
+            
+            for entity in entities:
+                sender_name = entity.get('SenderName', 'Unknown')
+                message_text = entity.get('MessageText', '')
+                message_type = entity.get('MessageType', 'unknown')
+                
+                if sender_name not in responders:
+                    responders[sender_name] = {
+                        "name": sender_name,
+                        "messages": 0,
+                        "message_texts": [],
+                        "message_types": [],
+                        "status": "responded"
+                    }
+                
+                responders[sender_name]["messages"] += 1
+                responders[sender_name]["message_texts"].append(message_text)
+                responders[sender_name]["message_types"].append(message_type)
+                total_messages += 1
+                
+                # Determine status based on message content
+                if any(word in message_text.lower() for word in ['cancel', 'backing out', 'can\'t make', 'unable']):
+                    responders[sender_name]["status"] = "cancelled"
+            
+            # Calculate response rate
+            response_rate = len([r for r in responders.values() if r["status"] == "responded"]) / max(len(responders), 1)
+            
+            result = {
+                "responders": list(responders.values()),
+                "total_messages": total_messages,
+                "response_rate": response_rate,
+                "mission_group_id": mission_group_id,
+                "time_range": {
+                    "start": start_time.isoformat(),
+                    "end": end_time.isoformat()
+                },
+                "query_info": {
+                    "table_name": STORAGE_TABLE_NAME,
+                    "entities_found": len(entities)
+                }
+            }
+            
+            logger.info(f"Processed {len(responders)} responders with {total_messages} total messages")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error fetching responder results from Azure Storage: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            # Fall back to mock data on error
+            return self._fetch_responder_results_from_storage(mission_group_id, start_time)  # Use dry run mock
+
+    def _fetch_responder_results(self, mission_group_id: str, start_time: datetime) -> Optional[Dict[str, Any]]:
+        """
+        Fetch responder results for post-mission analysis.
+        Uses Azure Table Storage directly instead of API calls.
+        """
+        return self._fetch_responder_results_from_storage(mission_group_id, start_time)
+
+    def _perform_post_mission_analysis(self, mission_data: Dict[str, Any], start_time: datetime) -> None:
+        """
+        Perform post-mission analysis by calling the LLM to grade message parsing and interpretation.
+        """
+        logger.info("Starting post-mission analysis...")
+        
+        # Fetch responder results from the API
+        responder_results = self._fetch_responder_results(mission_data["mission_group_id"], start_time)
+        if not responder_results:
+            logger.warning("Could not fetch responder results, skipping post-mission analysis")
+            return
+        
+        # Perform LLM analysis
+        analysis = self.planner.analyze_mission_performance(mission_data, responder_results)
+        if not analysis:
+            logger.warning("LLM analysis failed, skipping post-mission analysis")
+            return
+        
+        # Save analysis results
+        ensure_dir("missions")
+        analysis_path = os.path.join("missions", f"{start_time.strftime('%Y%m%dT%H%M%SZ')}-analysis.json")
+        try:
+            with open(analysis_path, "w", encoding="utf-8") as f:
+                json.dump(analysis, f, indent=2)
+            logger.info(f"Mission analysis written to {analysis_path}")
+        except Exception as e:
+            logger.debug(f"Failed to write mission analysis: {e}")
+        
+        # Display analysis summary
+        self._display_analysis_summary(analysis)
+
+    def _display_analysis_summary(self, analysis: Dict[str, Any]) -> None:
+        """
+        Display a formatted summary of the mission analysis.
+        """
+        logger.info("=" * 60)
+        logger.info("MISSION PERFORMANCE ANALYSIS")
+        logger.info("=" * 60)
+        
+        # Overall scores
+        overall_score = analysis.get("overall_score", "N/A")
+        parsing_accuracy = analysis.get("parsing_accuracy", "N/A")
+        interpretation_quality = analysis.get("interpretation_quality", "N/A")
+        
+        logger.info(f"Overall Score: {overall_score}")
+        logger.info(f"Parsing Accuracy: {parsing_accuracy}")
+        logger.info(f"Interpretation Quality: {interpretation_quality}")
+        logger.info("")
+        
+        # Message grades table
+        message_grades = analysis.get("message_grades", [])
+        if message_grades:
+            logger.info("MESSAGE GRADING TABLE:")
+            logger.info("-" * 60)
+            logger.info(f"{'#':<3} {'Sender':<15} {'Grade':<5} {'Message':<35}")
+            logger.info("-" * 60)
+            
+            for i, msg in enumerate(message_grades):
+                sender = msg.get("sender", "Unknown")[:14]
+                grade = msg.get("grade", "N/A")
+                message_text = msg.get("message_text", "")[:34]
+                logger.info(f"{i+1:<3} {sender:<15} {grade:<5} {message_text:<35}")
+            
+            logger.info("-" * 60)
+        
+        # Summary
+        summary = analysis.get("summary", {})
+        strengths = summary.get("strengths", [])
+        weaknesses = summary.get("weaknesses", [])
+        recommendations = summary.get("recommendations", [])
+        
+        if strengths:
+            logger.info("STRENGTHS:")
+            for strength in strengths:
+                logger.info(f"  + {strength}")
+            logger.info("")
+        
+        if weaknesses:
+            logger.info("WEAKNESSES:")
+            for weakness in weaknesses:
+                logger.info(f"  - {weakness}")
+            logger.info("")
+        
+        if recommendations:
+            logger.info("RECOMMENDATIONS:")
+            for rec in recommendations:
+                logger.info(f"  → {rec}")
+            logger.info("")
+        
+        logger.info("=" * 60)
+
     # ---------------- Mission engine ----------------
     def simulate_one_mission(self) -> None:
         logger.info("Starting mission simulation...")
@@ -819,6 +1147,28 @@ class MissionSimulator:
 
             logger.info("Mission simulation completed.")
             self._update_last_mission_time()
+            
+            # Perform post-mission analysis
+            mission_data = {
+                "started_utc": start_time.isoformat(),
+                "mission_group_id": mission_group_id,
+                "location": {
+                    "name": location.name,
+                    "coordinates": location.coordinates,
+                    "trail_description": location.trail_description,
+                },
+                "plan_raw": plan_raw,
+                "window_minutes": window_minutes,
+                "team": [t.__dict__ for t in team],
+                "messages": [m.__dict__ for m in messages],
+                "routing": {
+                    "mode": self.group_mode,
+                    "unique_home_groups": unique_home_groups,
+                    "home_group_names": [REAL_GROUP_IDS.get(gid, gid) for gid in unique_home_groups]
+                },
+            }
+            self._perform_post_mission_analysis(mission_data, start_time)
+            
         finally:
             # Stop keepalive gracefully
             self.stop_website_keepalive()

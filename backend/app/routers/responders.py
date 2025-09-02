@@ -144,6 +144,7 @@ class ResponderUpdate(BaseModel):
     vehicle: Optional[str] = None
     eta: Optional[str] = None
     eta_timestamp: Optional[str] = None
+    arrival_status: Optional[str] = None
 
 
 class BulkDeleteRequest(BaseModel):
@@ -311,8 +312,25 @@ async def update_responder(msg_id: str, update: ResponderUpdate, _: bool = Depen
         if update.vehicle is not None:
             updates["vehicle"] = update.vehicle
         
-        # Handle ETA updates
-        if update.eta is not None or update.eta_timestamp is not None:
+        # Handle arrival_status updates
+        if update.arrival_status is not None:
+            valid_statuses = ["Responding", "Available", "Informational", "Cancelled", "Not Responding", "Unknown"]
+            if update.arrival_status in valid_statuses:
+                updates["arrival_status"] = update.arrival_status
+                updates["status_source"] = "Manual"  # Track that this was manually set
+                updates["raw_status"] = update.arrival_status  # Update raw_status to match
+                
+                # Clear ETA fields if status is "Not Responding" or "Cancelled"
+                if update.arrival_status in ["Not Responding", "Cancelled"]:
+                    updates["eta"] = ""
+                    updates["eta_timestamp"] = None
+                    updates["eta_lower"] = None
+                    updates["eta_upper"] = None
+            else:
+                raise HTTPException(status_code=400, detail=f"Invalid status: {update.arrival_status}")
+        
+        # Handle ETA updates (skip if we're clearing due to status change)
+        if (update.eta is not None or update.eta_timestamp is not None) and not updates.get("eta") == "":
             # Get current message to use as base for ETA computation
             messages = get_messages()
             current_msg = None
