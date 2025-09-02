@@ -405,6 +405,30 @@ cd functions/tests
 python test_integration_groupme_ingest.py
 ```
 
+### Mission Simulator
+
+For testing Azure infrastructure costs and performance under realistic SAR mission load:
+
+```bash
+# Navigate to simulator
+cd simulator
+
+# Copy configuration template
+cp .env.example .env
+# Edit .env with your actual Azure Function endpoint and API key
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Test simulation (dry run)
+python mission_simulator.py --dry-run --force-mission
+
+# Run real simulation against your environment
+python mission_simulator.py --force-mission
+```
+
+See `simulator/README.md` for detailed documentation.
+
 ## CI/CD with GitHub Actions
 
 The repository includes GitHub Actions workflows for automated testing and deployment:

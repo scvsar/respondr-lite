@@ -188,6 +188,11 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
     Time parsing & ETA rules:
     - Parse ALL time formats: absolute times (0830, 8:30 am, 15:00), military/compact (2145), durations ("in 20", "15-20 minutes", "1 hr"), and relative phrases.
     - For ranges ("10:15-10:30"), choose the conservative upper bound (10:30).
+    - CRITICAL: For ambiguous "ETA X:XX" formats, use CONTEXTUAL REASONING:
+      * Consider BOTH interpretations: Duration (X hours XX minutes from now) vs Clock time (arriving at X:XX)
+      * Apply OPERATIONAL COMMON SENSE: SAR responses typically 1-4 hours from alert, evening alerts usually get same-day responses
+      * Very early AM arrivals (1-4 AM) are uncommon without explicit AM indicators
+      * Example: "ETA 1:33" at 17:30 → Duration interpretation (19:03) is more reasonable than clock time (01:33 tomorrow)
     - Durations are relative to the CURRENT LOCAL time.
     - Convert the final ETA to ISO-8601 UTC in "eta_iso".
     - If stand down / cancel → eta_iso = "Unknown".

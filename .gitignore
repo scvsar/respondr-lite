@@ -140,6 +140,7 @@ celerybeat.pid
 .env.*
 .env.populated
 *.env
+!.env.example 
 .envrc
 .venv
 env/

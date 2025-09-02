@@ -76,17 +76,29 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         try:
             history = get_messages() or []
             # Sort latest first; prefer same group_id and same name
+            # Look for the most recent ETA that was actually calculated (not inherited)
             for m in sorted(history, key=lambda x: x.get("created_at", 0), reverse=True):
                 if (m.get("group_id") or "unknown") != group_id:
                     continue
                 if str(m.get("name", "")).strip().lower() != name_l:
                     continue
+                # Skip if this message is too recent (avoid using current message as previous)
+                if m.get("created_at", 0) >= message.created_at:
+                    continue
                 # must have a valid prior ETA and have been responding
                 eta_utc = m.get("eta_timestamp_utc")
                 prior_status = m.get("raw_status") or m.get("arrival_status")
+                parse_source = m.get("parse_source", "")
+                
+                # Prefer ETAs that were originally parsed from text (not inherited from previous)
+                # to avoid perpetuating incorrect ETAs
                 if eta_utc and eta_utc != "Unknown" and prior_status == "Responding":
                     prev_eta_iso = str(eta_utc)
-                    break
+                    # If this ETA was originally parsed from LLM or deterministic parsing
+                    # (not inherited), use it and break
+                    if parse_source in ("LLM", "Deterministic") and "inherit" not in parse_source.lower():
+                        break
+                    # Otherwise keep looking for a better source, but save this as fallback
         except Exception:
             # Non-fatal: proceed without prev ETA
             prev_eta_iso = None
