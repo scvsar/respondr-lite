@@ -140,6 +140,7 @@ celerybeat.pid
 .env.*
 .env.populated
 *.env
+!.env.example 
 .envrc
 .venv
 env/
@@ -278,3 +279,6 @@ private-notes.md
 cookies.txt
 github-actions-setup-20250827-163919.txt
 CLAUDE.md
+
+last_mission.txt
+missions/

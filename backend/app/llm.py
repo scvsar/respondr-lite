@@ -188,6 +188,11 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
     Time parsing & ETA rules:
     - Parse ALL time formats: absolute times (0830, 8:30 am, 15:00), military/compact (2145), durations ("in 20", "15-20 minutes", "1 hr"), and relative phrases.
     - For ranges ("10:15-10:30"), choose the conservative upper bound (10:30).
+    - CRITICAL: For ambiguous "ETA X:XX" formats, use CONTEXTUAL REASONING:
+      * Consider BOTH interpretations: Duration (X hours XX minutes from now) vs Clock time (arriving at X:XX)
+      * Apply OPERATIONAL COMMON SENSE: SAR responses typically 1-4 hours from alert, evening alerts usually get same-day responses
+      * Very early AM arrivals (1-4 AM) are uncommon without explicit AM indicators
+      * Example: "ETA 1:33" at 17:30 → Duration interpretation (19:03) is more reasonable than clock time (01:33 tomorrow)
     - Durations are relative to the CURRENT LOCAL time.
     - Convert the final ETA to ISO-8601 UTC in "eta_iso".
     - If stand down / cancel → eta_iso = "Unknown".
@@ -531,6 +536,102 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
 
 
 
+def _validate_eta_against_context(eta_minutes: Optional[int], other_responders: Optional[List[Dict[str, Any]]] = None) -> bool:
+    """
+    Validate if an ETA makes sense given the context of other responders.
+    Returns True if the ETA seems reasonable, False if anomalous.
+    """
+    if eta_minutes is None:
+        return True  # Unknown ETA is always valid
+    
+    # Very negative ETAs (more than 2 hours in the past) are likely parsing errors
+    if eta_minutes < -120:
+        return False
+    
+    # Extremely far future ETAs (more than 24 hours) are likely parsing errors  
+    if eta_minutes > 1440:
+        return False
+    
+    if not other_responders:
+        return True  # No context to compare against
+    
+    # Get ETAs from other responders for comparison
+    other_etas = []
+    for responder in other_responders:
+        mins = responder.get("minutes_until_arrival")
+        if isinstance(mins, int) and mins >= -30:  # Only consider reasonable ETAs
+            other_etas.append(mins)
+    
+    if not other_etas:
+        return True  # No other ETAs to compare against
+    
+    # Calculate statistics of other responders' ETAs
+    other_etas.sort()
+    median_eta = other_etas[len(other_etas) // 2]
+    min_eta = min(other_etas)
+    max_eta = max(other_etas)
+    
+    # If this ETA is way outside the range of other responders, it's suspicious
+    eta_range = max_eta - min_eta
+    if eta_range > 0:
+        # If the new ETA is more than 3x the range away from the median, flag it
+        distance_from_median = abs(eta_minutes - median_eta)
+        if distance_from_median > max(180, eta_range * 3):  # At least 3 hours or 3x range
+            return False
+    
+    return True
+
+
+def _create_correction_prompt(text: str, parsed_eta: str, eta_minutes: Optional[int], 
+                            other_responders: Optional[List[Dict[str, Any]]]) -> Tuple[str, str]:
+    """
+    Create a focused correction prompt for anomalous ETA parsing.
+    """
+    context_info = ""
+    if other_responders:
+        eta_list = []
+        for r in other_responders:
+            mins = r.get("minutes_until_arrival")
+            eta_str = r.get("eta", "Unknown")
+            if isinstance(mins, int) and mins >= -30 and eta_str != "Unknown":
+                eta_list.append(f"{eta_str} ({mins} min)")
+        
+        if eta_list:
+            context_info = f"\nOther responders' ETAs: {', '.join(eta_list[:5])}"  # Show up to 5
+    
+    sys_prompt = f"""
+    You previously parsed an ETA that appears anomalous. Please re-evaluate this SAR response message.
+    
+    CRITICAL CONTEXT:
+    - You parsed the ETA as: {parsed_eta} (which is {eta_minutes} minutes from now)
+    - This seems unusual given the context{context_info}
+    
+    Common ETA parsing errors to avoid:
+    1. Mistaking duration format "1:33" (1 hour 33 min) for clock time "1:33 AM"  
+    2. UTC/timezone confusion causing next-day interpretations
+    3. Interpreting relative times incorrectly
+    
+    Re-examine the message and provide a corrected interpretation. Focus on:
+    - Is this a duration (X hours Y minutes from now) or a clock time?
+    - Does the timing make operational sense for a SAR response?
+    - Are there contextual clues about AM/PM or date?
+    
+    Return ONLY JSON:
+    {{
+    "vehicle": "POV" | "SAR-<number>" | "SAR Rig" | "Unknown",
+    "eta_iso": "<UTC ISO like 2025-08-19T16:45:00Z or 'Unknown'>",  
+    "status": "Responding" | "Cancelled" | "Available" | "Informational" | "Not Responding" | "Unknown",
+    "evidence": "<phrase showing your reasoning>",
+    "confidence": <float 0..1>,
+    "correction_applied": true
+    }}
+    """
+    
+    user_prompt = f"Message to re-analyze: {text}\nProvide corrected JSON analysis."
+    
+    return sys_prompt, user_prompt
+
+
 def extract_details_from_text(
     text: str,
     base_time: Optional[datetime] = None,
@@ -541,6 +642,7 @@ def extract_details_from_text(
     verbosity_override: Optional[str] = None,
     reasoning_effort_override: Optional[str] = None,
     max_tokens_override: Optional[int] = None,
+    other_responders: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
@@ -631,6 +733,84 @@ def extract_details_from_text(
 
     evidence = str(llm_data.get("evidence") or "")
 
+    # Check if ETA validation is needed and perform correction if anomalous
+    eta_minutes = eta_fields.get("minutes_until_arrival")
+    correction_applied = False
+    
+    if (eta_minutes is not None and 
+        not _validate_eta_against_context(eta_minutes, other_responders) and
+        status in ("Responding", "Available")):  # Only correct for response statuses
+        
+        # Log context for debugging
+        context_summary = []
+        if other_responders:
+            for r in other_responders[:3]:  # Show first 3 for context
+                context_summary.append(f"{r.get('name', 'Unknown')}: {r.get('eta', 'Unknown')} ({r.get('minutes_until_arrival', '?')} min)")
+        context_str = "; ".join(context_summary) if context_summary else "no context"
+        
+        logger.warning(f"ETA appears anomalous: {eta_fields.get('eta')} ({eta_minutes} min) vs others [{context_str}]. Attempting correction.")
+        
+        try:
+            # Create correction prompt with enhanced reasoning
+            sys_correction, user_correction = _create_correction_prompt(
+                text, eta_fields.get("eta", "Unknown"), eta_minutes, other_responders
+            )
+            
+            # Call LLM again with high reasoning and correction context
+            corrected_data = _call_llm_only(
+                text, anchor, prev_eta_iso, active_client, debug=debug,
+                sys_prompt_override=sys_correction,
+                user_prompt_override=user_correction,
+                verbosity_override="medium",  # Enhanced verbosity for correction
+                reasoning_effort_override="high",  # Enhanced reasoning for correction
+                max_tokens_override=1024
+            )
+            
+            if (isinstance(corrected_data, dict) and 
+                not corrected_data.get("_llm_unavailable") and 
+                not corrected_data.get("_llm_error")):
+                
+                # Process corrected result
+                corrected_eta_iso = str(corrected_data.get("eta_iso") or "Unknown")
+                if corrected_eta_iso and corrected_eta_iso != "Unknown":
+                    try:
+                        corrected_dt = datetime.fromisoformat(corrected_eta_iso.replace("Z", "+00:00"))
+                        corrected_fields = compute_eta_fields(None, corrected_dt, anchor)
+                        corrected_minutes = corrected_fields.get("minutes_until_arrival")
+                        
+                        # Only apply correction if it's actually better
+                        if _validate_eta_against_context(corrected_minutes, other_responders):
+                            logger.info(f"ETA correction applied: {eta_fields.get('eta')} → {corrected_fields.get('eta')}")
+                            eta_fields = corrected_fields
+                            eta_source = "LLM-Corrected"
+                            correction_applied = True
+                            
+                            # Update other fields from correction if available
+                            corrected_vehicle = _normalize_vehicle_name(str(corrected_data.get("vehicle") or vehicle))
+                            corrected_status = str(corrected_data.get("status") or status).strip()
+                            corrected_confidence = float(corrected_data.get("confidence") or confidence)
+                            corrected_evidence = str(corrected_data.get("evidence") or evidence)
+                            
+                            if corrected_vehicle != "Unknown":
+                                vehicle = corrected_vehicle
+                            if corrected_status != "Unknown":
+                                status = corrected_status  
+                            if corrected_confidence > 0:
+                                confidence = corrected_confidence
+                            if corrected_evidence:
+                                evidence = f"{evidence} [Corrected: {corrected_evidence}]"
+                        else:
+                            logger.warning("ETA correction resulted in another anomalous value, keeping original")
+                    except Exception as e:
+                        logger.warning(f"Failed to process corrected ETA: {e}")
+                else:
+                    logger.warning("Correction attempt returned Unknown ETA")
+            else:
+                logger.warning(f"ETA correction call failed: {corrected_data}")
+                
+        except Exception as e:
+            logger.error(f"ETA correction attempt failed: {e}")
+
     result = {
         "vehicle": vehicle,
         "eta": eta_fields.get("eta", "Unknown"),
@@ -643,6 +823,7 @@ def extract_details_from_text(
         "minutes_until_arrival": eta_fields.get("minutes_until_arrival"),
         "parse_source": eta_source,
         "parse_evidence": evidence,
+        "correction_applied": correction_applied,
         # "rules_applied": rules_applied,  # optional, very helpful in /api/parse-debug
     }
     # Attach LLM debug info on request (flattened)

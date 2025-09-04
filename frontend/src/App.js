@@ -225,6 +225,7 @@ function MainApp() {
     timestamp: '', // datetime-local string
     eta: '',       // free text HH:MM or words
     eta_timestamp: '', // datetime-local string
+    arrival_status: '', // Status field for edit dialog
   });
 
   // Track user activity
@@ -707,6 +708,7 @@ function MainApp() {
       timestamp: toLocalInput(seed.timestamp) || '',
       eta: seed.eta || '',
       eta_timestamp: toLocalInput(seed.eta_timestamp) || '',
+      arrival_status: seed.arrival_status || '',
     });
   };
   const openAdd = () => {
@@ -737,6 +739,7 @@ function MainApp() {
     if (form.timestamp) payload.timestamp = fromLocalInput(form.timestamp);
     if (form.eta_timestamp) payload.eta_timestamp = fromLocalInput(form.eta_timestamp);
     if (form.eta && !form.eta_timestamp) payload.eta = form.eta;
+    if (form.arrival_status) payload.arrival_status = form.arrival_status;
 
     const opts = {
       method: editingId ? 'PUT' : 'POST',
@@ -1085,6 +1088,18 @@ function MainApp() {
               <label>
                 <span>Vehicle</span>
                 <input className="input" placeholder="SAR-12 | POV | Not Responding" value={form.vehicle} onChange={e=>setForm(f=>({...f,vehicle:e.target.value}))} />
+              </label>
+              <label>
+                <span>Status</span>
+                <select className="input" value={form.arrival_status} onChange={e=>setForm(f=>({...f,arrival_status:e.target.value}))}>
+                  <option value="">Keep Current</option>
+                  <option value="Responding">Responding</option>
+                  <option value="Available">Available</option>
+                  <option value="Informational">Informational</option>
+                  <option value="Cancelled">Cancelled</option>
+                  <option value="Not Responding">Not Responding</option>
+                  <option value="Unknown">Unknown</option>
+                </select>
               </label>
               <label>
                 <span>Time</span>
