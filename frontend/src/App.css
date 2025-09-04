@@ -67,7 +67,7 @@
   border-bottom: 1px solid var(--divider);
   display: grid;
   /* Two columns: main content + controls; two rows: search on top, chips below */
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(200px, 1fr) auto;
   grid-template-rows: auto auto;
   gap: 10px 12px;
   align-items: center;
@@ -82,6 +82,9 @@
   padding: 8px 12px;
   border-radius: 6px;
   width: 100%;
+  max-width: 480px;
+  min-width: 0;
+  box-sizing: border-box;
 }
 /* Place search in the top-left grid cell */
 .toolbar .search-input { grid-column: 1 / 2; grid-row: 1; }
@@ -95,7 +98,7 @@
 .toolbar .controls { grid-column: 2 / 3; grid-row: 1 / 3; justify-content: flex-end; align-self: start; }
 /* Chip row sits under the search, becomes a single-line horizontal scroller when content overflows */
 .toolbar .chip-row {
-  grid-column: 1 / 2; grid-row: 2;
+  grid-column: 1 / -1; grid-row: 2;
   flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
@@ -120,6 +123,7 @@
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 .chip.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 
@@ -144,6 +148,16 @@
   gap: 12px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--divider);
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scroll-snap-type: x proximity;
+  /* subtle edge fade to suggest scrollability */
+  -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,0) 0, rgba(0,0,0,1) 20px, rgba(0,0,0,1) calc(100% - 20px), rgba(0,0,0,0) 100%);
+          mask-image: linear-gradient(to right, rgba(0,0,0,0) 0, rgba(0,0,0,1) 20px, rgba(0,0,0,1) calc(100% - 20px), rgba(0,0,0,0) 100%);
+  /* Thin horizontal scrollbar styling */
+  scrollbar-width: thin;
+  scrollbar-color: var(--divider) transparent;
 }
 .stat-card {
   background: var(--bg-elev);
@@ -151,6 +165,8 @@
   border-radius: 8px;
   padding: 10px 12px;
   min-width: 160px;
+  scroll-snap-align: start;
+  flex-shrink: 0;
 }
 .stat-card-Responders {
   background: var(--bg-elev);
@@ -158,6 +174,8 @@
   border-radius: 8px;
   padding: 10px 12px;
   min-width: 160px;
+  scroll-snap-align: start;
+  flex-shrink: 0;
 }
 .stat-title { font-size: 12px; color: var(--muted); }
 .stat-value { font-size: 18px; font-weight: 600; }
@@ -263,7 +281,7 @@
     top: 56px; 
   }
   .toolbar .search-input { grid-column: 1; grid-row: 1; }
-  .toolbar .chip-row { grid-column: 1; grid-row: 2; }
+  .toolbar .chip-row { grid-column: 1 / -1; grid-row: 2; }
   .toolbar .controls { grid-column: 1; grid-row: 3; justify-content: flex-start; align-self: center; }
   .app-bar .center { display: none; }
   .dashboard-table { table-layout: auto; }
