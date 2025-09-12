@@ -151,6 +151,8 @@ function MainApp() {
   // Defaults: All Messages tab should start with filters cleared; Current Status shows Responding by default
   const [statusFilter, setStatusFilter] = useState([]); // ["Responding","Not Responding","Unknown"]
   const [activeTab, setActiveTab] = useState('all');
+  const [timeFilter, setTimeFilter] = useState('24h'); // Default to 24 hours
+  const [customTimeStart, setCustomTimeStart] = useState('');
   const [geocitiesMode, setGeocitiesMode] = useState(() => {
     // Always start disabled by default for professional appearance
     // Users must explicitly enable the retro mode each session
@@ -272,6 +274,52 @@ function MainApp() {
     return () => clearInterval(intervalId);
   }, [lastActivity, isInactive, live, INACTIVITY_TIMEOUT, inactivityTimeoutMinutes]);
 
+  // Time filter computation
+  const getTimeFilterUrl = useCallback(() => {
+    let url = "/api/responders";
+    
+    if (timeFilter !== 'all') {
+      const now = new Date();
+      let since;
+      
+      switch (timeFilter) {
+        case '1h':
+          since = new Date(now.getTime() - 1 * 60 * 60 * 1000);
+          break;
+        case '6h':
+          since = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+          break;
+        case '12h':
+          since = new Date(now.getTime() - 12 * 60 * 60 * 1000);
+          break;
+        case '24h':
+          since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case '3d':
+          since = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+          break;
+        case '7d':
+          since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case 'custom':
+          if (customTimeStart) {
+            since = parseTs(customTimeStart);
+          }
+          break;
+        default:
+          // 'all' case - no time filter
+          since = null;
+          break;
+      }
+      
+      if (since) {
+        url += `?since=${since.toISOString()}`;
+      }
+    }
+    
+    return url;
+  }, [timeFilter, customTimeStart]);
+
   const fetchData = useCallback(async () => {
     try {
       // Don't fetch data if user just logged out
@@ -291,7 +339,8 @@ function MainApp() {
       } catch {}
       
       setError(null);
-      const res = await fetch("/api/responders", { headers: { 'Accept': 'application/json' }});
+      const url = getTimeFilterUrl();
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
       if (!res.ok) {
         throw new Error(`HTTP error! status: ${res.status}`);
       }
@@ -304,7 +353,7 @@ function MainApp() {
       setError(err.message);
       setIsLoading(false);
     }
-  }, []);
+  }, [getTimeFilterUrl]);
 
   // Initial load + Live-controlled polling
   const firstLoadRef = useRef(true);
@@ -370,6 +419,13 @@ function MainApp() {
       }
     };
   }, [fetchData, live, autoPaused]);
+
+  // Refresh data when time filter changes
+  useEffect(() => {
+    if (!firstLoadRef.current) {
+      fetchData();
+    }
+  }, [timeFilter, customTimeStart, fetchData]);
 
   // User info (for avatar initials)
   useEffect(() => {
@@ -932,6 +988,39 @@ function MainApp() {
           ))}
         </div>
         <div className="controls">
+          {/* Time Filter */}
+          <div className="time-filter-container">
+            <select 
+              className="time-filter-select" 
+              value={timeFilter} 
+              onChange={e => {
+                setTimeFilter(e.target.value);
+                if (e.target.value !== 'custom') {
+                  setCustomTimeStart('');
+                }
+              }}
+              title="Filter messages by time period"
+            >
+              <option value="all">All Time</option>
+              <option value="1h">Last Hour</option>
+              <option value="6h">Last 6 Hours</option>
+              <option value="12h">Last 12 Hours</option>
+              <option value="24h">Last 24 Hours</option>
+              <option value="3d">Last 3 Days</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="custom">Custom...</option>
+            </select>
+            {timeFilter === 'custom' && (
+              <input 
+                type="datetime-local" 
+                className="custom-time-input" 
+                value={toLocalInput(customTimeStart)} 
+                onChange={e => setCustomTimeStart(fromLocalInput(e.target.value))}
+                title="Messages since this time"
+              />
+            )}
+          </div>
+          
           <label className="toggle">
             <input type="checkbox" checked={live && !autoPaused} onChange={e => {
               setLive(e.target.checked);

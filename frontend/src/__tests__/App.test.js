@@ -213,7 +213,11 @@ test('fetches and displays responder data', async () => {
   
   // Wait for the fetch to be called and data to load
   await waitFor(() => {
-  expect(global.fetch).toHaveBeenCalledWith('/api/responders', expect.anything());
+    // The URL might have query parameters due to time filtering, so check if any call includes '/api/responders'
+    const responderCalls = global.fetch.mock.calls.filter(call => 
+      call[0] && call[0].toString().includes('/api/responders')
+    );
+    expect(responderCalls.length).toBeGreaterThan(0);
   }, { timeout: 3000 });
   
   // Check that the responder data is displayed
