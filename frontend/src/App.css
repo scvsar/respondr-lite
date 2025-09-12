@@ -142,6 +142,49 @@
   display: inline-flex; align-items: center; gap: 6px;
 }
 
+/* Time Filter Styles */
+.time-filter-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.time-filter-select {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  min-width: 120px;
+  cursor: pointer;
+}
+.time-filter-select:hover {
+  background: var(--hover);
+}
+.time-filter-select option {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  padding: 4px;
+}
+.time-filter-select option:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.custom-time-input {
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  width: 180px;
+}
+.custom-time-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 /* Stats */
 .stats-row {
   display: flex;

@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request, Depends, Query
 from pydantic import BaseModel
 
 from ..config import APP_TZ, GROUP_ID_TO_TEAM, allowed_email_domains, allowed_admin_users, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing
@@ -159,10 +159,49 @@ class UndeleteRequest(BaseModel):
 
 
 @router.get("/api/responders")
-async def get_responders(_: bool = Depends(require_authenticated_access)) -> List[Dict[str, Any]]:
-    """Get all active responder messages."""
+async def get_responders(
+    since: Optional[str] = Query(None, description="Filter messages since this time (ISO format)"),
+    _: bool = Depends(require_authenticated_access)
+) -> List[Dict[str, Any]]:
+    """Get all active responder messages, optionally filtered by time."""
     try:
         messages = get_messages()
+        
+        # Apply time filter if provided
+        if since:
+            try:
+                # Parse the since parameter
+                since_dt = parse_datetime_like(since)
+                if since_dt:
+                    # Convert to UTC for comparison
+                    if since_dt.tzinfo is None:
+                        # Assume local timezone if naive
+                        since_dt = since_dt.replace(tzinfo=APP_TZ)
+                    since_utc = since_dt.astimezone(timezone.utc)
+                    
+                    # Filter messages based on timestamp
+                    filtered_messages = []
+                    for msg in messages:
+                        # Try timestamp_utc first, then timestamp
+                        msg_time = msg.get('timestamp_utc') or msg.get('timestamp')
+                        if msg_time:
+                            try:
+                                msg_dt = parse_datetime_like(msg_time)
+                                if msg_dt:
+                                    if msg_dt.tzinfo is None:
+                                        msg_dt = msg_dt.replace(tzinfo=APP_TZ)
+                                    msg_utc = msg_dt.astimezone(timezone.utc)
+                                    if msg_utc >= since_utc:
+                                        filtered_messages.append(msg)
+                            except Exception:
+                                # If timestamp parsing fails, include the message
+                                filtered_messages.append(msg)
+                    
+                    messages = filtered_messages
+            except Exception as e:
+                logger.warning(f"Invalid since parameter '{since}': {e}")
+                # Continue with unfiltered messages if since parameter is invalid
+        
         return messages
     except Exception as e:
         logger.error(f"Failed to get responders: {e}")
@@ -170,10 +209,48 @@ async def get_responders(_: bool = Depends(require_authenticated_access)) -> Lis
 
 
 @router.get("/api/current-status")
-async def get_current_status(_: bool = Depends(require_authenticated_access)) -> List[Dict[str, Any]]:
+async def get_current_status(
+    since: Optional[str] = Query(None, description="Filter messages since this time (ISO format)"),
+    _: bool = Depends(require_authenticated_access)
+) -> List[Dict[str, Any]]:
     """Get current status per person (latest message per person with priority logic)."""
     try:
         messages = get_messages()
+        
+        # Apply time filter if provided
+        if since:
+            try:
+                # Parse the since parameter
+                since_dt = parse_datetime_like(since)
+                if since_dt:
+                    # Convert to UTC for comparison
+                    if since_dt.tzinfo is None:
+                        # Assume local timezone if naive
+                        since_dt = since_dt.replace(tzinfo=APP_TZ)
+                    since_utc = since_dt.astimezone(timezone.utc)
+                    
+                    # Filter messages based on timestamp
+                    filtered_messages = []
+                    for msg in messages:
+                        # Try timestamp_utc first, then timestamp
+                        msg_time = msg.get('timestamp_utc') or msg.get('timestamp')
+                        if msg_time:
+                            try:
+                                msg_dt = parse_datetime_like(msg_time)
+                                if msg_dt:
+                                    if msg_dt.tzinfo is None:
+                                        msg_dt = msg_dt.replace(tzinfo=APP_TZ)
+                                    msg_utc = msg_dt.astimezone(timezone.utc)
+                                    if msg_utc >= since_utc:
+                                        filtered_messages.append(msg)
+                            except Exception:
+                                # If timestamp parsing fails, include the message
+                                filtered_messages.append(msg)
+                    
+                    messages = filtered_messages
+            except Exception as e:
+                logger.warning(f"Invalid since parameter '{since}': {e}")
+                # Continue with unfiltered messages if since parameter is invalid
         
         def _coerce_dt(s: Optional[str]) -> datetime:
             """Coerce various timestamp strings to a timezone-aware UTC datetime for stable sorting."""
