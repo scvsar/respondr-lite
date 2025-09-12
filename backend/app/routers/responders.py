@@ -548,7 +548,7 @@ async def clear_all_deleted(_: bool = Depends(require_admin_access)) -> Dict[str
 
 
 @router.get("/api/storage-info")
-async def get_storage_status() -> Dict[str, Any]:
+async def get_storage_status(_: bool = Depends(require_authenticated_access)) -> Dict[str, Any]:
     """Get current storage backend status and configuration."""
     import socket
     import os
@@ -631,8 +631,8 @@ async def get_request_logs(_: bool = Depends(require_admin_access)) -> List[Dict
 
 
 @router.get("/api/request-logs-debug")
-async def get_request_logs_debug() -> Dict[str, Any]:
-    """DEBUG: Get recent request logs without auth requirement (REMOVE IN PRODUCTION)."""
+async def get_request_logs_debug(_: bool = Depends(require_admin_access)) -> Dict[str, Any]:
+    """DEBUG: Get recent request logs (admin only)."""
     import os
     from azure.data.tables import TableServiceClient
     from datetime import datetime, timedelta

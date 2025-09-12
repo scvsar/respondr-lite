@@ -1,8 +1,10 @@
 import os
 import logging
 import asyncio
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request, Response, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
+from fastapi.openapi.utils import get_openapi
 
 from .routers import webhook, responders, dashboard, user, frontend, auth
 from .queue_listener import listen_to_queue
@@ -11,7 +13,8 @@ from .request_logger import log_request
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# Disable automatic docs generation - we'll create protected versions
+app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
 # Enable CORS for local dev (CRA on :3100)
 _allow_dev_cors = True  # safe default for local runs; can tighten with env if needed
@@ -76,6 +79,24 @@ app.include_router(frontend.router)
 
 # Mount static files for frontend
 frontend.mount_static_files(app)
+
+# Protected documentation endpoints
+from .routers.responders import require_authenticated_access
+
+@app.get("/openapi.json", include_in_schema=False)
+async def get_open_api_endpoint(_: bool = Depends(require_authenticated_access)):
+    """Protected OpenAPI schema endpoint."""
+    return get_openapi(title="Respondr API", version="1.0.0", routes=app.routes)
+
+@app.get("/docs", include_in_schema=False)
+async def get_swagger_ui(_: bool = Depends(require_authenticated_access)):
+    """Protected Swagger UI documentation."""
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="Respondr API Docs")
+
+@app.get("/redoc", include_in_schema=False)
+async def get_redoc(_: bool = Depends(require_authenticated_access)):
+    """Protected ReDoc documentation."""
+    return get_redoc_html(openapi_url="/openapi.json", title="Respondr API Docs")
 
 # Add SPA catch-all route (must be last)
 frontend.add_spa_catch_all(app)
