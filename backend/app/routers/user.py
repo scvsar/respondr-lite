@@ -1,6 +1,6 @@
 """User authentication and profile endpoints."""
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from typing import List, Optional
 
 from ..config import allowed_email_domains, allowed_admin_users, DEBUG_LOG_HEADERS, ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, is_testing, ENABLE_LOCAL_AUTH, FORCE_GEOCITIES_MODE, ENABLE_GEOCITIES_TOGGLE, INACTIVITY_TIMEOUT_MINUTES
@@ -8,6 +8,9 @@ import logging
 from urllib.parse import quote
 from fastapi.responses import JSONResponse
 from ..local_auth import extract_session_token_from_request, verify_session_token
+
+# Import authentication dependency
+from .responders import require_authenticated_access
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +142,7 @@ def get_user_info(request: Request) -> JSONResponse:
 
 
 @router.get("/api/config")
-def get_client_config() -> JSONResponse:
+def get_client_config(_: bool = Depends(require_authenticated_access)) -> JSONResponse:
     """Get configuration settings for the frontend."""
     config = {
         "geocities": {

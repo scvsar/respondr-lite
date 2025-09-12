@@ -428,8 +428,8 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
 
 
 @router.post("/api/parse-debug")
-async def parse_debug(request: ParseDebugRequest):
-    """Debug endpoint for testing message parsing."""
+async def parse_debug(request: ParseDebugRequest, _: bool = Depends(require_admin_access)):
+    """Debug endpoint for testing message parsing. Admin-only."""
     try:
         base_time = None
         if request.base_time:
