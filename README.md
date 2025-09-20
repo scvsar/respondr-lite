@@ -288,6 +288,30 @@ CONTAINER_APP_WAKE_URL=https://<your-app>.azurecontainerapps.io/api/wake
 REACT_APP_INACTIVITY_MINUTES=10
 ```
 
+### Custom Domains & TLS
+
+Use the deployment scripts to manage TLS certificates for Azure Container Apps custom domains.
+
+- `deployment/create-pfx-certificate.ps1`: generate self-signed certificates or a CSR for CA-issued certificates
+- `deployment/configure-custom-domain.ps1`: upload the PFX, add the domain, and bind it to your Container App environment
+
+```powershell
+cd deployment
+
+# Self-signed certificate for dev/testing
+./create-pfx-certificate.ps1 -DomainName "respondr.scvsar.org" -SelfSigned
+
+# Bind certificate and custom domain
+./configure-custom-domain.ps1 `
+    -ResourceGroup "respondrlite" `
+    -ContainerAppName "respondr-lite" `
+    -DomainName "respondr.scvsar.org" `
+    -PfxFilePath "./certificates/respondr.scvsar.org.pfx"
+```
+
+Request a CA-signed certificate by running the CSR workflow (`-CreateCSR`) and combining the signed certificate with the generated key. Ensure your DNS CNAME points to the Container App FQDN before configuring the domain.
+
+
 ## Scale-to-Zero Configuration
 
 ### Container Wake Setup
@@ -331,22 +355,35 @@ The application supports two authentication methods:
 
 ### Local Authentication
 
-Enable local authentication for external users:
+Local accounts let you onboard deputies and other external responders alongside Entra ID. They live in Azure Table Storage and can run in parallel with SSO.
+
+**Enable**
 
 ```bash
-# Enable in environment
 ENABLE_LOCAL_AUTH=true
 LOCAL_AUTH_SECRET_KEY=<secure-random-key>
+LOCAL_AUTH_SESSION_HOURS=24
+LOCAL_USERS_TABLE=LocalUsers
+```
 
-# Create admin user
+Generate a strong secret with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
+
+**Create users**
+
+```bash
 cd backend
 python create_local_user.py admin admin@example.org "Admin User" --admin
-
-# Create regular user
 python create_local_user.py deputy1 deputy1@sheriff.org "Deputy John" --organization "Sheriff Dept"
 ```
 
-See [LOCAL_AUTH_README.md](LOCAL_AUTH_README.md) for detailed setup instructions.
+**Admin & self-service endpoints**
+- Users: `/api/auth/local/login`, `/api/auth/local/me`, `/api/auth/local/change-password`
+- Admins: `/api/auth/local/admin/users`, `/api/auth/local/admin/create-user`, `/api/auth/local/admin/reset-password`
+
+**Security defaults**
+- PBKDF2 password hashing with per-user salts
+- JWT session tokens delivered via HTTP-only cookies
+- Easy Auth exclusion rules in the deployment templates keep the local auth routes accessible
 
 ## New Features
 
@@ -386,6 +423,15 @@ Access at: `https://<your-app>/webhook-debug`
 ./dev-local.ps1 -Docker
 ```
 
+### Frontend Scripts
+
+```bash
+cd frontend
+npm start         # run the React dev server on http://localhost:3000
+npm test          # run React tests in watch mode
+npm run build     # create a production build
+```
+
 ### Testing
 
 ```bash
@@ -407,29 +453,33 @@ python test_integration_groupme_ingest.py
 
 ### Mission Simulator
 
-For testing Azure infrastructure costs and performance under realistic SAR mission load:
+Generate realistic SAR mission traffic to validate scaling, cost, and AI parsing.
+
+**Highlights**
+- Snohomish County mission templates with authentic responder behaviour and timing
+- GPT-5-nano generated GroupMe-style messages across initial, follow-up, and late phases
+- Drives the live webhook pipeline so you can observe end-to-end behaviour
+
+**Setup**
 
 ```bash
-# Navigate to simulator
 cd simulator
-
-# Copy configuration template
-cp .env.example .env
-# Edit .env with your actual Azure Function endpoint and API key
-
-# Install dependencies
+cp .env.example .env    # supply Azure Function endpoint and API key
 pip install -r requirements.txt
-
-# Test simulation (dry run)
-python mission_simulator.py --dry-run --force-mission
-
-# Run real simulation against your environment
-python mission_simulator.py --force-mission
 ```
 
-See `simulator/README.md` for detailed documentation.
+**Run modes**
+
+```bash
+python mission_simulator.py --dry-run        # print planned messages without sending
+python mission_simulator.py --force-mission  # start a mission immediately
+python mission_simulator.py                  # respect the normal 48h cadence
+```
+
+The simulator targets a PreProd GroupMe group by default so you can test safely; update the configuration before sending traffic to production channels.
 
 ## CI/CD with GitHub Actions
+
 
 The repository includes GitHub Actions workflows for automated testing and deployment:
 
@@ -590,3 +640,4 @@ If migrating from the original Kubernetes-based deployment:
 ## License
 
 MIT — see [LICENSE](LICENSE) file for details.
+
