@@ -187,6 +187,7 @@ $StorageAccountBase = "respondrlitesg"     # storage: 3-24, a-z0-9 only
 $FunctionAppBase    = "respondrliteapp"    # app service: letters/numbers/hyphen
 $ContainerAppBase   = "respondrlite-ca"    # container app: letters/numbers/hyphen
 $OpenAiBase         = "respondrlite-openai" # AOAI: letters/numbers/hyphen
+$StaticWebAppBase   = "respondrlite-spa"    # static web app: letters/numbers/hyphen
 
 $baseSalt = "$ResourceGroup|$Location" # use this if you want names to be idempotent
 $runId    = ([guid]::NewGuid()).ToString('N')  # 32 hex chars, no dashes
@@ -195,17 +196,20 @@ $StorageAccountName = New-UniqueStorageAccountName -BaseName $StorageAccountBase
 $FunctionAppName    = New-UniqueHyphenName        -BaseName $FunctionAppBase    -Salt $runId -MaxLength 60
 $ContainerAppName   = New-UniqueHyphenName        -BaseName $ContainerAppBase   -Salt $runId -MaxLength 63
 $OpenAiName         = New-UniqueHyphenName        -BaseName $OpenAiBase         -Salt $runId -MaxLength 64
+$StaticWebAppName   = New-UniqueHyphenName        -BaseName $StaticWebAppBase   -Salt $runId -MaxLength 64
 
 Assert-Name $StorageAccountName '^[a-z0-9]{3,24}$' 24
 Assert-Name $FunctionAppName    '^[a-z0-9-]{2,60}$' 60
 Assert-Name $ContainerAppName   '^[a-z0-9-]{2,63}$' 63
 Assert-Name $OpenAiName         '^[a-z0-9-]{2,64}$' 64
+Assert-Name $StaticWebAppName   '^[a-z0-9-]{2,64}$' 64
 
 $names = [ordered]@{
   resourceGroup = $ResourceGroup
   storage       = $StorageAccountName
   functionApp   = $FunctionAppName
   containerApp  = $ContainerAppName
+  staticWebApp  = $StaticWebAppName
   openAi        = $OpenAiName
   location      = $Location
 }
@@ -244,6 +248,7 @@ Log "Using storage account name: $StorageAccountName"
   -OpenAiLocation $OpenAiLocation `
   -ContainerAppName $ContainerAppName `
   -ContainerImage $ContainerImage `
+  -StaticWebAppName $StaticWebAppName `
   -DotEnvPath $DotEnvPath
 Log "Using direct invocation of ..\infra\deploy.ps1 (the earlier backtick call handles parameters)"
 

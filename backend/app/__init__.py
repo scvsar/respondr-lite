@@ -16,13 +16,21 @@ logger = logging.getLogger(__name__)
 # Disable automatic docs generation - we'll create protected versions
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-# Enable CORS for local dev (CRA on :3100)
+# Enable CORS for local dev (CRA on :3100) and Static Web Apps
 _allow_dev_cors = True  # safe default for local runs; can tighten with env if needed
 if _allow_dev_cors:
     origins = [
         "http://localhost:3100",
         "http://127.0.0.1:3100",
     ]
+    
+    # Add Static Web App origins from environment variable if present
+    static_web_app_url = os.getenv("STATIC_WEB_APP_URL")
+    if static_web_app_url:
+        origins.append(static_web_app_url)
+        # Also add the default Azure Static Web Apps domain pattern
+        origins.append("https://*.azurestaticapps.net")
+    
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,

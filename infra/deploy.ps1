@@ -19,6 +19,14 @@ param(
   [int]$MinReplicas = 0,
   [string]$DotEnvPath = ".env",
 
+  # Static Web App parameters
+  [string]$StaticWebAppName = "",
+  [string]$RepositoryUrl = "",
+  [string]$RepositoryBranch = "main",
+  [string]$AppArtifactLocation = "frontend/build",
+  [string]$ApiLocation = "",
+  [string]$GitHubToken = "",
+
   # EasyAuth parameters
   [switch]$EnableAuth,
   [string]$AuthClientId = "",
@@ -94,6 +102,14 @@ $params = @{
   containerMinReplicas     = @{ value = $MinReplicas }
   containerEnvPlain        = @{ value = $plainEnv }
   containerSecretMap       = @{ value = $secretMap }
+
+  # Static Web App
+  staticWebAppName         = @{ value = $StaticWebAppName }
+  repositoryUrl            = @{ value = $RepositoryUrl }
+  repositoryBranch         = @{ value = $RepositoryBranch }
+  appArtifactLocation      = @{ value = $AppArtifactLocation }
+  apiLocation              = @{ value = $ApiLocation }
+  githubToken              = @{ value = $GitHubToken }
 
   # EasyAuth
   enableAuth         = @{ value = $EnableAuth.IsPresent }

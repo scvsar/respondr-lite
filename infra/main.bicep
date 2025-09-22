@@ -62,6 +62,26 @@ param containerEnvPlain array = []
 @description('Secret map: name -> value. Secrets are created and also exposed via env using the same name.')
 param containerSecretMap object = {}
 
+// Static Web App parameters
+@description('Static Web App name')
+param staticWebAppName string = ''
+
+@description('Repository URL for Static Web App')
+param repositoryUrl string = ''
+
+@description('Repository branch for Static Web App')
+param repositoryBranch string = 'main'
+
+@description('Build preset for Static Web App (React, Angular, Vue, etc.)')
+param appArtifactLocation string = 'frontend/build'
+
+@description('API location for Static Web App integration')
+param apiLocation string = ''
+
+@description('GitHub token for Static Web App deployment')
+@secure()
+param githubToken string = ''
+
 // EasyAuth parameters
 @description('Enable Azure Entra ID authentication')
 param enableAuth bool = false
@@ -367,6 +387,26 @@ resource authConfig 'Microsoft.App/containerApps/authConfigs@2025-01-01' = if (e
     platform: {
       enabled: true
       runtimeVersion: '~1'
+    }
+  }
+}
+
+// Azure Static Web App
+resource staticWebApp 'Microsoft.Web/staticSites@2023-01-01' = if (!empty(staticWebAppName)) {
+  name: staticWebAppName
+  location: location
+  sku: {
+    name: 'Free'
+    tier: 'Free'
+  }
+  properties: {
+    repositoryUrl: repositoryUrl
+    branch: repositoryBranch
+    repositoryToken: githubToken
+    buildProperties: {
+      appLocation: '/frontend'
+      appArtifactLocation: appArtifactLocation
+      apiLocation: apiLocation
     }
   }
 }
