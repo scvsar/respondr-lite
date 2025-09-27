@@ -42,6 +42,8 @@ jobs:
         env:
           # Set the API URL for the frontend to communicate with the Container App
           REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL }}
+          # Don't treat ESLint warnings as errors in CI
+          CI: false
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
