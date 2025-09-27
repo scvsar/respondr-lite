@@ -4,10 +4,11 @@ A serverless web application to track responses to Search and Rescue call-outs. 
 
 ## Architecture Overview
 
-This application has been completely refactored from Kubernetes to a lightweight serverless architecture:
+This application has been completely refactored from Kubernetes to a lightweight, two-tier serverless architecture:
 
 - **Azure Functions** (Consumption): Handles GroupMe webhook ingestion and message queuing
-- **Azure Container Apps** (Consumption): Runs the FastAPI backend + React frontend with scale-to-zero capability
+- **Azure Static Web Apps** (Free): Hosts the React frontend on a global CDN with GitHub Actions CI/CD
+- **Azure Container Apps** (Consumption): Runs the FastAPI API + background workers with scale-to-zero capability
 - **Azure Storage Queue**: Decouples webhook ingestion from processing, enables auto-scaling
 - **Azure Table Storage**: Primary data store for responder messages
 - **Azure OpenAI GPT-5-nano**: AI-powered message parsing for vehicle and ETA extraction
@@ -22,29 +23,31 @@ graph LR
   AF -.->|Wake if scaled to zero| ACA
 
   subgraph ACA[Azure Container Apps Consumption]
-    APP[FastAPI + Worker<br/>single container]
+    API[FastAPI API + Worker]
   end
 
   Q -->|triggers scale-from-zero| ACA
-  APP --> Q
-  APP --> AOAI[Azure OpenAI<br/>gpt-5-nano deployment]
-  APP --> TS[Azure Table Storage<br/>ResponderMessages]
+  API --> Q
+  API --> AOAI[Azure OpenAI<br/>gpt-5-nano deployment]
+  API --> TS[Azure Table Storage<br/>ResponderMessages]
 
-  U[Browser] -.->|HTTPS| APP
+  SWA[Azure Static Web App] -.->|HTTPS| API
+  U[Responders/Admins] -->|Browser| SWA
 ```
 
 ## Quick Start
 
-```bash
-# Run tests
+```powershell
+# Run all automated tests
 ./run-tests.ps1
 
 # Local development (backend + frontend)
 ./dev-local.ps1 -Full
 
-# Deploy complete infrastructure
+# Deploy or re-deploy the cloud environment
 cd deployment
 ./deploy-from-scratch.ps1 -ResourceGroup <rg-name> -Location <region>
+cd ..
 ```
 
 ## Key Features
@@ -103,16 +106,24 @@ sequenceDiagram
 ```
 ## Application Endpoints
 
-The Container App exposes these endpoints:
+### Frontend (Azure Static Web App)
 
-- **Dashboard**: `https://<your-app>.azurecontainerapps.io/` - Main responder dashboard
-- **API**: `https://<your-app>.azurecontainerapps.io/api/responders` - RESTful API for responder data
-- **Admin Panel**: `https://<your-app>.azurecontainerapps.io/admin` - User management (admin only)
-- **Webhook Debugger**: `https://<your-app>.azurecontainerapps.io/webhook-debug` - Test webhook integration
-- **Health Check**: `https://<your-app>.azurecontainerapps.io/health` - Application health status
+- **Dashboard**: `https://<your-static-web-app>.azurestaticapps.net/` — Main responder dashboard
+- **Admin Panel**: `https://<your-static-web-app>.azurestaticapps.net/admin` — User management (admin only)
+- **Webhook Debugger**: `https://<your-static-web-app>.azurestaticapps.net/webhook-debug` — Test webhook integration
+- **Deleted Messages View**: `https://<your-static-web-app>.azurestaticapps.net/deleted-dashboard` — Soft-deleted responder records
 
-The Azure Function exposes:
-- **GroupMe Webhook**: `https://<function-app>.azurewebsites.net/api/groupme_ingest` - Receives GroupMe messages
+> The React frontend calls the backend API through the `REACT_APP_API_URL` environment variable that is injected at build time by GitHub Actions.
+
+### Backend API (Azure Container App)
+
+- **Responder API**: `https://<your-container-app>.azurecontainerapps.io/api/responders`
+- **Auth + Admin APIs**: `https://<your-container-app>.azurecontainerapps.io/api/*`
+- **Health Check**: `https://<your-container-app>.azurecontainerapps.io/health`
+
+### Ingestion Function
+
+- **GroupMe Webhook**: `https://<function-app>.azurewebsites.net/api/groupme_ingest`
 
 ## Prerequisites
 
@@ -124,6 +135,57 @@ The Azure Function exposes:
 - Node.js 18+ (for frontend development)
 
 ## Deployment
+
+### Clean rebuild workflow
+
+1. **(Optional) Tear down the old environment**
+  ```powershell
+  az group delete -n <resource-group> --yes --no-wait
+  ```
+  This permanently removes every resource the Bicep template created. Wait for the delete to finish before redeploying.
+
+2. **Bootstrap infrastructure with Bicep**
+  ```powershell
+  cd deployment
+  ./deploy-from-scratch.ps1 -ResourceGroup <resource-group> -Location <azure-region>
+  cd ..
+  ```
+  The script wraps `infra/deploy.ps1` and provisions:
+  - Azure Storage (Queue + Table)
+  - Azure Functions (Python)
+  - Azure Container Apps (FastAPI API and worker)
+  - Azure Static Web App (Free tier)
+  - Azure OpenAI account + GPT-5-nano deployment
+  - Log Analytics + RBAC bindings
+
+3. **Capture deployment outputs**
+  - Static Web App name: stored in `deployment/deploy-names.json`
+  - Container App FQDN: `az containerapp show -g <rg> -n <name> --query properties.configuration.ingress.fqdn -o tsv`
+  - Static Web App API token (for GitHub secret):
+    ```powershell
+    az staticwebapp secrets list -g <resource-group> -n <static-web-app-name> --query properties.apiKey -o tsv
+    ```
+
+4. **Populate configuration**
+  - Create or update a `.env` file in the repo root using the sample further below (queue, table, OpenAI, auth, etc.)
+  - Re-run `./deployment/deploy-from-scratch.ps1` if you update the `.env` content so secrets flow into the Container App.
+  - Optionally run `./deployment/generate-dotenv.ps1` against an existing environment to backfill settings.
+
+5. **Configure GitHub Actions**
+  - **Secrets**
+    | Name | Purpose |
+    |------|---------|
+    | `AZURE_STATIC_WEB_APPS_API_TOKEN` | Static Web App API token from step 3 |
+    | `DOCKER_USERNAME` / `DOCKER_TOKEN` | Docker Hub push for backend images |
+    | `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | Container App deployment (OIDC recommended via `setup-github-actions.ps1`) |
+  - **Variables**
+    | Name | Purpose |
+    |------|---------|
+    | `REACT_APP_API_URL` | `https://<container-app>.azurecontainerapps.io` |
+
+6. **Trigger deployments**
+  - Push to `preprod` or open a PR to exercise the Static Web App CI/CD workflow
+  - Push to `main` to build/push backend containers and run production deployment steps
 
 ### Complete Infrastructure Deployment
 
@@ -142,8 +204,9 @@ This script will:
 3. Deploy Azure Functions for webhook ingestion
 4. Deploy Azure OpenAI with GPT-5-nano model
 5. Deploy Azure Container Apps with auto-scaling rules
-6. Configure authentication (optional)
-7. Output connection details and endpoints
+6. Deploy Azure Static Web App (Free tier)
+7. Configure authentication (optional)
+8. Output connection details and endpoints
 
 ### Configuration Options
 
@@ -158,6 +221,8 @@ The deployment script supports these parameters:
   -AuthClientId "<azure-ad-app-id>" `
   -AuthClientSecret "<azure-ad-app-secret>"
 ```
+
+To customize Static Web App settings (repository, branch, artifact location) or pass additional Container App tuning flags, call `infra/deploy.ps1` directly with the corresponding `-RepositoryUrl`, `-RepositoryBranch`, `-AppArtifactLocation`, and scaling parameters. The wrapper script surfaces the most common options for a greenfield deployment.
 
 ### Environment Variables
 
@@ -282,7 +347,7 @@ LOCAL_AUTH_SECRET_KEY=<secure-random-key>
 LOCAL_AUTH_SESSION_HOURS=24
 
 # Container Wake (for Azure Functions)
-CONTAINER_APP_WAKE_URL=https://<your-app>.azurecontainerapps.io/api/wake
+CONTAINER_APP_WAKE_URL=https://<your-container-app>.azurecontainerapps.io/api/wake
 
 # Frontend Inactivity Detection
 REACT_APP_INACTIVITY_MINUTES=10
@@ -395,7 +460,7 @@ Web-based interface for managing local user accounts:
 - Manage admin privileges
 - View user activity
 
-Access at: `https://<your-app>/admin` (admin authentication required)
+Access at: `https://<your-static-web-app>.azurestaticapps.net/admin` (admin authentication required)
 
 ### Webhook Debugger
 
@@ -405,7 +470,7 @@ Built-in tool for testing GroupMe webhook integration:
 - View real-time processing results
 - Test different message formats
 
-Access at: `https://<your-app>/webhook-debug`
+Access at: `https://<your-static-web-app>.azurestaticapps.net/webhook-debug`
 
 
 ## Local Development
@@ -480,26 +545,24 @@ The simulator targets a PreProd GroupMe group by default so you can test safely;
 
 ## CI/CD with GitHub Actions
 
+Three workflows orchestrate automated testing and deployments:
 
-The repository includes GitHub Actions workflows for automated testing and deployment:
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `.github/workflows/ci.yml` | PRs to `main`, pushes to `main` | Runs backend + frontend tests. On `main` pushes it builds and pushes the backend image to Docker Hub and (optionally) deploys the `main` image to production Container Apps. |
+| `.github/workflows/deploy-preprod.yml` | Pushes to `preprod` | Runs full test matrix, builds a tagged backend image, and updates the preproduction Container App using Azure OIDC credentials. |
+| `.github/workflows/azure-swa-deploy.yml` | PRs/pushes touching `frontend/` on `main` or `preprod` | Builds the React app and uploads it to the Static Web App. Requires the `AZURE_STATIC_WEB_APPS_API_TOKEN` secret and the `REACT_APP_API_URL` repository variable. |
 
-### Workflows
+Use `./.github/workflows/setup-github-actions.ps1` to create the Azure service principal and seed the required secrets/variables from the CLI.
 
-- **Pull Requests**: Runs backend tests automatically
-- **Main Branch**: Builds and pushes Docker images to registry
+### Manual container deployments (optional)
 
-### Container Registry Integration
+If you need to push the backend image manually:
 
-For automatic deployments when using Azure Container Registry:
-
-1. Build and push your image:
 ```bash
 docker build -t myregistry.azurecr.io/respondr:latest .
 docker push myregistry.azurecr.io/respondr:latest
-```
 
-2. Update Container App with new image:
-```bash
 az containerapp update \
   --name respondr-app \
   --resource-group respondr-rg \
@@ -510,7 +573,7 @@ az containerapp update \
 
 ### Health Monitoring
 
-- **Application Health**: `https://<your-app>/health` - Returns application status
+- **Application Health**: `https://<your-container-app>.azurecontainerapps.io/health` - Returns application status
 - **Queue Metrics**: Monitor via Azure Portal → Storage Account → Queue metrics
 - **Container App Logs**: View in Azure Portal → Container App → Log stream
 - **Function Logs**: Azure Portal → Function App → Monitor → Logs
@@ -553,7 +616,7 @@ Recovery endpoints:
 - `POST /api/deleted-responders/undelete` - Restore messages
 - `DELETE /api/deleted-responders/{id}` - Permanently delete
 
-Access deleted items at: `https://<your-app>/deleted-dashboard`
+Access deleted items at: `https://<your-static-web-app>.azurestaticapps.net/deleted-dashboard`
 
 ### Data Retention
 
