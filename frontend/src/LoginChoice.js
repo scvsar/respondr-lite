@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './LoginChoice.css';
+import { apiUrl } from './config';
 
 function LoginChoice() {
   const [localAuthEnabled, setLocalAuthEnabled] = useState(false);
@@ -8,16 +9,43 @@ function LoginChoice() {
 
   useEffect(() => {
     // Check if local authentication is enabled
-    fetch('/api/auth/local/enabled')
-      .then(res => res.json())
-      .then(data => {
-        setLocalAuthEnabled(data.enabled || false);
-      })
-      .catch(err => {
-        console.warn('Could not check local auth status:', err);
+    // Optimization: Try to avoid waking ACA on initial page load
+    // Strategy:
+    // 1. Check if we have a cached value in sessionStorage (from previous check)
+    // 2. If not cached, check the API (will wake ACA, but only once per session)
+    
+    const checkLocalAuth = async () => {
+      // First check session cache
+      const cached = sessionStorage.getItem('local_auth_enabled');
+      if (cached !== null) {
+        setLocalAuthEnabled(cached === 'true');
+        setLoading(false);
+        return;
+      }
+
+      // No cache - need to check API (this will wake ACA once per browser session)
+      try {
+        const response = await fetch(apiUrl('/api/auth/local/enabled'));
+        if (response.ok) {
+          const data = await response.json();
+          const enabled = data.enabled === true;
+          setLocalAuthEnabled(enabled);
+          // Cache the result for this session
+          sessionStorage.setItem('local_auth_enabled', enabled.toString());
+        } else {
+          setLocalAuthEnabled(false);
+          sessionStorage.setItem('local_auth_enabled', 'false');
+        }
+      } catch (error) {
+        console.error('Failed to check local auth status:', error);
         setLocalAuthEnabled(false);
-      })
-      .finally(() => setLoading(false));
+        sessionStorage.setItem('local_auth_enabled', 'false');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkLocalAuth();
   }, []);
 
   const handleSSOLogin = () => {
@@ -100,7 +128,7 @@ function LocalLoginForm({ onBack }) {
     setError('');
 
     try {
-      const response = await fetch('/api/auth/local/login', {
+      const response = await fetch(apiUrl('/api/auth/local/login'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,6 +139,8 @@ function LocalLoginForm({ onBack }) {
       const data = await response.json();
 
       if (data.success) {
+        // Set session hint to allow AuthGate to wake ACA on next visit
+        localStorage.setItem('respondr_session_hint', 'true');
         // Redirect to main app
         window.location.href = '/';
       } else {

@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import './UserInfo.css';
+import { apiUrl } from './config';
 
-function UserInfo() {
+function UserInfo({ onAdminChange }) {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
   const [logoutUrl, setLogoutUrl] = useState('/.auth/logout?post_logout_redirect_uri=/');
@@ -26,7 +27,7 @@ function UserInfo() {
           }
         }
 
-        const response = await fetch('/api/user');
+        const response = await fetch(apiUrl('/api/user'));
         if (response.ok) {
           const userData = await response.json();
           setUser(userData);
@@ -50,6 +51,9 @@ function UserInfo() {
     setUser(null);
     setError(null);
     
+    // Clear session hint to prevent auto-wake on next visit
+    localStorage.removeItem('respondr_session_hint');
+
     // Add a logout flag to sessionStorage to handle post-logout state
     sessionStorage.setItem('loggedOut', 'true');
     

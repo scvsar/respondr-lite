@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import './WebhookDebug.css';
+import { apiUrl } from './config';
 
 const defaultPayload = () => ({
   attachments: [],
@@ -90,7 +91,7 @@ export default function WebhookDebug() {
     let cancelled = false;
     const load = async () => {
       try {
-        const r = await fetch(`${base}/api/user`, { headers: { 'Accept': 'application/json' } });
+        const r = await fetch(apiUrl('/api/user'), { headers: { 'Accept': 'application/json' } });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
         if (cancelled) return;
@@ -213,7 +214,7 @@ export default function WebhookDebug() {
 
       // fetch responders snapshot
       try {
-  const rr = await fetch(`${base}/api/responders`, { headers: { 'Accept': 'application/json' } });
+  const rr = await fetch(apiUrl('/api/responders'), { headers: { 'Accept': 'application/json' } });
         if (rr.ok) setResponders(await rr.json());
       } catch {}
     } catch (e) {

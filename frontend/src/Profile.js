@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import './App.css';
+import { apiUrl } from './config';
 
 export default function Profile() {
   const [user, setUser] = useState(null);
@@ -10,7 +11,7 @@ export default function Profile() {
     let cancelled = false;
     const load = async () => {
       try {
-        const r = await fetch('/api/user');
+        const r = await fetch(apiUrl('/api/user'));
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const j = await r.json();
         if (!cancelled) setUser(j);

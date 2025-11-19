@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
 
-from .routers import webhook, responders, dashboard, user, frontend, auth
+from .routers import webhook, responders, dashboard, user, auth
 from .queue_listener import listen_to_queue
 from .retention_scheduler import retention_cleanup_task
 from .request_logger import log_request
@@ -83,10 +83,10 @@ app.include_router(responders.router)
 app.include_router(dashboard.router)
 app.include_router(user.router)
 app.include_router(auth.router)
-app.include_router(frontend.router)
+# app.include_router(frontend.router)
 
 # Mount static files for frontend
-frontend.mount_static_files(app)
+# frontend.mount_static_files(app)
 
 # Protected documentation endpoints
 from .routers.responders import require_authenticated_access

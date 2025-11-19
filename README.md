@@ -53,6 +53,9 @@ cd ..
 ## Key Features
 
 - **Cost-Optimized**: Scale-to-zero architecture with consumption-based billing
+  - **Smart Frontend**: Landing page loads from Static Web App CDN without waking backend
+  - **Lazy Backend Wake**: Container App only wakes when user authenticates or webhook arrives
+  - **Session Persistence**: Uses session hints to minimize unnecessary backend calls
 - **AI-Powered**: GPT-5-nano extracts vehicle and ETA from natural language messages
 - **Dual Authentication**: Supports both Azure AD SSO and local accounts for external users
 - **Real-Time Dashboard**: Live updates with responder status and arrival times
@@ -136,93 +139,260 @@ sequenceDiagram
 
 ## Deployment
 
-### Clean rebuild workflow
+### Prerequisites
 
-1. **(Optional) Tear down the old environment**
-  ```powershell
-  az group delete -n <resource-group> --yes --no-wait
-  ```
-  This permanently removes every resource the Bicep template created. Wait for the delete to finish before redeploying.
+Before deploying, ensure you have:
 
-2. **Bootstrap infrastructure with Bicep**
-  ```powershell
-  cd deployment
-  ./deploy-from-scratch.ps1 -ResourceGroup <resource-group> -Location <azure-region>
-  cd ..
-  ```
-  The script wraps `infra/deploy.ps1` and provisions:
-  - Azure Storage (Queue + Table)
-  - Azure Functions (Python)
-  - Azure Container Apps (FastAPI API and worker)
-  - Azure Static Web App (Free tier)
-  - Azure OpenAI account + GPT-5-nano deployment
-  - Log Analytics + RBAC bindings
+- **Azure subscription** with Owner or Contributor role
+- **Azure CLI** installed and authenticated (`az login`)
+- **PowerShell 7+** for deployment scripts
+- **Docker Hub account** for hosting backend container images
+- **GitHub repository** with this code (fork or clone)
+- **GitHub Personal Access Token (PAT)** with `repo` scope for Static Web App deployment
 
-3. **Capture deployment outputs**
-  - Static Web App name: stored in `deployment/deploy-names.json`
-  - Container App FQDN: `az containerapp show -g <rg> -n <name> --query properties.configuration.ingress.fqdn -o tsv`
-  - Static Web App API token (for GitHub secret):
-    ```powershell
-    az staticwebapp secrets list -g <resource-group> -n <static-web-app-name> --query properties.apiKey -o tsv
-    ```
+### Step-by-Step Deployment Guide
 
-4. **Populate configuration**
-  - Create or update a `.env` file in the repo root using the sample further below (queue, table, OpenAI, auth, etc.)
-  - Re-run `./deployment/deploy-from-scratch.ps1` if you update the `.env` content so secrets flow into the Container App.
-  - Optionally run `./deployment/generate-dotenv.ps1` against an existing environment to backfill settings.
+#### 1. Prepare Environment Configuration
 
-5. **Configure GitHub Actions**
-  - **Secrets**
-    | Name | Purpose |
-    |------|---------|
-    | `AZURE_STATIC_WEB_APPS_API_TOKEN` | Static Web App API token from step 3 |
-    | `DOCKER_USERNAME` / `DOCKER_TOKEN` | Docker Hub push for backend images |
-    | `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_SUBSCRIPTION_ID` | Container App deployment (OIDC recommended via `setup-github-actions.ps1`) |
-  - **Variables**
-    | Name | Purpose |
-    |------|---------|
-    | `REACT_APP_API_URL` | `https://<container-app>.azurecontainerapps.io` |
-
-6. **Trigger deployments**
-  - Push to `preprod` or open a PR to exercise the Static Web App CI/CD workflow
-  - Push to `main` to build/push backend containers and run production deployment steps
-
-### Complete Infrastructure Deployment
-
-Deploy all resources with a single command:
+Copy the template and fill in your values:
 
 ```powershell
+# Copy environment template
+Copy-Item .env.template .env
+
+# Edit with your values
+code .env
+```
+
+**Required variables** (see [Environment Variables](#environment-variables) section for complete list):
+- `WEBHOOK_API_KEY` - Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+- `ALLOWED_EMAIL_DOMAINS` - Your organization domain(s)
+- `ALLOWED_ADMIN_USERS` - Admin email address(es)
+
+**Note**: Azure OpenAI and Storage connection strings will be populated after infrastructure deployment.
+
+#### 2. Build and Push Backend Container
+
+```powershell
+# Navigate to backend directory
+cd backend
+
+# Build the Docker image
+docker build -t <your-dockerhub-username>/respondr-lite:latest -f ../Dockerfile.backend .
+
+# Login to Docker Hub
+docker login
+
+# Push the image
+docker push <your-dockerhub-username>/respondr-lite:latest
+```
+
+Example:
+```powershell
+docker build -t jdoe/respondr-lite:latest -f ../Dockerfile.backend .
+docker push jdoe/respondr-lite:latest
+```
+
+#### 3. Deploy Azure Infrastructure
+
+```powershell
+# Navigate to deployment directory
 cd deployment
+
+# Set your deployment parameters
+$RESOURCE_GROUP = "respondr-prod"
+$LOCATION = "eastus2"
+$UNIQUE_ID = "myorg"  # Short identifier for unique resource names
+$DOCKER_IMAGE = "docker.io/jdoe/respondr-lite:latest"
+$GITHUB_REPO = "https://github.com/yourusername/respondr-lite"
+$GITHUB_TOKEN = "<your-github-pat>"
+
+# Create resource group
+az group create --name $RESOURCE_GROUP --location $LOCATION
+
+# Run deployment script
 ./deploy-from-scratch.ps1 `
-  -ResourceGroup "respondr-rg" `
-  -Location "eastus2"
+  -UniqueId $UNIQUE_ID `
+  -ResourceGroup $RESOURCE_GROUP `
+  -Location $LOCATION `
+  -ContainerImage $DOCKER_IMAGE `
+  -RepositoryUrl $GITHUB_REPO `
+  -RepositoryBranch "static" `
+  -GithubToken $GITHUB_TOKEN
 ```
 
-This script will:
-1. Create a resource group
-2. Deploy Azure Storage (Queue + Table)
-3. Deploy Azure Functions for webhook ingestion
-4. Deploy Azure OpenAI with GPT-5-nano model
-5. Deploy Azure Container Apps with auto-scaling rules
-6. Deploy Azure Static Web App (Free tier)
-7. Configure authentication (optional)
-8. Output connection details and endpoints
+The script will deploy:
+- Azure Storage Account (Queue + Table)
+- Azure Functions (Python consumption plan)
+- Azure Container Apps (FastAPI backend with scale-to-zero)
+- Azure Static Web App (Free tier for frontend)
+- Azure OpenAI (gpt-5-nano deployment)
+- Log Analytics workspace
+- RBAC role assignments for managed identity
 
-### Configuration Options
+**Save the deployment outputs** - you'll need these values:
+- Container App URL: `https://respondr-<unique-id>.azurecontainerapps.io`
+- Static Web App URL: `https://respondr-<unique-id>.azurestaticapps.net`
+- Storage Connection String
+- Azure OpenAI Endpoint and API Key
+- Static Web App Deployment Token
 
-The deployment script supports these parameters:
+#### 4. Update Environment Variables
+
+Update the Container App with the generated values:
 
 ```powershell
-./deploy-from-scratch.ps1 `
-  -ResourceGroup "respondr-rg" `
-  -Location "eastus2" `
-  -ContainerImage "myregistry.azurecr.io/respondr:latest" `
-  -EnableAuth $true `
-  -AuthClientId "<azure-ad-app-id>" `
-  -AuthClientSecret "<azure-ad-app-secret>"
+# Get resource names from deployment
+$CONTAINER_APP = "respondr-<unique-id>"
+$STATIC_WEB_APP = "respondr-swa-<unique-id>"
+
+# Update Container App environment variables
+az containerapp update `
+  --name $CONTAINER_APP `
+  --resource-group $RESOURCE_GROUP `
+  --set-env-vars `
+    "AZURE_STORAGE_CONNECTION_STRING=<from-deployment-output>" `
+    "AZURE_OPENAI_ENDPOINT=<from-deployment-output>" `
+    "AZURE_OPENAI_API_KEY=<from-deployment-output>" `
+    "AZURE_OPENAI_DEPLOYMENT=gpt-5-nano" `
+    "WEBHOOK_API_KEY=<from-your-env>" `
+    "STATIC_WEB_APP_URL=https://$STATIC_WEB_APP.azurestaticapps.net" `
+    "ALLOWED_EMAIL_DOMAINS=<your-domains>" `
+    "ALLOWED_ADMIN_USERS=<admin-emails>"
 ```
 
-To customize Static Web App settings (repository, branch, artifact location) or pass additional Container App tuning flags, call `infra/deploy.ps1` directly with the corresponding `-RepositoryUrl`, `-RepositoryBranch`, `-AppArtifactLocation`, and scaling parameters. The wrapper script surfaces the most common options for a greenfield deployment.
+Update the Azure Function:
+
+```powershell
+$FUNCTION_APP = "respondr-func-<unique-id>"
+
+az functionapp config appsettings set `
+  --name $FUNCTION_APP `
+  --resource-group $RESOURCE_GROUP `
+  --settings `
+    "AZURE_STORAGE_CONNECTION_STRING=<from-deployment-output>" `
+    "STORAGE_QUEUE_NAME=respondr-incoming" `
+    "WEBHOOK_API_KEY=<from-your-env>" `
+    "CONTAINER_APP_WAKE_URL=https://$CONTAINER_APP.azurecontainerapps.io/api/wake"
+```
+
+#### 5. Configure GitHub Secrets and Variables
+
+Navigate to your GitHub repository settings:
+
+**Add Secrets** (`Settings` → `Secrets and variables` → `Actions` → `New repository secret`):
+
+| Secret Name | Value | Purpose |
+|-------------|-------|---------|
+| `AZURE_STATIC_WEB_APPS_API_TOKEN` | Get with: `az staticwebapp secrets list -g <rg> -n <swa-name> --query properties.apiKey -o tsv` | Deploy frontend to Static Web App |
+| `DOCKER_USERNAME` | Your Docker Hub username | Push backend images |
+| `DOCKER_TOKEN` | Your Docker Hub access token | Authenticate Docker push |
+
+**Add Variables** (`Settings` → `Secrets and variables` → `Actions` → `Variables` → `New repository variable`):
+
+| Variable Name | Value | Purpose |
+|---------------|-------|---------|
+| `REACT_APP_API_URL` | `https://<container-app>.azurecontainerapps.io` | Frontend API endpoint |
+
+#### 6. Deploy Frontend to Static Web App
+
+The frontend deploys automatically via GitHub Actions when you push to the `static` branch:
+
+```powershell
+# Switch to static branch
+git checkout static
+
+# Ensure you have the latest changes
+git pull origin static
+
+# Push to trigger deployment
+git push origin static
+```
+
+**Monitor the deployment**:
+1. Go to your GitHub repository
+2. Click the "Actions" tab
+3. Watch the "Azure Static Web Apps CI/CD" workflow
+4. Deployment typically takes 3-5 minutes
+
+**Verify deployment**:
+- Visit your Static Web App URL
+- You should see the RespondrLite login page
+- Check browser console (F12) for any errors
+
+#### 7. Configure GroupMe Webhook
+
+Get your webhook URL:
+
+```powershell
+# Get Function App hostname
+$FUNCTION_HOST = az functionapp show `
+  --name $FUNCTION_APP `
+  --resource-group $RESOURCE_GROUP `
+  --query defaultHostName -o tsv
+
+# Construct webhook URL
+$WEBHOOK_URL = "https://$FUNCTION_HOST/api/groupme_ingest?api_key=<your-webhook-api-key>"
+
+Write-Host "Configure GroupMe bot callback URL to: $WEBHOOK_URL"
+```
+
+**In GroupMe**:
+1. Go to https://dev.groupme.com/bots
+2. Select your group or create a new bot
+3. Set **Callback URL** to the URL above
+4. Save
+
+#### 8. Test the Deployment
+
+**Test Authentication**:
+1. Visit Static Web App URL
+2. Click "Sign in with Microsoft"
+3. Login with an account in your `ALLOWED_EMAIL_DOMAINS`
+4. You should see the empty dashboard
+
+**Test Webhook Processing**:
+1. Send a test message in your GroupMe group:
+   ```
+   Responding SAR-78 ETA 30 min
+   ```
+2. Check Azure Portal → Container Apps → Log stream for processing logs
+3. Refresh the dashboard - you should see the new responder entry
+
+**Test Admin Features** (if you're in `ALLOWED_ADMIN_USERS`):
+1. Login to the dashboard
+2. Click "Admin Panel" tab
+3. Test creating local users (if you enabled `ENABLE_LOCAL_AUTH`)
+
+### Quick Deployment (Existing Infrastructure)
+
+If you already have infrastructure and just need to update:
+
+```powershell
+# Update backend container
+cd deployment
+./build-push-docker.ps1 -Tag "latest"
+
+# Update Container App
+az containerapp update `
+  --name <container-app-name> `
+  --resource-group <resource-group> `
+  --image docker.io/<username>/respondr-lite:latest
+
+# Update frontend
+git push origin static
+```
+
+### Teardown and Redeploy
+
+To completely remove the environment:
+
+```powershell
+# WARNING: This permanently deletes all resources and data
+az group delete -n <resource-group> --yes --no-wait
+```
+
+Wait for deletion to complete, then follow the deployment steps above to redeploy.
 
 ### Environment Variables
 
@@ -449,6 +619,33 @@ python create_local_user.py deputy1 deputy1@sheriff.org "Deputy John" --organiza
 - PBKDF2 password hashing with per-user salts
 - JWT session tokens delivered via HTTP-only cookies
 - Easy Auth exclusion rules in the deployment templates keep the local auth routes accessible
+
+## Performance Optimizations
+
+### Preventing Unnecessary Backend Wake-Ups
+
+The application is optimized to minimize Container App wake-ups and reduce costs:
+
+**Frontend Optimizations**:
+1. **Landing Page**: The Static Web App serves the frontend from CDN without hitting the backend
+2. **Auth Check Strategy**: 
+   - First checks Static Web App's `/.auth/me` endpoint (no backend wake)
+   - Uses `localStorage` session hints to track authenticated sessions
+   - Only calls backend `/api/user` when authentication is confirmed or hinted
+3. **Session Caching**: 
+   - Local auth status cached in `sessionStorage` to avoid repeated API calls
+   - Session hints prevent unauthenticated visitors from waking the backend
+
+**Backend Optimizations**:
+1. **Pure API**: Backend only serves API endpoints, no frontend file serving
+2. **Wake Endpoint**: Dedicated `/api/wake` endpoint for Azure Functions to warm up the container
+3. **CORS Configuration**: Properly configured to allow Static Web App cross-origin requests
+
+**Result**: 
+- Unauthenticated visitors to the landing page → **No backend wake** ✅
+- Bot traffic scanning the site → **No backend wake** ✅  
+- Webhook arrives → **Function wakes backend** (intended behavior) ✅
+- User logs in → **Backend wakes** (intended behavior) ✅
 
 ## New Features
 

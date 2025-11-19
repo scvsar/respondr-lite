@@ -18,7 +18,28 @@ function AdminPanel() {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch('/api/auth/local/admin/users', {
+      import React, { useState, useEffect } from 'react';
+import './AdminPanel.css';
+import { apiUrl } from './config';
+
+function AdminPanel() {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [activeTab, setActiveTab] = useState('users');
+  const [showCreateUser, setShowCreateUser] = useState(false);
+
+  useEffect(() => {
+    if (activeTab === 'users') {
+      fetchUsers();
+    }
+  }, [activeTab]);
+
+  const fetchUsers = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await fetch(apiUrl('/api/auth/local/admin/users'), {
         credentials: 'include'
       });
       
@@ -98,7 +119,7 @@ function UserManagement({ users, setUsers, loading, error, showCreateUser, setSh
     }
 
     try {
-      const response = await fetch(`/api/auth/local/admin/users/${username}`, {
+      const response = await fetch(apiUrl(`/api/auth/local/admin/users/${username}`), {
         method: 'DELETE',
         credentials: 'include'
       });
@@ -239,7 +260,7 @@ function CreateUserModal({ onClose, onSuccess }) {
     setError('');
 
     try {
-      const response = await fetch('/api/auth/local/admin/create-user', {
+      const response = await fetch(apiUrl('/api/auth/local/admin/create-user'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -415,7 +436,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }) {
     setError('');
 
     try {
-      const response = await fetch('/api/auth/local/admin/reset-password', {
+      const response = await fetch(apiUrl('/api/auth/local/admin/reset-password'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

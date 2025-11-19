@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import './App.css';
+import { apiUrl } from './config';
 
 // Minimal, focused mobile view: Name, Vehicle, ETA for Responding only
 export default function MobileView() {
@@ -16,7 +17,7 @@ export default function MobileView() {
       setError(null);
       // check auth first
       try {
-        const ur = await fetch('/api/user');
+        const ur = await fetch(apiUrl('/api/user'));
         if (!ur.ok) throw new Error('auth');
         const uj = await ur.json();
         setAuthChecked(true);
@@ -27,7 +28,7 @@ export default function MobileView() {
           return;
         }
       } catch {}
-      const res = await fetch('/api/responders', { headers: { 'Accept': 'application/json' }});
+      const res = await fetch(apiUrl('/api/responders'), { headers: { 'Accept': 'application/json' }});
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       setData(json);

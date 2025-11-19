@@ -9,6 +9,7 @@ import StatusTabs from './StatusTabs';
 import WebhookDebug from './WebhookDebug';
 import LoginChoice from './LoginChoice';
 import AdminPanel from './AdminPanel';
+import { apiUrl } from './config';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
@@ -32,19 +33,55 @@ function AuthGate({ children }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const r = await fetch('/api/user');
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
-        if (cancelled) return;
-        setUser(j);
-        if (!j.authenticated) {
-          // Not authenticated: show Sign In option instead of auto-redirect (handles when EasyAuth is disabled)
-          setDenied({ error: 'Not authenticated' });
-          return;
+        // Optimization: Check SWA auth endpoint first to avoid waking ACA
+        // Only works if running on SWA (or emulated)
+        let swaUser = null;
+        try {
+          const swaResp = await fetch('/.auth/me');
+          if (swaResp.ok) {
+            const swaData = await swaResp.json();
+            swaUser = swaData.clientPrincipal;
+          }
+        } catch (e) {
+          // Ignore error (e.g. not on SWA)
         }
-        if (j.error === 'Access denied') {
-          setDenied(j);
+
+        // Check for local auth token
+        // We assume the token is stored in a cookie or localStorage managed by the browser/code
+        // But the backend uses httpOnly cookies for security, so we can't read them in JS.
+        // However, if we are not on SWA (swaUser is null), and we have no way to know if we have a cookie,
+        // we might have to hit the API.
+        // BUT, if we are on SWA and swaUser is null, we are definitely not logged in via SSO.
+        // If we want to support local auth without waking, we'd need a client-side flag.
+        
+        // Strategy:
+        // 1. If SWA says we are logged in -> Call API (wakes ACA, but justified)
+        // 2. If SWA says NOT logged in -> 
+        //    a. If we have a "local_session_hint" in localStorage -> Call API (wakes ACA)
+        //    b. If no hint -> Assume not logged in -> Show LoginChoice (NO WAKE)
+        
+        const hasLocalHint = localStorage.getItem('respondr_session_hint');
+
+        if (swaUser || hasLocalHint || window.location.hostname === 'localhost') {
+             const r = await fetch(apiUrl('/api/user'));
+             if (!r.ok) throw new Error(`HTTP ${r.status}`);
+             const j = await r.json();
+             if (cancelled) return;
+             setUser(j);
+             if (!j.authenticated) {
+               setDenied({ error: 'Not authenticated' });
+               return;
+             }
+             if (j.error === 'Access denied') {
+               setDenied(j);
+             }
+        } else {
+            // Assume not authenticated without hitting API
+            if (cancelled) return;
+            setDenied({ error: 'Not authenticated' });
+            setLoading(false);
         }
+
       } catch (e) {
         if (!cancelled) setDenied({ error: 'Unable to verify sign-in' });
       } finally {
@@ -73,7 +110,7 @@ function AdminGate({ children }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const resp = await fetch("/api/user", { credentials: 'include' });
+        const resp = await fetch(apiUrl("/api/user"), { credentials: 'include' });
         if (!resp.ok) {
           if (!cancelled) {
             setDenied("Failed to load user info");
@@ -171,7 +208,7 @@ function MainApp() {
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const response = await fetch('/api/config');
+        const response = await fetch(apiUrl('/api/config'));
         if (response.ok) {
           const config = await response.json();
           setGeocitiesConfig(config.geocities || { force_mode: false, enable_toggle: false });
@@ -328,7 +365,7 @@ function MainApp() {
       }
       // Also don't fetch data if unauthenticated
       try {
-        const ur = await fetch('/api/user');
+        const ur = await fetch(apiUrl('/api/user'));
         if (!ur.ok) throw new Error('auth');
         const uj = await ur.json();
         if (!uj.authenticated || uj.error === 'Access denied') {
@@ -431,7 +468,7 @@ function MainApp() {
   useEffect(() => {
     const loadUser = async () => {
       try {
-        const r = await fetch('/api/user');
+        const r = await fetch(apiUrl('/api/user'));
         if (r.ok) setUser(await r.json());
       } catch {}
     };
@@ -802,7 +839,7 @@ function MainApp() {
       headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify(payload),
     };
-    const url = editingId ? `/api/responders/${editingId}` : '/api/responders';
+    const url = editingId ? apiUrl(`/api/responders/${editingId}`) : apiUrl('/api/responders');
     const r = await fetch(url, opts);
     if (!r.ok) { alert('Save failed'); return; }
     setShowEditor(false);
@@ -818,10 +855,10 @@ function MainApp() {
     let ok = true;
     if (selected.size === 1) {
       const id = Array.from(selected)[0];
-      const r = await fetch(`/api/responders/${id}`, { method: 'DELETE' });
+      const r = await fetch(apiUrl(`/api/responders/${id}`), { method: 'DELETE' });
       ok = r.ok;
     } else {
-      const r = await fetch('/api/responders/bulk-delete', {
+      const r = await fetch(apiUrl('/api/responders/bulk-delete'), {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: Array.from(selected) }),
       });
@@ -930,7 +967,7 @@ function MainApp() {
                 if (host.endsWith(':3100')) {
                   window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/';
                 } else if (user?.auth_type === 'local') {
-                  await fetch('/api/auth/local/logout', { method: 'POST', credentials: 'include' });
+                  await fetch(apiUrl('/api/auth/local/logout'), { method: 'POST', credentials: 'include' });
                   sessionStorage.clear();
                   window.location.reload();
                 } else {
@@ -954,7 +991,7 @@ function MainApp() {
                 if (host.endsWith(':3100')) {
                   window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/';
                 } else if (user?.auth_type === 'local') {
-                  await fetch('/api/auth/local/logout', { method: 'POST', credentials: 'include' });
+                  await fetch(apiUrl('/api/auth/local/logout'), { method: 'POST', credentials: 'include' });
                   sessionStorage.clear();
                   window.location.reload();
                 } else {

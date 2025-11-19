@@ -439,3 +439,4 @@ resource openaiRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 output containerAppUrl string = exposePublic ? 'https://${respondr.properties.configuration.ingress.fqdn}' : ''
 output openAiEndpoint string = 'https://${openai.name}.openai.azure.com/'
 output gpt5nanoDeployment string = gpt5nanoDeploymentName
+output staticWebAppName string = staticWebAppName
