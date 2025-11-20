@@ -2,40 +2,31 @@ services:
   respondr:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.backend
     ports:
       - "8000:8000"
     environment:
-      - DEBUG=false
+      - DEBUG=true
       - DISABLE_API_KEY_CHECK=true
       - ALLOW_LOCAL_AUTH_BYPASS=true
       - LOCAL_BYPASS_IS_ADMIN=true
       - ALLOW_CLEAR_ALL=true
       - ENABLE_LOCAL_AUTH=true
       - INACTIVITY_TIMEOUT_MINUTES=1
+      # Override storage connection for Docker to reach host Azurite
+      - AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://host.docker.internal:10000/devstoreaccount1;QueueEndpoint=http://host.docker.internal:10001/devstoreaccount1;TableEndpoint=http://host.docker.internal:10002/devstoreaccount1;
     env_file:
       - .env
     volumes:
-      - ./backend:/app/backend:ro  # Mount backend source under /app/backend to avoid overwriting build artifacts
+      - ./backend:/app:ro
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/storage-info"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
- 
-  # Optional: Add nginx for reverse proxy testing
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - respondr
-    profiles:
-      - nginx  # Only start with --profile nginx
+      start_period: 5s
  
 
  

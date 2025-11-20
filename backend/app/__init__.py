@@ -106,8 +106,13 @@ async def get_redoc(_: bool = Depends(require_authenticated_access)):
     """Protected ReDoc documentation."""
     return get_redoc_html(openapi_url="/openapi.json", title="Respondr API Docs")
 
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy"}
+
 # Add SPA catch-all route (must be last)
-frontend.add_spa_catch_all(app)
+# frontend.add_spa_catch_all(app)
 
 
 @app.on_event("startup")

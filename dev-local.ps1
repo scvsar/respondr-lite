@@ -1,14 +1,17 @@
 param(
     [switch]$Function,
-    [switch]$Docker,
+    [switch]$Backend,
+    [switch]$Frontend,
     [switch]$Interactive,
     [int]$FunctionPort = 7071,
     [switch]$ForceKillOthers
 )
 
-if (-not ($Function -or $Docker -or $Interactive)) {
+# Default behavior if no switches provided: Start everything
+if (-not ($Function -or $Backend -or $Frontend -or $Interactive)) {
     $Function = $true
-    $Docker   = $true
+    $Backend  = $true
+    $Frontend = $true
 }
 
 function Get-PortOwnerPids {
@@ -81,66 +84,79 @@ function Test-PortFree {
     }
 }
 
+function Start-NewWindow {
+    param(
+        [string]$Command,
+        [string]$WorkingDirectory,
+        [string]$Title
+    )
+    
+    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+        $shellExe = "pwsh"
+        $arg = "-NoExit -Command cd `"$WorkingDirectory`"; $Command"
+    } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
+        $shellExe = "powershell"
+        $arg = "-NoExit -Command cd `"$WorkingDirectory`"; $Command"
+    } else {
+        Write-Error 'PowerShell not found to launch new window.'
+        return
+    }
+
+    Write-Host "Launching $Title in a new window..." -ForegroundColor Green
+    Start-Process -FilePath $shellExe -ArgumentList $arg -WorkingDirectory $WorkingDirectory
+}
 
 function Start-FunctionLocal {
     Write-Host "Ensuring port $FunctionPort is free for Azure Functions..." -ForegroundColor Cyan
     Test-PortFree -Port $FunctionPort -ForceKillOthers:$ForceKillOthers
 
-    Write-Host "Starting Azure function locally..." -ForegroundColor Green
-    Push-Location functions
-    try { & func start } finally { Pop-Location }
+    $funcPath = (Resolve-Path -Path ".\functions").Path
+    Start-NewWindow -Command "func start" -WorkingDirectory $funcPath -Title "Azure Functions"
 }
 
-function Start-FunctionNewWindow {
-    Write-Host "Ensuring port $FunctionPort is free for Azure Functions..." -ForegroundColor Cyan
-    Test-PortFree -Port $FunctionPort -ForceKillOthers:$ForceKillOthers
+function Start-BackendDocker {
+    Write-Host "Starting Backend API in Docker..." -ForegroundColor Green
+    $cwd = (Get-Location).Path
+    Start-NewWindow -Command "docker compose -f docker-compose.local.yml up --build" -WorkingDirectory $cwd -Title "Backend API (Docker)"
+}
 
-    Write-Host "Launching Azure function in a new shell window..." -ForegroundColor Green
-    $funcPath = (Resolve-Path -Path ".\functions").Path
-
-    if (Get-Command pwsh -ErrorAction SilentlyContinue) {
-        $shellExe = "pwsh"
-        $arg = "-NoExit -Command cd `"$funcPath`"; func start"
-    } elseif (Get-Command powershell -ErrorAction SilentlyContinue) {
-        $shellExe = "powershell"
-        $arg = "-NoExit -Command cd `"$funcPath`"; func start"
-    } else {
-        Write-Host "No PowerShell found; starting in current session." -ForegroundColor Yellow
-        Start-FunctionLocal
-        return
+function Start-FrontendLocal {
+    Write-Host "Starting Frontend (React)..." -ForegroundColor Green
+    $frontendPath = (Resolve-Path -Path ".\frontend").Path
+    
+    if (-not (Test-Path "$frontendPath\node_modules")) {
+        Write-Host "Installing frontend dependencies..." -ForegroundColor Yellow
+        Push-Location $frontendPath
+        npm install
+        Pop-Location
     }
 
-    Start-Process -FilePath $shellExe -ArgumentList $arg -WorkingDirectory $funcPath
-}
-
-function Start-DockerCompose {
-    Write-Host "Starting backend/frontend stack in Docker Desktop (docker-compose.local.yml)..." -ForegroundColor Green
-    & docker compose -f docker-compose.local.yml up --build
+    Start-NewWindow -Command "npm start" -WorkingDirectory $frontendPath -Title "Frontend (React)"
 }
 
 if ($Interactive) {
     Write-Host "SCVSAR Respondr Local Development" -ForegroundColor Cyan
     Write-Host "====================================="; Write-Host ""
     Write-Host "Options:" -ForegroundColor Yellow
-    Write-Host "  1. Start Azure function locally"
-    Write-Host "  2. Start backend/frontend stack (docker-compose.local.yml)"
-    Write-Host "  3. Start both (function + docker)"
-    $choice = Read-Host "Enter option (1, 2 or 3)"
+    Write-Host "  1. Start Azure Functions (Ingest)"
+    Write-Host "  2. Start Backend API (Docker)"
+    Write-Host "  3. Start Frontend (React)"
+    Write-Host "  4. Start All Components"
+    
+    $choice = Read-Host "Enter option (1-4)"
     switch ($choice) {
         '1' { Start-FunctionLocal }
-        '2' { Start-DockerCompose }
-        '3' { Start-FunctionNewWindow; Start-DockerCompose }
-        default { Write-Host "Invalid option. Enter 1, 2 or 3." -ForegroundColor Red }
+        '2' { Start-BackendDocker }
+        '3' { Start-FrontendLocal }
+        '4' { 
+            Start-FunctionLocal
+            Start-FrontendLocal
+            Start-BackendDocker
+        }
+        default { Write-Host "Invalid option." -ForegroundColor Red }
     }
 } else {
-    if ($Function -and $Docker) {
-        Start-FunctionNewWindow
-        Start-DockerCompose
-    } elseif ($Function) {
-        Start-FunctionLocal
-    } elseif ($Docker) {
-        Start-DockerCompose
-    } else {
-        Write-Host "Nothing to do. Use -Function, -Docker, or -Interactive." -ForegroundColor Yellow
-    }
+    if ($Function) { Start-FunctionLocal }
+    if ($Frontend) { Start-FrontendLocal }
+    if ($Backend) { Start-BackendDocker }
 }

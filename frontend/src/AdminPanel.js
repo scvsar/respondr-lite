@@ -1,25 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import './AdminPanel.css';
-
-function AdminPanel() {
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('users');
-  const [showCreateUser, setShowCreateUser] = useState(false);
-
-  useEffect(() => {
-    if (activeTab === 'users') {
-      fetchUsers();
-    }
-  }, [activeTab]);
-
-  const fetchUsers = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      import React, { useState, useEffect } from 'react';
-import './AdminPanel.css';
 import { apiUrl } from './config';
 
 function AdminPanel() {

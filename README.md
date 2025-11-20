@@ -91,17 +91,22 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
   participant U as User Browser
-  participant ACA as Azure Container Apps<br/>(FastAPI + React UI)
+  participant SWA as Azure Static Web App
   participant AAD as Entra ID (Azure AD)
-  participant API as ACA API (same app)
+  participant API as Azure Container Apps<br/>(FastAPI Backend)
   participant TS as Azure Table Storage<br/>(ResponderMessages)
 
-  U->>ACA: GET /
-  Note over ACA: Easy Auth (platform) evaluates policy
-  ACA-->>AAD: OIDC challenge (if not authenticated)
-  AAD-->>U: Sign-in (token issued)
-  U->>ACA: GET / (with token)
-  U->>API: /api/responders
+  U->>SWA: GET /
+  Note over SWA: Serves React App (Public)
+  
+  U->>SWA: GET /.auth/login/aad
+  SWA-->>AAD: Redirect to Entra ID
+  AAD-->>U: Sign-in
+  AAD-->>SWA: Callback
+  SWA-->>U: Session Cookie
+  
+  U->>API: GET /api/responders
+  Note over API: Validates Authentication
   API->>TS: Query responder data
   TS-->>API: Entities
   API-->>U: JSON
@@ -134,6 +139,7 @@ sequenceDiagram
 - Azure CLI (`az`) installed and configured
 - PowerShell 7+ for deployment scripts
 - Docker (for local development and container builds)
+- **Azurite** (for local storage emulation) - Install via [VS Code Extension](https://marketplace.visualstudio.com/items?itemName=Azurite.azurite) or `npm install -g azurite`
 - Python 3.11+ (for local development)
 - Node.js 18+ (for frontend development)
 
@@ -674,16 +680,20 @@ Access at: `https://<your-static-web-app>.azurestaticapps.net/webhook-debug`
 
 ### Full Stack Development
 
+The local development environment uses **Azurite** to emulate Azure Storage (Queues and Tables) locally, ensuring a self-contained offline workflow.
+
+1. **Start Azurite**: Run "Azurite: Start" from the VS Code Command Palette or `azurite` in a terminal.
+2. **Start Components**:
+
 ```bash
-# Backend + Frontend with hot reload
-./dev-local.ps1 -Full
-
-# Backend only
-./dev-local.ps1
-
-# Using Docker Compose
-./dev-local.ps1 -Docker
+# Backend + Frontend + Functions with hot reload
+./dev-local.ps1 -Interactive
 ```
+
+This script will:
+- Launch the **Azure Functions** (Ingest) on port 7071
+- Launch the **Backend API** (Docker) on port 8000
+- Launch the **Frontend** (React) on port 3000
 
 ### Frontend Scripts
 
