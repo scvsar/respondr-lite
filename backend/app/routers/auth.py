@@ -1,6 +1,7 @@
 """Local authentication endpoints for external users."""
 
 import logging
+import os
 from datetime import timedelta
 from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, Depends
@@ -86,12 +87,16 @@ async def local_login(login_request: LoginRequest):
                 }
             })
             
+            # Determine cookie security
+            # If using local storage emulator, assume local dev (HTTP)
+            is_local_dev = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").startswith("UseDevelopmentStorage=true")
+
             # Set secure HTTP-only cookie for browser-based requests
             response.set_cookie(
                 key="session_token",
                 value=token,
                 httponly=True,
-                secure=True,
+                secure=not is_local_dev,
                 samesite="lax",
                 max_age=timedelta(hours=24).total_seconds()
             )

@@ -22,6 +22,8 @@ if _allow_dev_cors:
     origins = [
         "http://localhost:3100",
         "http://127.0.0.1:3100",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ]
     
     # Add Static Web App origins from environment variable if present

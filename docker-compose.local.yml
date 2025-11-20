@@ -1,5 +1,6 @@
 services:
   respondr:
+    container_name: respondr-backend
     build:
       context: .
       dockerfile: Dockerfile.backend
@@ -8,8 +9,6 @@ services:
     environment:
       - DEBUG=true
       - DISABLE_API_KEY_CHECK=true
-      - ALLOW_LOCAL_AUTH_BYPASS=true
-      - LOCAL_BYPASS_IS_ADMIN=true
       - ALLOW_CLEAR_ALL=true
       - ENABLE_LOCAL_AUTH=true
       - INACTIVITY_TIMEOUT_MINUTES=1
@@ -27,6 +26,5 @@ services:
       timeout: 10s
       retries: 3
       start_period: 5s
- 
 
- 
+

@@ -40,11 +40,17 @@ async def main():
     # Parse optional arguments
     is_admin = "--admin" in sys.argv
     organization = ""
+    password_arg = None
     
     if "--organization" in sys.argv:
         org_index = sys.argv.index("--organization")
         if org_index + 1 < len(sys.argv):
             organization = sys.argv[org_index + 1]
+
+    if "--password" in sys.argv:
+        pass_index = sys.argv.index("--password")
+        if pass_index + 1 < len(sys.argv):
+            password_arg = sys.argv[pass_index + 1]
     
     print(f"Creating local user account:")
     print(f"  Username: {username}")
@@ -62,15 +68,18 @@ async def main():
         sys.exit(1)
     
     # Get password securely
-    password = getpass.getpass(f"Enter password for {username}: ")
-    if not password:
-        print("❌ Password cannot be empty!")
-        sys.exit(1)
-    
-    confirm_password = getpass.getpass("Confirm password: ")
-    if password != confirm_password:
-        print("❌ Passwords do not match!")
-        sys.exit(1)
+    if password_arg:
+        password = password_arg
+    else:
+        password = getpass.getpass(f"Enter password for {username}: ")
+        if not password:
+            print("❌ Password cannot be empty!")
+            sys.exit(1)
+        
+        confirm_password = getpass.getpass("Confirm password: ")
+        if password != confirm_password:
+            print("❌ Passwords do not match!")
+            sys.exit(1)
     
     # Create the user
     try:
