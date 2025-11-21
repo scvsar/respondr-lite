@@ -1,3 +1,13 @@
+param(
+    [Parameter(Mandatory = $true)] [string]$ResourceGroup,
+    [Parameter(Mandatory = $true)] [string]$Location,
+    [Parameter(Mandatory = $true)] [string]$UniqueId,
+    [Parameter(Mandatory = $true)] [string]$ContainerImage,
+    [string]$RepositoryUrl = "",
+    [string]$RepositoryBranch = "main",
+    [string]$GithubToken = ""
+)
+
 # create the resource group if it doesn't exist using az cli
 # expected Bicep params:
 #param(
@@ -175,11 +185,12 @@ function Run-ProcessCapture {
 
 # ------------------------------------------------------------------------
 
-$ResourceGroup      = "respondrlite"
-$Location           = "eastus2"
-$OpenAiLocation     = "eastus2"
+# Use parameters instead of hardcoded values
+# $ResourceGroup      = "respondrlite"  <-- passed in
+# $Location           = "eastus2"       <-- passed in
+$OpenAiLocation     = $Location
 
-$ContainerImage = "docker.io/randytreit/respondr:2025-08-25"
+# $ContainerImage = "docker.io/randytreit/respondr:2025-08-25" <-- passed in
 
 $DotEnvPath     = ".\.env"
 
@@ -190,7 +201,7 @@ $OpenAiBase         = "respondrlite-openai" # AOAI: letters/numbers/hyphen
 $StaticWebAppBase   = "respondrlite-spa"    # static web app: letters/numbers/hyphen
 
 $baseSalt = "$ResourceGroup|$Location" # use this if you want names to be idempotent
-$runId    = ([guid]::NewGuid()).ToString('N')  # 32 hex chars, no dashes
+$runId    = $UniqueId  # Use the provided UniqueId
 
 $StorageAccountName = New-UniqueStorageAccountName -BaseName $StorageAccountBase -Salt $runId
 $FunctionAppName    = New-UniqueHyphenName        -BaseName $FunctionAppBase    -Salt $runId -MaxLength 60
@@ -249,6 +260,9 @@ Log "Using storage account name: $StorageAccountName"
   -ContainerAppName $ContainerAppName `
   -ContainerImage $ContainerImage `
   -StaticWebAppName $StaticWebAppName `
+  -RepositoryUrl $RepositoryUrl `
+  -RepositoryBranch $RepositoryBranch `
+  -GithubToken $GithubToken `
   -DotEnvPath $DotEnvPath
 Log "Using direct invocation of ..\infra\deploy.ps1 (the earlier backtick call handles parameters)"
 

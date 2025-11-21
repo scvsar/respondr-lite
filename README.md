@@ -171,20 +171,20 @@ code .env
 ```
 
 **Required variables** (see [Environment Variables](#environment-variables) section for complete list):
-- `WEBHOOK_API_KEY` - Generate with: `python -c "import secrets; print(secrets.token_urlsafe(32))"`
 - `ALLOWED_EMAIL_DOMAINS` - Your organization domain(s)
 - `ALLOWED_ADMIN_USERS` - Admin email address(es)
+- `ALLOWED_GROUPME_GROUP_IDS` - Comma-separated list of GroupMe Group IDs (Required for GroupMe integration)
+- `WEBHOOK_API_KEY` - **Leave empty** for GroupMe integration (uses Azure Function key validation)
 
 **Note**: Azure OpenAI and Storage connection strings will be populated after infrastructure deployment.
 
 #### 2. Build and Push Backend Container
 
-```powershell
-# Navigate to backend directory
-cd backend
+Run these commands from the **root** of the repository:
 
+```powershell
 # Build the Docker image
-docker build -t <your-dockerhub-username>/respondr-lite:latest -f ../Dockerfile.backend .
+docker build -t <your-dockerhub-username>/respondr-lite:latest -f Dockerfile.backend .
 
 # Login to Docker Hub
 docker login
@@ -195,7 +195,7 @@ docker push <your-dockerhub-username>/respondr-lite:latest
 
 Example:
 ```powershell
-docker build -t jdoe/respondr-lite:latest -f ../Dockerfile.backend .
+docker build -t jdoe/respondr-lite:latest -f Dockerfile.backend .
 docker push jdoe/respondr-lite:latest
 ```
 
@@ -328,7 +328,7 @@ git push origin static
 
 #### 7. Configure GroupMe Webhook
 
-Get your webhook URL:
+Get your webhook URL with the Function Key (code):
 
 ```powershell
 # Get Function App hostname
@@ -337,8 +337,15 @@ $FUNCTION_HOST = az functionapp show `
   --resource-group $RESOURCE_GROUP `
   --query defaultHostName -o tsv
 
+# Get the Function Key (default)
+$FUNC_KEY = az functionapp function keys list `
+  --name $FUNCTION_APP `
+  --resource-group $RESOURCE_GROUP `
+  --function-name groupme_ingest `
+  --query default -o tsv
+
 # Construct webhook URL
-$WEBHOOK_URL = "https://$FUNCTION_HOST/api/groupme_ingest?api_key=<your-webhook-api-key>"
+$WEBHOOK_URL = "https://$FUNCTION_HOST/api/groupme_ingest?code=$FUNC_KEY"
 
 Write-Host "Configure GroupMe bot callback URL to: $WEBHOOK_URL"
 ```
@@ -415,10 +422,10 @@ The application uses numerous environment variables for configuration. Below is 
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `WEBHOOK_API_KEY` | API key for GroupMe webhook authentication | - | Yes |
+| `WEBHOOK_API_KEY` | Custom API key for webhook auth. **Leave empty for GroupMe** (uses Azure Function key). | - | No |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated allowed email domains | `scvsar.org,rtreit.com` | No |
 | `ALLOWED_ADMIN_USERS` | Comma-separated admin user emails | - | No |
-| `ALLOWED_GROUPME_GROUP_IDS` | Comma-separated allowed GroupMe group IDs | - | No |
+| `ALLOWED_GROUPME_GROUP_IDS` | Comma-separated allowed GroupMe group IDs. **Required if WEBHOOK_API_KEY is empty**. | - | Yes (for GroupMe) |
 | `ENABLE_FUNCTION_PAYLOAD_LOGGING` | Enable logging of incoming payloads to table storage | `false` | No |
 | `FUNCTION_PAYLOAD_TABLE` | Table name for function payload logs | `FunctionIncoming` | No |
 | `DISABLE_API_KEY_CHECK` | Bypass API key validation (dev only) | `false` | No |
@@ -513,7 +520,8 @@ AZURE_OPENAI_DEPLOYMENT=gpt-5-nano
 AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
 # Authentication
-WEBHOOK_API_KEY=<secure-random-key>
+WEBHOOK_API_KEY=
+ALLOWED_GROUPME_GROUP_IDS=12345678,87654321
 ALLOWED_EMAIL_DOMAINS=contoso.org,fabrikam.org
 ALLOWED_ADMIN_USERS=admin@contoso.org
 
