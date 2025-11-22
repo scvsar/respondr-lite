@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import './App.css';
-import { apiUrl } from './config';
+import { apiGet } from './api';
+import { msalInstance } from './auth/msalClient';
 
 // Minimal, focused mobile view: Name, Vehicle, ETA for Responding only
 export default function MobileView() {
@@ -17,9 +18,7 @@ export default function MobileView() {
       setError(null);
       // check auth first
       try {
-        const ur = await fetch(apiUrl('/api/user'));
-        if (!ur.ok) throw new Error('auth');
-        const uj = await ur.json();
+        const uj = await apiGet('/api/user');
         setAuthChecked(true);
         if (!uj.authenticated || uj.error === 'Access denied') {
           setIsLoading(false);
@@ -28,9 +27,7 @@ export default function MobileView() {
           return;
         }
       } catch {}
-      const res = await fetch(apiUrl('/api/responders'), { headers: { 'Accept': 'application/json' }});
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
+      const json = await apiGet('/api/responders');
       setData(json);
       setIsLoading(false);
       setLastUpdated(new Date());
@@ -236,7 +233,17 @@ export default function MobileView() {
         <div className="empty" role="alert">
           {accessDenied.message || 'Access denied'}
           <div style={{marginTop:12}}>
-            <a className="btn" href={(typeof window!=='undefined' && window.location.host.endsWith(':3100')) ? 'http://localhost:8000/oauth2/sign_out?rd=/' : '/.auth/logout?post_logout_redirect_uri=/'}>Sign out</a>
+            <button className="btn" onClick={async () => {
+                sessionStorage.setItem('respondr_logging_out','true');
+                const local = window.localStorage.getItem("local_jwt");
+                if (local) {
+                    window.localStorage.removeItem("local_jwt");
+                    sessionStorage.clear();
+                    window.location.reload();
+                } else {
+                    await msalInstance.logoutRedirect();
+                }
+            }}>Sign out</button>
           </div>
         </div>
       )}

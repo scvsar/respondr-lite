@@ -12,7 +12,7 @@ from ..config import webhook_api_key, disable_api_key_check, APP_TZ, GROUP_ID_TO
 from ..llm import extract_details_from_text, build_prompts
 from ..utils import parse_datetime_like
 from ..storage import add_message, get_messages
-from .responders import require_admin_access
+from ..auth.dependencies import require_admin, require_auth, oauth2_scheme
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -308,8 +308,12 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         if debug:
             # Admin-only: require authenticated admin for debug payloads
             try:
-                # Use the same admin check as other endpoints
-                require_admin_access(request)
+                token = await oauth2_scheme(request)
+                if token:
+                    user = require_auth(token)
+                    require_admin(user)
+                else:
+                    raise HTTPException(status_code=401, detail="No token provided")
             except HTTPException:
                 raise
             except Exception:
@@ -341,7 +345,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
 
 
 @router.get("/api/debug/default-prompts")
-async def get_default_prompts(text: str, created_at: Optional[int] = None, prev_eta_iso: Optional[str] = None, _: bool = Depends(require_admin_access)):
+async def get_default_prompts(text: str, created_at: Optional[int] = None, prev_eta_iso: Optional[str] = None, _: dict = Depends(require_admin)):
     """Return the default system and user prompts the server would use for a given input.
     Helpful for the UI to prefill editable prompts.
     """
@@ -354,7 +358,7 @@ async def get_default_prompts(text: str, created_at: Optional[int] = None, prev_
 
 
 @router.get("/api/config/groups")
-async def get_config_groups(_: bool = Depends(require_admin_access)):
+async def get_config_groups(_: dict = Depends(require_admin)):
     """Return configured Group IDs and their team names. Admin-only."""
 
     try:
@@ -366,23 +370,9 @@ async def get_config_groups(_: bool = Depends(require_admin_access)):
 
 
 @router.post("/api/debug/webhook-raw")
-async def webhook_raw(request: Request, payload: Dict[str, Any]):
+async def webhook_raw(request: Request, payload: Dict[str, Any], _: dict = Depends(require_admin)):
     """Accept a raw GroupMe-style JSON and route it through webhook processing. Admin-only."""
-    # Admin-only guard
-    try:
-        from .user import is_admin
-        user_email = (
-            request.headers.get("X-Auth-Request-Email")
-            or request.headers.get("X-Auth-Request-User")
-            or request.headers.get("x-forwarded-email")
-            or request.headers.get("X-User")
-        ) if request else None
-        if not is_admin(user_email):
-            raise HTTPException(status_code=403, detail="Admin only")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=403, detail="Admin only")
+    # Admin-only guard handled by dependency
 
     try:
         # Extract fields from typical GroupMe message structure
@@ -428,7 +418,7 @@ async def webhook_raw(request: Request, payload: Dict[str, Any]):
 
 
 @router.post("/api/parse-debug")
-async def parse_debug(request: ParseDebugRequest, _: bool = Depends(require_admin_access)):
+async def parse_debug(request: ParseDebugRequest, _: dict = Depends(require_admin)):
     """Debug endpoint for testing message parsing. Admin-only."""
     try:
         base_time = None

@@ -58,6 +58,9 @@ param pollingIntervalSeconds int = 30
 @description('Non-secret env vars for the container: array of { name, value }')
 param containerEnvPlain array = []
 
+@description('Comma-separated list of allowed origins for CORS')
+param allowedOrigins string = ''
+
 @secure()
 @description('Secret map: name -> value. Secrets are created and also exposed via env using the same name.')
 param containerSecretMap object = {}
@@ -95,6 +98,10 @@ param authClientSecret string = ''
 
 @description('Azure AD Tenant ID (optional, defaults to current tenant)')
 param authTenantId string = ''
+
+@secure()
+@description('Webhook API Key for GroupMe integration')
+param webhookApiKey string = ''
 
 resource openai 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: openAiName
@@ -210,8 +217,16 @@ resource func 'Microsoft.Web/sites@2022-09-01' = {
           value: storageConn
         }
         {
+          name: 'AZURE_STORAGE_CONNECTION_STRING'
+          value: storageConn
+        }
+        {
           name: 'STORAGE_QUEUE_NAME'
           value: queueName
+        }
+        {
+          name: 'WEBHOOK_API_KEY'
+          value: webhookApiKey
         }
       ]
     }
@@ -305,6 +320,7 @@ resource respondr 'Microsoft.App/containerApps@2025-01-01' = {
               { name: 'STORAGE_QUEUE_NAME', value: queueName }
               { name: 'AZURE_STORAGE_ACCOUNT', value: sa.name }
               { name: 'AZURE_OPENAI_ENDPOINT', value: 'https://${openai.name}.openai.azure.com/' }
+              { name: 'ALLOWED_ORIGINS', value: allowedOrigins }
             ]
           )
           probes: [

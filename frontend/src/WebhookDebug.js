@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import './WebhookDebug.css';
-import { apiUrl } from './config';
+import { apiGet, apiCall } from './api';
 
 const defaultPayload = () => ({
   attachments: [],
@@ -62,38 +62,11 @@ export default function WebhookDebug() {
     requestAnimationFrame(() => autoResize(el));
   }, [autoResize]);
 
-  const base = useMemo(() => {
-    const host = typeof window!== 'undefined' ? window.location.host : '';
-    // Treat common dev ports as frontend-only, pointing API to localhost:8000
-    if (/localhost:(3000|3100|5173)$/i.test(host)) return 'http://localhost:8000';
-    return host.endsWith(':3100') ? 'http://localhost:8000' : '';
-  }, []);
-
-  const fetchWithFallback = useCallback(async (path, init) => {
-    const urls = [];
-    urls.push(`${base}${path}`);
-    if (!base) urls.push(`http://localhost:8000${path}`);
-    let last;
-    for (const u of urls) {
-      try {
-        const r = await fetch(u, init);
-        if (r.ok) return r;
-        last = r;
-      } catch (e) {
-        last = e;
-      }
-    }
-    if (last instanceof Response) throw new Error(`HTTP ${last.status}`);
-    throw last || new Error('Request failed');
-  }, [base]);
-
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const r = await fetch(apiUrl('/api/user'), { headers: { 'Accept': 'application/json' } });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = await r.json();
+        const j = await apiGet('/api/user');
         if (cancelled) return;
         setUser(j);
         if (!j.authenticated) {
@@ -107,21 +80,19 @@ export default function WebhookDebug() {
     };
     load();
     return () => { cancelled = true; };
-  }, [base]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
     const loadGroups = async () => {
       try {
-    const r = await fetchWithFallback(`/api/config/groups`, { headers: { 'Accept': 'application/json' } });
-    if (!r.ok) return; // likely non-admin
-        const j = await r.json();
+        const j = await apiGet('/api/config/groups');
         if (!cancelled) setGroups(j.groups || []);
       } catch {}
     };
     loadGroups();
     return () => { cancelled = true; };
-  }, [base, fetchWithFallback]);
+  }, []);
 
   // Load default prompts once on mount so fields are pre-populated (button can be used to reload later)
   useEffect(() => {
@@ -131,9 +102,7 @@ export default function WebhookDebug() {
         const params = new URLSearchParams();
         params.set('text', payload.text || '');
         if (payload.created_at) params.set('created_at', String(payload.created_at));
-        const r = await fetchWithFallback(`/api/debug/default-prompts?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
-        if (!r.ok) return;
-        const j = await r.json();
+        const j = await apiGet(`/api/debug/default-prompts?${params.toString()}`);
         if (cancelled) return;
         setSysPrompt(j.sys_prompt || '');
         setUserPrompt(j.user_prompt || '');
@@ -201,9 +170,10 @@ export default function WebhookDebug() {
           if (!Number.isNaN(n) && n > 0) body.debug_max_tokens = n;
         }
       }
-  const url = `${base}/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
-      const r = await fetch(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const path = `/webhook?debug=true` + (apiKey ? `&api_key=${encodeURIComponent(apiKey)}` : '');
+      const r = await apiCall(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       const text = await r.text();
@@ -214,8 +184,8 @@ export default function WebhookDebug() {
 
       // fetch responders snapshot
       try {
-  const rr = await fetch(apiUrl('/api/responders'), { headers: { 'Accept': 'application/json' } });
-        if (rr.ok) setResponders(await rr.json());
+        const rr = await apiGet('/api/responders');
+        setResponders(rr);
       } catch {}
     } catch (e) {
       setError(String(e.message || e));
@@ -232,9 +202,7 @@ export default function WebhookDebug() {
       const params = new URLSearchParams();
       params.set('text', payload.text || '');
       if (payload.created_at) params.set('created_at', String(payload.created_at));
-  const r = await fetchWithFallback(`/api/debug/default-prompts?${params.toString()}`, { headers: { 'Accept': 'application/json' } });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const j = await r.json();
+      const j = await apiGet(`/api/debug/default-prompts?${params.toString()}`);
       setSysPrompt(j.sys_prompt || '');
       setUserPrompt(j.user_prompt || '');
       // Manually trigger resize after setting the prompts

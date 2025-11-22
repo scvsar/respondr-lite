@@ -86,7 +86,9 @@ is_testing = os.getenv("PYTEST_CURRENT_TEST") is not None or "pytest" in sys.mod
 # Local authentication configuration
 ENABLE_LOCAL_AUTH = os.getenv("ENABLE_LOCAL_AUTH", "false").lower() == "true"
 LOCAL_USERS_TABLE = os.getenv("LOCAL_USERS_TABLE", "LocalUsers")
-LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_KEY", "your-secret-key-change-this")
+LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_KEY")
+if not LOCAL_AUTH_SECRET_KEY:
+    LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_FALLBACK", "your-secret-key-change-this")
 LOCAL_AUTH_SESSION_HOURS = int(os.getenv("LOCAL_AUTH_SESSION_HOURS", "24"))
 
 # GeoCities theme configuration

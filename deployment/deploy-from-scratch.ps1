@@ -266,4 +266,32 @@ Log "Using storage account name: $StorageAccountName"
   -DotEnvPath $DotEnvPath
 Log "Using direct invocation of ..\infra\deploy.ps1 (the earlier backtick call handles parameters)"
 
+# --- Post-Deployment Configuration ---
+Log "Starting post-deployment configuration..."
+
+# 1. Get Static Web App URL
+Log "Retrieving Static Web App URL..."
+$swaUrl = az staticwebapp show -n $StaticWebAppName -g $ResourceGroup --query "defaultHostname" -o tsv
+if ($swaUrl -and -not $swaUrl.StartsWith("https://")) { $swaUrl = "https://$swaUrl" }
+Log "Static Web App URL: $swaUrl"
+
+# 2. Get Container App FQDN
+Log "Retrieving Container App FQDN..."
+$caFqdn = az containerapp show -n $ContainerAppName -g $ResourceGroup --query "properties.configuration.ingress.fqdn" -o tsv
+$caUrl = "https://$caFqdn"
+Log "Container App URL: $caUrl"
+
+# 3. Update Container App with ALLOWED_ORIGINS and STATIC_WEB_APP_URL
+Log "Updating Container App environment variables..."
+$allowedOrigins = "$swaUrl,https://preprod.scvsar.app,https://main.scvsar.app"
+# Note: This update might trigger a new revision
+az containerapp update -n $ContainerAppName -g $ResourceGroup --set-env-vars "ALLOWED_ORIGINS=$allowedOrigins" "STATIC_WEB_APP_URL=$swaUrl"
+Log "Container App updated."
+
+# 4. Update Function App with CONTAINER_APP_WAKE_URL
+Log "Updating Function App settings..."
+$wakeUrl = "$caUrl/api/wake"
+az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings "CONTAINER_APP_WAKE_URL=$wakeUrl"
+Log "Function App updated."
+
 Log "Deployment script complete. Check $global:LogFile for full logs."

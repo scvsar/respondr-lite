@@ -143,6 +143,7 @@ def create_session_token(user: LocalUser) -> str:
         'is_admin': user.is_admin,
         'organization': user.organization,
         'auth_type': 'local',
+        'iss': 'local',
         'exp': datetime.utcnow() + timedelta(hours=LOCAL_AUTH_SESSION_HOURS),
         'iat': datetime.utcnow()
     }
@@ -193,8 +194,8 @@ async def get_local_user(username: str) -> Optional[LocalUser]:
         return None
 
 
-async def verify_local_user(username: str, password: str) -> Optional[LocalUser]:
-    """Verify username/password and return user if valid."""
+async def get_local_user_by_email(email: str) -> Optional[LocalUser]:
+    """Get a local user by email address."""
     if not ENABLE_LOCAL_AUTH and not is_testing:
         return None
     
@@ -202,12 +203,54 @@ async def verify_local_user(username: str, password: str) -> Optional[LocalUser]
         table_client = get_table_client(LOCAL_USERS_TABLE)
         if table_client is None:
             # Use in-memory storage
-            entity = _local_users_memory_store.get(username)
-            if not entity:
-                logger.info(f"Local user {username} not found in memory store")
-                return None
+            for user_data in _local_users_memory_store.values():
+                if user_data.get("email", "").lower() == email.lower():
+                    return LocalUser.from_dict(user_data)
+            return None
         else:
-            # Use Azure Table Storage
+            # Use Azure Table Storage - Query by email
+            # Note: This is a scan, but acceptable for small number of local users
+            filter_query = f"PartitionKey eq 'localuser' and email eq '{email}'"
+            entities = table_client.query_entities(filter_query)
+            
+            for entity in entities:
+                return LocalUser.from_dict(entity)
+            
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error getting local user by email {email}: {e}")
+        return None
+
+
+async def verify_local_user(username_or_email: str, password: str) -> Optional[LocalUser]:
+    """Verify username/password and return user if valid."""
+    if not ENABLE_LOCAL_AUTH and not is_testing:
+        return None
+    
+    try:
+        user = await get_local_user(username_or_email)
+        
+        # If not found by username, try email if it looks like one
+        if not user and "@" in username_or_email:
+            user = await get_local_user_by_email(username_or_email)
+            
+        if not user:
+            logger.info(f"Local user {username_or_email} not found")
+            return None
+
+        # Get the password hash/salt (need to fetch raw entity again or store it in LocalUser?)
+        # LocalUser object doesn't store hash/salt. We need to fetch the entity.
+        # But we already fetched it in get_local_user... but that returns LocalUser object.
+        # We need to refactor slightly or fetch again.
+        
+        # Let's fetch the entity using the resolved username
+        username = user.username
+        
+        table_client = get_table_client(LOCAL_USERS_TABLE)
+        if table_client is None:
+            entity = _local_users_memory_store.get(username)
+        else:
             entity = table_client.get_entity("localuser", username)
         
         stored_hash = entity.get("password_hash")
@@ -224,10 +267,10 @@ async def verify_local_user(username: str, password: str) -> Optional[LocalUser]
             return None
             
     except ResourceNotFoundError:
-        logger.info(f"Local user {username} not found")
+        logger.info(f"Local user {username_or_email} not found")
         return None
     except Exception as e:
-        logger.error(f"Error verifying local user {username}: {e}")
+        logger.error(f"Error verifying local user {username_or_email}: {e}")
         return None
 
 

@@ -7,6 +7,7 @@ from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
 
 from .routers import webhook, responders, dashboard, user, auth
+from .auth.dependencies import require_auth
 from .queue_listener import listen_to_queue
 from .retention_scheduler import retention_cleanup_task
 from .request_logger import log_request
@@ -16,30 +17,32 @@ logger = logging.getLogger(__name__)
 # Disable automatic docs generation - we'll create protected versions
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
 
-# Enable CORS for local dev (CRA on :3100) and Static Web Apps
-_allow_dev_cors = True  # safe default for local runs; can tighten with env if needed
-if _allow_dev_cors:
-    origins = [
-        "http://localhost:3100",
-        "http://127.0.0.1:3100",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ]
-    
-    # Add Static Web App origins from environment variable if present
-    static_web_app_url = os.getenv("STATIC_WEB_APP_URL")
-    if static_web_app_url:
-        origins.append(static_web_app_url)
-        # Also add the default Azure Static Web Apps domain pattern
-        origins.append("https://*.azurestaticapps.net")
-    
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"]
-    )
+# Enable CORS with strict origins
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+# Add Static Web App origins from environment variable
+static_web_app_url = os.getenv("STATIC_WEB_APP_URL")
+if static_web_app_url:
+    origins.append(static_web_app_url)
+
+# Add explicit allowed origins from env
+allowed_origins_env = os.getenv("ALLOWED_ORIGINS")
+if allowed_origins_env:
+    origins.extend([o.strip() for o in allowed_origins_env.split(",") if o.strip()])
+
+# Default SWA pattern if not specified (be careful with wildcards in production if possible)
+# origins.append("https://*.azurestaticapps.net") 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 
 @app.middleware("http")
@@ -91,20 +94,18 @@ app.include_router(auth.router)
 # frontend.mount_static_files(app)
 
 # Protected documentation endpoints
-from .routers.responders import require_authenticated_access
-
 @app.get("/openapi.json", include_in_schema=False)
-async def get_open_api_endpoint(_: bool = Depends(require_authenticated_access)):
+async def get_open_api_endpoint(_: dict = Depends(require_auth)):
     """Protected OpenAPI schema endpoint."""
     return get_openapi(title="Respondr API", version="1.0.0", routes=app.routes)
 
 @app.get("/docs", include_in_schema=False)
-async def get_swagger_ui(_: bool = Depends(require_authenticated_access)):
+async def get_swagger_ui(_: dict = Depends(require_auth)):
     """Protected Swagger UI documentation."""
     return get_swagger_ui_html(openapi_url="/openapi.json", title="Respondr API Docs")
 
 @app.get("/redoc", include_in_schema=False)
-async def get_redoc(_: bool = Depends(require_authenticated_access)):
+async def get_redoc(_: dict = Depends(require_auth)):
     """Protected ReDoc documentation."""
     return get_redoc_html(openapi_url="/openapi.json", title="Respondr API Docs")
 

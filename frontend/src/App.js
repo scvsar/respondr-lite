@@ -9,95 +9,82 @@ import StatusTabs from './StatusTabs';
 import WebhookDebug from './WebhookDebug';
 import LoginChoice from './LoginChoice';
 import AdminPanel from './AdminPanel';
-import { apiUrl } from './config';
+import { getAccessToken, msalInstance, initializeMsal } from "./auth/msalClient";
+import { getLocalToken } from "./auth/localAuth";
+import { apiGet, apiCall } from "./api";
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
-  const [, setUser] = React.useState(null);
+  const [user, setUser] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [denied, setDenied] = React.useState(null);
   const loc = useLocation();
-
-  const signInUrl = React.useCallback((path) => {
-    const rd = encodeURIComponent(path || '/');
-    // If we're on port 3100 (CRA dev) and backend is on 8000, send user to backend's oauth start
-    const host = typeof window !== 'undefined' ? window.location.host : '';
-    const isDevPort = host.endsWith(':3100');
-    if (isDevPort) {
-      return `http://localhost:8000/oauth2/start?rd=${rd}`;
-    }
-    return `/.auth/login/aad?post_login_redirect_uri=${rd}`;
-  }, []);
 
   React.useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        // Optimization: Check SWA auth endpoint first to avoid waking ACA
-        // Only works if running on SWA (or emulated)
-        let swaUser = null;
-        try {
-          const swaResp = await fetch('/.auth/me');
-          if (swaResp.ok) {
-            const swaData = await swaResp.json();
-            swaUser = swaData.clientPrincipal;
-          }
-        } catch (e) {
-          // Ignore error (e.g. not on SWA)
+        // Check for local token
+        const localToken = getLocalToken();
+        if (localToken) {
+            try {
+                const payload = JSON.parse(atob(localToken.split('.')[1]));
+                if (cancelled) return;
+                setUser({
+                    authenticated: true,
+                    name: payload.display_name || payload.username,
+                    email: payload.email,
+                    is_admin: payload.is_admin,
+                    auth_type: 'local'
+                });
+                setLoading(false);
+                return;
+            } catch (e) {
+                console.error("Invalid local token", e);
+            }
         }
 
-        // Check for local auth token
-        // We assume the token is stored in a cookie or localStorage managed by the browser/code
-        // But the backend uses httpOnly cookies for security, so we can't read them in JS.
-        // However, if we are not on SWA (swaUser is null), and we have no way to know if we have a cookie,
-        // we might have to hit the API.
-        // BUT, if we are on SWA and swaUser is null, we are definitely not logged in via SSO.
-        // If we want to support local auth without waking, we'd need a client-side flag.
-        
-        // Strategy:
-        // 1. If SWA says we are logged in -> Call API (wakes ACA, but justified)
-        // 2. If SWA says NOT logged in -> 
-        //    a. If we have a "local_session_hint" in localStorage -> Call API (wakes ACA)
-        //    b. If no hint -> Assume not logged in -> Show LoginChoice (NO WAKE)
-        
-        const hasLocalHint = localStorage.getItem('respondr_session_hint');
-
-        if (swaUser || hasLocalHint || window.location.hostname === 'localhost') {
-             const r = await fetch(apiUrl('/api/user'));
-             if (!r.ok) throw new Error(`HTTP ${r.status}`);
-             const j = await r.json();
-             if (cancelled) return;
-             setUser(j);
-             if (!j.authenticated) {
-               setDenied({ error: 'Not authenticated' });
-               return;
+        // Check for MSAL token
+        const msalToken = await getAccessToken();
+        if (msalToken) {
+             try {
+                const payload = JSON.parse(atob(msalToken.split('.')[1]));
+                if (cancelled) return;
+                setUser({
+                    authenticated: true,
+                    name: payload.name,
+                    email: payload.preferred_username || payload.email,
+                    is_admin: false, // Roles check needed if critical, or let backend enforce
+                    auth_type: 'aad'
+                });
+                setLoading(false);
+                return;
+             } catch (e) {
+                 console.error("Invalid MSAL token", e);
              }
-             if (j.error === 'Access denied') {
-               setDenied(j);
-             }
-        } else {
-            // Assume not authenticated without hitting API
-            if (cancelled) return;
-            setDenied({ error: 'Not authenticated' });
-            setLoading(false);
         }
+
+        if (cancelled) return;
+        setDenied({ error: 'Not authenticated' });
+        setLoading(false);
 
       } catch (e) {
         if (!cancelled) setDenied({ error: 'Unable to verify sign-in' });
-      } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     };
     load();
     return () => { cancelled = true; };
-  }, [loc.pathname, signInUrl]);
+  }, [loc.pathname]);
 
   if (loading) return <div className="empty">Checking sign-in…</div>;
   if (denied) {
     // Show login choice page instead of simple sign-in button
     return <LoginChoice />;
   }
-  return children;
+  // Pass user down if needed, or just render children
+  // We might want to provide a UserContext later
+  return React.cloneElement(children, { user });
 }
 
 // Admin gate: ensures user is authenticated and has admin privileges
@@ -110,15 +97,7 @@ function AdminGate({ children }) {
     let cancelled = false;
     const load = async () => {
       try {
-        const resp = await fetch(apiUrl("/api/user"), { credentials: 'include' });
-        if (!resp.ok) {
-          if (!cancelled) {
-            setDenied("Failed to load user info");
-            setLoading(false);
-          }
-          return;
-        }
-        const userData = await resp.json();
+        const userData = await apiGet("/api/user");
         if (!cancelled) {
           if (!userData.authenticated) {
             setDenied("Authentication required");
@@ -218,18 +197,15 @@ function MainApp() {
   useEffect(() => {
     const fetchConfig = async () => {
       try {
-        const response = await fetch(apiUrl('/api/config'));
-        if (response.ok) {
-          const config = await response.json();
-          setGeocitiesConfig(config.geocities || { force_mode: false, enable_toggle: false });
-          // If force mode is enabled, automatically enable GeoCities mode
-          if (config.geocities?.force_mode) {
-            setGeocitiesMode(true);
-          }
-          // Set inactivity timeout from backend config
-          if (config.inactivity?.timeout_minutes) {
-            setInactivityTimeoutMinutes(config.inactivity.timeout_minutes);
-          }
+        const config = await apiGet('/api/config');
+        setGeocitiesConfig(config.geocities || { force_mode: false, enable_toggle: false });
+        // If force mode is enabled, automatically enable GeoCities mode
+        if (config.geocities?.force_mode) {
+          setGeocitiesMode(true);
+        }
+        // Set inactivity timeout from backend config
+        if (config.inactivity?.timeout_minutes) {
+          setInactivityTimeoutMinutes(config.inactivity.timeout_minutes);
         }
       } catch (error) {
         console.warn('Failed to fetch configuration:', error);
@@ -375,9 +351,7 @@ function MainApp() {
       }
       // Also don't fetch data if unauthenticated
       try {
-        const ur = await fetch(apiUrl('/api/user'));
-        if (!ur.ok) throw new Error('auth');
-        const uj = await ur.json();
+        const uj = await apiGet('/api/user');
         if (!uj.authenticated || uj.error === 'Access denied') {
           setIsLoading(false);
           setData([]);
@@ -387,11 +361,7 @@ function MainApp() {
       
       setError(null);
       const url = getTimeFilterUrl();
-      const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
-      if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`);
-      }
-      const json = await res.json();
+      const json = await apiGet(url);
       setData(json);
       setIsLoading(false);
       setLastUpdated(new Date());
@@ -478,8 +448,8 @@ function MainApp() {
   useEffect(() => {
     const loadUser = async () => {
       try {
-        const r = await fetch(apiUrl('/api/user'));
-        if (r.ok) setUser(await r.json());
+        const u = await apiGet('/api/user');
+        setUser(u);
       } catch {}
     };
     loadUser();
@@ -804,14 +774,16 @@ function MainApp() {
     if (form.eta && !form.eta_timestamp) payload.eta = form.eta;
     if (form.arrival_status) payload.arrival_status = form.arrival_status;
 
-    const opts = {
-      method: editingId ? 'PUT' : 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-      body: JSON.stringify(payload),
-    };
-    const url = editingId ? apiUrl(`/api/responders/${editingId}`) : apiUrl('/api/responders');
-    const r = await fetch(url, opts);
-    if (!r.ok) { alert('Save failed'); return; }
+    const url = editingId ? `/api/responders/${editingId}` : '/api/responders';
+    try {
+      await apiCall(url, {
+        method: editingId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      alert('Save failed'); return;
+    }
     setShowEditor(false);
     setEditingId(null);
     setSelected(new Set());
@@ -822,19 +794,19 @@ function MainApp() {
     if (!isAdmin) { alert('Only admins can delete entries.'); return; }
     if (!selected.size) return;
     if (!window.confirm(`Delete ${selected.size} entr${selected.size===1?'y':'ies'}?`)) return;
-    let ok = true;
-    if (selected.size === 1) {
-      const id = Array.from(selected)[0];
-      const r = await fetch(apiUrl(`/api/responders/${id}`), { method: 'DELETE' });
-      ok = r.ok;
-    } else {
-      const r = await fetch(apiUrl('/api/responders/bulk-delete'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: Array.from(selected) }),
-      });
-      ok = r.ok;
+    try {
+      if (selected.size === 1) {
+        const id = Array.from(selected)[0];
+        await apiCall(`/api/responders/${id}`, { method: 'DELETE' });
+      } else {
+        await apiCall('/api/responders/bulk-delete', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: Array.from(selected) }),
+        });
+      }
+    } catch (e) {
+      alert('Delete failed'); return;
     }
-    if (!ok) { alert('Delete failed'); return; }
     setSelected(new Set());
   setRefreshNonce(n=>n+1);
   await fetchData();
@@ -924,15 +896,13 @@ function MainApp() {
               }}>Mobile Site</div>
               <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
-                const host = window.location.host;
-                if (host.endsWith(':3100')) {
-                  window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/oauth2/start?rd=/';
-                } else if (user?.auth_type === 'local') {
-                  await fetch(apiUrl('/api/auth/local/logout'), { method: 'POST', credentials: 'include' });
+                if (user?.auth_type === 'local') {
+                  window.localStorage.removeItem("local_jwt");
                   sessionStorage.clear();
                   window.location.reload();
                 } else {
-                  window.location.href = '/.auth/logout?post_logout_redirect_uri=%2F.auth%2Flogin%2Faad%3Fpost_login_redirect_uri%3D%2F';
+                  await initializeMsal();
+                  await msalInstance.logoutRedirect();
                 }
               }}>Switch Account</div>
               {isAdmin && (
@@ -948,16 +918,13 @@ function MainApp() {
               )}
               <div className="menu-item" onClick={async ()=>{ 
                 sessionStorage.setItem('respondr_logging_out','true'); 
-                const host = window.location.host;
-                if (host.endsWith(':3100')) {
-                  window.location.href = 'http://localhost:8000/oauth2/sign_out?rd=/';
-                } else if (user?.auth_type === 'local') {
-                  await fetch(apiUrl('/api/auth/local/logout'), { method: 'POST', credentials: 'include' });
+                if (user?.auth_type === 'local') {
+                  window.localStorage.removeItem("local_jwt");
                   sessionStorage.clear();
                   window.location.reload();
                 } else {
-                  const url = user?.logout_url || '/.auth/logout?post_logout_redirect_uri=/';
-                  window.location.href = url;
+                  await initializeMsal();
+                  await msalInstance.logoutRedirect();
                 }
               }}>Logout</div>
             </div>

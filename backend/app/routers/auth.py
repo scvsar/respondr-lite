@@ -14,7 +14,7 @@ from ..local_auth import (
     verify_local_user, create_session_token,
     create_local_user, update_local_user_password, list_local_users, get_local_user, delete_local_user
 )
-from .responders import require_admin_access
+from ..auth.dependencies import require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -77,6 +77,7 @@ async def local_login(login_request: LoginRequest):
             # Create response with token in both header and cookie
             response = JSONResponse(content={
                 "success": True,
+                "token": token,
                 "user": {
                     "username": user.username,
                     "email": user.email,
@@ -89,16 +90,24 @@ async def local_login(login_request: LoginRequest):
             
             # Determine cookie security
             # If using local storage emulator, assume local dev (HTTP)
-            is_local_dev = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "").startswith("UseDevelopmentStorage=true")
+            storage_conn = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+            is_local_dev = (
+                storage_conn.startswith("UseDevelopmentStorage=true") or 
+                "127.0.0.1" in storage_conn or 
+                "localhost" in storage_conn or
+                "devstoreaccount1" in storage_conn
+            )
 
             # Set secure HTTP-only cookie for browser-based requests
+            max_age_seconds = int(timedelta(hours=24).total_seconds())
+
             response.set_cookie(
                 key="session_token",
                 value=token,
                 httponly=True,
                 secure=not is_local_dev,
                 samesite="lax",
-                max_age=timedelta(hours=24).total_seconds()
+                max_age=max_age_seconds
             )
             
             logger.info(f"Successful local login: {user.username} ({user.email})")
@@ -169,7 +178,7 @@ async def change_password(request: Request, password_request: PasswordChangeRequ
 @router.post("/api/auth/local/admin/create-user")
 async def admin_create_user(
     create_request: CreateUserRequest,
-    _: bool = Depends(require_admin_access)
+    _: bool = Depends(require_admin)
 ):
     """Create a new local user (admin only)."""
     success = await create_local_user(
@@ -194,7 +203,7 @@ async def admin_create_user(
 @router.post("/api/auth/local/admin/reset-password")
 async def admin_reset_password(
     reset_request: AdminPasswordResetRequest,
-    _: bool = Depends(require_admin_access)
+    _: bool = Depends(require_admin)
 ):
     """Reset a user's password (admin only)."""
     success = await update_local_user_password(reset_request.username, reset_request.new_password)
@@ -210,7 +219,7 @@ async def admin_reset_password(
 
 
 @router.get("/api/auth/local/admin/users")
-async def admin_list_users(_: bool = Depends(require_admin_access)):
+async def admin_list_users(_: bool = Depends(require_admin)):
     """List all local users (admin only)."""
     users = await list_local_users()
     
@@ -230,7 +239,7 @@ async def admin_list_users(_: bool = Depends(require_admin_access)):
 
 
 @router.delete("/api/auth/local/admin/users/{username}")
-async def admin_delete_user(username: str, _: bool = Depends(require_admin_access)):
+async def admin_delete_user(username: str, _: bool = Depends(require_admin)):
     """Delete a local user (admin only)."""
     success = await delete_local_user(username)
     

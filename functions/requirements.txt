@@ -7,3 +7,5 @@ pydantic
 requests
 typing-extensions
 isoscore
+pyjwt
+passlib

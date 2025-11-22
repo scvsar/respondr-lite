@@ -6,17 +6,19 @@ from unittest.mock import patch, MagicMock
 import os
 import re
 from main import app, extract_details_from_text
+from app.auth.dependencies import require_auth, require_admin
 
 client = TestClient(app)
 
-@pytest.fixture(autouse=True)
-def setup_and_teardown():
-    """Setup and teardown for each test"""
-    # Setup: Reset the global messages list for each test
-    global_messages = []
-    with patch('main.messages', global_messages):
-        yield
-    # Teardown: No special cleanup needed
+# Mock user for auth
+mock_user = {
+    "preferred_username": "test@scvsar.org",
+    "email": "test@scvsar.org",
+    "name": "Test User",
+    "is_admin": True,
+    "auth_type": "entra",
+    "groups": ["group1"]
+}
 
 @pytest.fixture
 def mock_openai_response():
@@ -33,14 +35,22 @@ def mock_openai_response():
 
 def test_get_responder_data_empty():
     """Test the /api/responders endpoint with no data"""
+    app.dependency_overrides[require_auth] = lambda: mock_user
+    app.dependency_overrides[require_admin] = lambda: mock_user
+    
     # Mock empty storage for this test
     with patch('app.storage.get_messages', return_value=[]):
         response = client.get("/api/responders")
         assert response.status_code == 200
         assert response.json() == []
+    
+    app.dependency_overrides = {}
 
 def test_webhook_endpoint(mock_openai_response):
     """Test the webhook endpoint with a mock OpenAI response"""
+    app.dependency_overrides[require_auth] = lambda: mock_user
+    app.dependency_overrides[require_admin] = lambda: mock_user
+
     # Use a test messages list
     test_messages = []
     
@@ -81,6 +91,8 @@ def test_webhook_endpoint(mock_openai_response):
             assert test_user_message["vehicle"] == "SAR-78"
             assert re.match(r"\d{2}:\d{2}", test_user_message["eta"])  # HH:MM after LLM iso conversion
             assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", test_user_message["eta_timestamp"])  # legacy format in tests
+            
+    app.dependency_overrides = {}
 
 def test_extract_details_with_vehicle_and_eta():
     """Test extracting details with both vehicle and ETA present"""
@@ -165,67 +177,26 @@ def test_static_files():
     assert not static_route, "Static files should not be mounted in test mode"
 
 def test_user_info():
-    """Test the /api/user endpoint with OAuth2 headers"""
-    # Test with OAuth2 Proxy headers - use allowed domain
-    headers = {
-        "X-User": "test@scvsar.org",
-        "X-Preferred-Username": "Test User",
-        "X-User-Groups": "group1, group2, group3"
-    }
+    """Test the /api/user endpoint with mocked auth"""
+    app.dependency_overrides[require_auth] = lambda: mock_user
+    app.dependency_overrides[require_admin] = lambda: mock_user
     
-    response = client.get("/api/user", headers=headers)
+    response = client.get("/api/user")
     assert response.status_code == 200
     
     data = response.json()
     assert data["authenticated"] == True
     assert data["email"] == "test@scvsar.org"
     assert data["name"] == "Test User"
-    assert data["groups"] == ["group1", "group2", "group3"]
-    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
-
-def test_user_info_minimal_headers():
-    """Test the /api/user endpoint with minimal OAuth2 headers"""
-    headers = {
-        "X-User": "minimal@respondr.local"  # Use allowed domain
-    }
+    assert data["groups"] == ["group1"]
+    assert data["is_admin"] == True
     
-    response = client.get("/api/user", headers=headers)
-    assert response.status_code == 200
-    
-    data = response.json()
-    assert data["authenticated"] == True
-    assert data["email"] == "minimal@respondr.local"
-    assert data["name"] == "minimal@respondr.local"  # Should fallback to email
-    assert data["groups"] == []
-    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
+    app.dependency_overrides = {}
 
-def test_user_info_no_headers():
-    """Test the /api/user endpoint with no OAuth2 headers"""
+def test_user_info_unauthorized():
+    """Test the /api/user endpoint without auth"""
+    # Remove override for this test
+    app.dependency_overrides = {}
+    
     response = client.get("/api/user")
-    assert response.status_code == 200
-    
-    data = response.json()
-    assert data["authenticated"] == False  # Should be False when no headers present
-    assert data["email"] is None
-    assert data["name"] is None
-    assert data["groups"] == []
-    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
-
-def test_user_info_oauth2_proxy_headers():
-    """Test the /api/user endpoint with OAuth2 Proxy standard headers"""
-    # Test with OAuth2 Proxy standard headers (X-Auth-Request-*) - use allowed domain
-    headers = {
-        "X-Auth-Request-Email": "oauth2@scvsar.org",
-        "X-Auth-Request-Preferred-Username": "OAuth2 User",
-        "X-Auth-Request-Groups": "admin, users, testers"
-    }
-    
-    response = client.get("/api/user", headers=headers)
-    assert response.status_code == 200
-    
-    data = response.json()
-    assert data["authenticated"] == True
-    assert data["email"] == "oauth2@scvsar.org"
-    assert data["name"] == "OAuth2 User"
-    assert data["groups"] == ["admin", "users", "testers"]
-    assert data["logout_url"] == "/.auth/logout?post_logout_redirect_uri=%2F"
+    assert response.status_code == 401

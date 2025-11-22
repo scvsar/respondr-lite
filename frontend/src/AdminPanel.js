@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './AdminPanel.css';
-import { apiUrl } from './config';
+import { apiGet, apiCall, apiPost } from './api';
 
 function AdminPanel() {
   const [users, setUsers] = useState([]);
@@ -19,16 +19,8 @@ function AdminPanel() {
     setLoading(true);
     setError('');
     try {
-      const response = await fetch(apiUrl('/api/auth/local/admin/users'), {
-        credentials: 'include'
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        setUsers(data.users || []);
-      } else {
-        setError('Failed to load users');
-      }
+      const data = await apiGet('/api/auth/local/admin/users');
+      setUsers(data.users || []);
     } catch (err) {
       setError('Network error loading users');
     } finally {
@@ -99,9 +91,8 @@ function UserManagement({ users, setUsers, loading, error, showCreateUser, setSh
     }
 
     try {
-      const response = await fetch(apiUrl(`/api/auth/local/admin/users/${username}`), {
-        method: 'DELETE',
-        credentials: 'include'
+      const response = await apiCall(`/api/auth/local/admin/users/${username}`, {
+        method: 'DELETE'
       });
       
       const data = await response.json();
@@ -240,20 +231,13 @@ function CreateUserModal({ onClose, onSuccess }) {
     setError('');
 
     try {
-      const response = await fetch(apiUrl('/api/auth/local/admin/create-user'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          username: formData.username,
-          password: formData.password,
-          email: formData.email,
-          display_name: formData.display_name,
-          organization: formData.organization,
-          is_admin: formData.is_admin
-        }),
+      const response = await apiPost('/api/auth/local/admin/create-user', {
+        username: formData.username,
+        password: formData.password,
+        email: formData.email,
+        display_name: formData.display_name,
+        organization: formData.organization,
+        is_admin: formData.is_admin
       });
 
       const data = await response.json();
@@ -416,16 +400,9 @@ function ResetPasswordModal({ user, onClose, onSuccess }) {
     setError('');
 
     try {
-      const response = await fetch(apiUrl('/api/auth/local/admin/reset-password'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          username: user.username,
-          new_password: newPassword
-        }),
+      const response = await apiPost('/api/auth/local/admin/reset-password', {
+        username: user.username,
+        new_password: newPassword
       });
 
       const data = await response.json();

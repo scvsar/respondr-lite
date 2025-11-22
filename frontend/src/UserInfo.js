@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import './UserInfo.css';
-import { apiUrl } from './config';
+import { apiGet } from './api';
 
 function UserInfo({ onAdminChange }) {
   const [user, setUser] = useState(null);
@@ -27,15 +27,10 @@ function UserInfo({ onAdminChange }) {
           }
         }
 
-        const response = await fetch(apiUrl('/api/user'));
-        if (response.ok) {
-          const userData = await response.json();
-          setUser(userData);
-          if (userData.logout_url) {
-            setLogoutUrl(userData.logout_url);
-          }
-        } else {
-          setError('Failed to fetch user information');
+        const userData = await apiGet('/api/user');
+        setUser(userData);
+        if (userData.logout_url) {
+          setLogoutUrl(userData.logout_url);
         }
       } catch (err) {
         setError('Error loading user information');

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import './StatusTabs.css';
-import { apiUrl } from './config';
+import { apiCall } from './api';
 
 const StatusTabs = ({ 
   data, 
@@ -49,7 +49,7 @@ const StatusTabs = ({
     try {
       setCurrentStatusError(null);
       setCurrentStatusLoading(true);
-      const response = await fetch(apiUrl(`/api/current-status?t=${Date.now()}`), { cache: 'no-store' });
+      const response = await apiCall(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }

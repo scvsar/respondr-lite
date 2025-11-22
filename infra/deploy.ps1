@@ -115,6 +115,14 @@ $params = @{
   enableAuth         = @{ value = $EnableAuth.IsPresent }
 }
 
+# Extract WEBHOOK_API_KEY from secretMap or plainEnv if present
+if ($secretMap.ContainsKey('WEBHOOK_API_KEY')) {
+  $params['webhookApiKey'] = @{ value = $secretMap['WEBHOOK_API_KEY'] }
+} elseif ($plainEnv | Where-Object { $_.name -eq 'WEBHOOK_API_KEY' }) {
+  $val = ($plainEnv | Where-Object { $_.name -eq 'WEBHOOK_API_KEY' }).value
+  $params['webhookApiKey'] = @{ value = $val }
+}
+
 # Add auth parameters if enabling auth
 if ($EnableAuth.IsPresent) {
   if ([string]::IsNullOrWhiteSpace($AuthClientId)) {

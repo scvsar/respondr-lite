@@ -1,4 +1,13 @@
 services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: respondr-azurite
+    ports:
+      - "10000:10000"
+      - "10001:10001"
+      - "10002:10002"
+    restart: unless-stopped
+
   respondr:
     container_name: respondr-backend
     build:
@@ -6,14 +15,19 @@ services:
       dockerfile: Dockerfile.backend
     ports:
       - "8000:8000"
+    depends_on:
+      - azurite
     environment:
       - DEBUG=true
       - DISABLE_API_KEY_CHECK=true
       - ALLOW_CLEAR_ALL=true
       - ENABLE_LOCAL_AUTH=true
       - INACTIVITY_TIMEOUT_MINUTES=1
-      # Override storage connection for Docker to reach host Azurite - this connection string is public and safe
-      - AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://host.docker.internal:10000/devstoreaccount1;QueueEndpoint=http://host.docker.internal:10001/devstoreaccount1;TableEndpoint=http://host.docker.internal:10002/devstoreaccount1;
+      - REACT_APP_AAD_TENANT_ID=organizations
+      - REACT_APP_AAD_CLIENT_ID=9068684b-2e21-428a-bfd3-c945f4727425
+      - API_AUDIENCE=api://9068684b-2e21-428a-bfd3-c945f4727425
+      # Connect to the azurite service within the docker network
+      - AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;
     env_file:
       - .env
     volumes:

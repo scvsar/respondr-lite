@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+    "@azure/msal-browser": "^4.26.2",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
@@ -40,7 +41,6 @@
   },
   "description": "This directory contains the React application that renders the responder dashboard.\r It communicates with the FastAPI backend to display current responder status and was originally bootstrapped with [Create React App](https://github.com/facebook/create-react-app).",
   "main": "jest.config.js",
-  "devDependencies": {},
   "keywords": [],
   "author": "",
   "license": "ISC"

@@ -4,36 +4,38 @@ A serverless web application to track responses to Search and Rescue call-outs. 
 
 ## Architecture Overview
 
-This application has been completely refactored from Kubernetes to a lightweight, two-tier serverless architecture:
+This application has been completely refactored from Kubernetes to a lightweight, two-tier serverless architecture designed for **bot protection** and **scale-to-zero** cost efficiency:
 
-- **Azure Functions** (Consumption): Handles GroupMe webhook ingestion and message queuing
-- **Azure Static Web Apps** (Free): Hosts the React frontend on a global CDN with GitHub Actions CI/CD
-- **Azure Container Apps** (Consumption): Runs the FastAPI API + background workers with scale-to-zero capability
-- **Azure Storage Queue**: Decouples webhook ingestion from processing, enables auto-scaling
-- **Azure Table Storage**: Primary data store for responder messages
-- **Azure OpenAI GPT-5-nano**: AI-powered message parsing for vehicle and ETA extraction
-- **Azure Entra ID (Easy Auth)**: Built-in authentication replacing OAuth2 proxy sidecar
+- **Azure Functions** (Consumption): Handles GroupMe webhook ingestion and **local user authentication**.
+- **Azure Static Web Apps** (Free): Hosts the React frontend on a global CDN with GitHub Actions CI/CD.
+- **Azure Container Apps** (Consumption): Runs the FastAPI API + background workers. **Only wakes up for authenticated users or valid webhooks.**
+- **Azure Storage Queue**: Decouples webhook ingestion from processing, enables auto-scaling.
+- **Azure Table Storage**: Primary data store for responder messages and local users.
+- **Azure OpenAI GPT-5-nano**: AI-powered message parsing for vehicle and ETA extraction.
+- **Azure Entra ID (MSAL)**: Client-side authentication for organization users.
 
 ### High-Level Architecture
 
 ```mermaid
-graph LR
-  GM[GroupMe Bot] --> AF[Azure Functions<br/>groupme_ingest]
-  AF --> Q[Azure Storage Queue<br/>respondr-incoming]
-  AF -.->|Wake if scaled to zero| ACA
+flowchart LR
+  A[Static Web App<br/>Free Tier] -->|Serves React SPA Only| B((User Browser))
+  B -->|Entra Login or Local Login| C[Auth Flows]
+  C -->|Entra: MSAL<br/>Local: Function Login| D{Is Auth Successful?}
 
-  subgraph ACA[Azure Container Apps Consumption]
-    API[FastAPI API + Worker]
-  end
-
-  Q -->|triggers scale-from-zero| ACA
-  API --> Q
-  API --> AOAI[Azure OpenAI<br/>gpt-5-nano deployment]
-  API --> TS[Azure Table Storage<br/>ResponderMessages]
-
-  SWA[Azure Static Web App] -.->|HTTPS| API
-  U[Responders/Admins] -->|Browser| SWA
+  D -->|No| A
+  D -->|Yes| E[Container App API]
+  E -->|Validated JWT| F[(ResponderMessages Table)]
+  G[GroupMe Bot] --> H[Azure Function Ingest] --> I[Queue] -->|KEDA| E
 ```
+
+### Bot Protection & Scale-to-Zero
+
+The architecture is strictly designed to prevent unauthorized traffic from waking the backend Container App:
+
+1.  **Client-Side Auth**: Authentication happens entirely in the browser (Entra ID) or via Azure Functions (Local Auth).
+2.  **Lazy Wake**: The Container App is only called *after* a user has a valid JWT.
+3.  **Strict CORS**: The backend only accepts requests from the specific Static Web App domains.
+4.  **No Public API**: Unauthenticated requests are rejected at the edge or by the API without processing.
 
 ## Quick Start
 
@@ -92,25 +94,26 @@ sequenceDiagram
 sequenceDiagram
   participant U as User Browser
   participant SWA as Azure Static Web App
-  participant AAD as Entra ID (Azure AD)
+  participant AAD as Entra ID (MSAL)
+  participant FUNC as Azure Function<br/>(Local Auth)
   participant API as Azure Container Apps<br/>(FastAPI Backend)
-  participant TS as Azure Table Storage<br/>(ResponderMessages)
 
   U->>SWA: GET /
   Note over SWA: Serves React App (Public)
   
-  U->>SWA: GET /.auth/login/aad
-  SWA-->>AAD: Redirect to Entra ID
-  AAD-->>U: Sign-in
-  AAD-->>SWA: Callback
-  SWA-->>U: Session Cookie
+  alt Entra ID Login
+    U->>AAD: Login (MSAL)
+    AAD-->>U: Access Token (JWT)
+  else Local Login
+    U->>FUNC: POST /api/local_login
+    FUNC-->>U: Access Token (JWT)
+  end
   
   U->>API: GET /api/responders
-  Note over API: Validates Authentication
-  API->>TS: Query responder data
-  TS-->>API: Entities
-  API-->>U: JSON
-  U-->>U: Render dashboard
+  Note right of U: Authorization: Bearer <token>
+  
+  Note over API: Validates JWT (Signature/Claims)
+  API-->>U: JSON Data
 ```
 ## Application Endpoints
 
@@ -243,7 +246,23 @@ The script will deploy:
 - Azure OpenAI Endpoint and API Key
 - Static Web App Deployment Token
 
-#### 4. Update Environment Variables
+#### 4. Deploy Azure Function Code
+
+The infrastructure deployment creates the Function App resource, but you must deploy the code to it.
+
+```powershell
+# Navigate to functions directory
+cd functions
+
+# Install Azure Functions Core Tools if needed
+# npm install -g azure-functions-core-tools@4
+
+# Publish the function app
+# Replace <function-app-name> with the name from the deployment output (e.g., respondr-func-myorg)
+func azure functionapp publish <function-app-name>
+```
+
+#### 5. Update Environment Variables
 
 Update the Container App with the generated values:
 
@@ -626,13 +645,51 @@ python create_local_user.py deputy1 deputy1@sheriff.org "Deputy John" --organiza
 ```
 
 **Admin & self-service endpoints**
-- Users: `/api/auth/local/login`, `/api/auth/local/me`, `/api/auth/local/change-password`
+- Login: `POST /api/local_login` (Azure Function)
+- Management: `/api/auth/local/change-password`, `/api/auth/local/me` (Backend)
 - Admins: `/api/auth/local/admin/users`, `/api/auth/local/admin/create-user`, `/api/auth/local/admin/reset-password`
 
 **Security defaults**
 - PBKDF2 password hashing with per-user salts
-- JWT session tokens delivered via HTTP-only cookies
-- Easy Auth exclusion rules in the deployment templates keep the local auth routes accessible
+- JWT session tokens (HS256)
+- Login handled by Azure Function to prevent backend wake-ups
+
+### Azure Entra ID Setup (Required for SSO)
+
+To enable the "SCVSAR Member Login" button, you must register an application in your Azure Entra ID tenant.
+
+1.  **Create App Registration**:
+    *   Go to **Azure Portal** > **Microsoft Entra ID** > **App registrations** > **New registration**.
+    *   **Name**: `Respondr Lite`.
+    *   **Supported account types**: "Accounts in any organizational directory (Any Microsoft Entra ID tenant - Multitenant)".
+    *   **Redirect URI**: Select **Single-page application (SPA)** and enter `http://localhost:3000` (for local dev) and your Static Web App URL (for production).
+    *   Click **Register**.
+
+2.  **Expose an API**:
+    *   Go to **Expose an API** in the side menu.
+    *   Click **Add** next to "Application ID URI" (accept the default `api://<client-id>`).
+    *   Click **Add a scope**:
+        *   **Scope name**: `access_as_user`
+        *   **Who can consent?**: Admins and users
+        *   **Display name**: Access Respondr Lite
+        *   **Description**: Allows the app to access Respondr Lite APIs as the user.
+        *   Click **Add scope**.
+
+3.  **Configure API Permissions**:
+    *   Go to **API permissions**.
+    *   Click **Add a permission** > **My APIs** > Select your app (`Respondr Lite`).
+    *   Select **Delegated permissions** > Check `access_as_user`.
+    *   Click **Add permissions**.
+    *   (Optional) Click **Grant admin consent** if you want to suppress consent prompts for your users.
+
+4.  **Update Environment Variables**:
+    *   Copy **Application (client) ID** and **Directory (tenant) ID** from the Overview page.
+    *   Update `frontend/.env.local` (for local) or your Static Web App configuration (for prod):
+        ```dotenv
+        REACT_APP_AZURE_CLIENT_ID=<your-client-id>
+        REACT_APP_AZURE_TENANT_ID=<your-tenant-id>
+        REACT_APP_AZURE_SCOPES=api://<your-client-id>/access_as_user
+        ```
 
 ## Performance Optimizations
 
@@ -641,23 +698,22 @@ python create_local_user.py deputy1 deputy1@sheriff.org "Deputy John" --organiza
 The application is optimized to minimize Container App wake-ups and reduce costs:
 
 **Frontend Optimizations**:
-1. **Landing Page**: The Static Web App serves the frontend from CDN without hitting the backend
-2. **Auth Check Strategy**: 
-   - First checks Static Web App's `/.auth/me` endpoint (no backend wake)
-   - Uses `localStorage` session hints to track authenticated sessions
-   - Only calls backend `/api/user` when authentication is confirmed or hinted
-3. **Session Caching**: 
-   - Local auth status cached in `sessionStorage` to avoid repeated API calls
-   - Session hints prevent unauthenticated visitors from waking the backend
+1.  **Landing Page**: The Static Web App serves the frontend from CDN without hitting the backend.
+2.  **Auth Check Strategy**:
+    *   Uses MSAL (Entra ID) or Local Auth (Azure Function) to authenticate *before* calling the backend.
+    *   No calls to `/api/user` or other endpoints until a valid token is acquired.
+3.  **Session Caching**:
+    *   Tokens are cached in browser storage.
+    *   Session hints prevent unauthenticated visitors from waking the backend.
 
 **Backend Optimizations**:
-1. **Pure API**: Backend only serves API endpoints, no frontend file serving
-2. **Wake Endpoint**: Dedicated `/api/wake` endpoint for Azure Functions to warm up the container
-3. **CORS Configuration**: Properly configured to allow Static Web App cross-origin requests
+1.  **Pure API**: Backend only serves API endpoints, no frontend file serving.
+2.  **Wake Endpoint**: Dedicated `/api/wake` endpoint for Azure Functions to warm up the container.
+3.  **CORS Configuration**: Strictly configured to allow only the specific Static Web App domains.
 
-**Result**: 
+**Result**:
 - Unauthenticated visitors to the landing page → **No backend wake** ✅
-- Bot traffic scanning the site → **No backend wake** ✅  
+- Bot traffic scanning the site → **No backend wake** ✅
 - Webhook arrives → **Function wakes backend** (intended behavior) ✅
 - User logs in → **Backend wakes** (intended behavior) ✅
 
