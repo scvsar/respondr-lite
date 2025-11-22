@@ -483,6 +483,7 @@ The application uses numerous environment variables for configuration. Below is 
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
+| `ENABLE_LLM_MOCK` | Enable mock LLM for offline dev | `false` | No |
 | `DEFAULT_MAX_COMPLETION_TOKENS` | Default completion tokens | `1024` | No |
 | `MIN_COMPLETION_TOKENS` | Minimum completion tokens | `128` | No |
 | `MAX_COMPLETION_TOKENS_CAP` | Maximum completion tokens | `2048` | No |
@@ -758,6 +759,20 @@ This script will:
 - Launch the **Azure Functions** (Ingest) on port 7071
 - Launch the **Backend API** (Docker) on port 8000
 - Launch the **Frontend** (React) on port 3000
+
+### Offline Mode (Mock LLM)
+
+If you do not have valid Azure OpenAI credentials, you can run the backend in "Offline Mode". This uses a mock LLM implementation that performs simple keyword matching to simulate vehicle and ETA extraction.
+
+```bash
+# Run in offline mode
+./dev-local.ps1 -Offline
+```
+
+In this mode:
+- **"Responding"** status is triggered by keywords like "eta", "omw", "en route".
+- **"Not Responding"** status is triggered by "stand down", "cancel", "10-22".
+- Simple vehicle names (e.g., "SAR-123") and ETAs (e.g., "10 min") are extracted.
 
 ### Frontend Scripts
 
