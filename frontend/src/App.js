@@ -179,6 +179,17 @@ function AdminGate({ children }) {
   return children;
 }
 
+// Helper functions
+const pad2 = (n) => String(n).padStart(2, '0');
+
+const parseTs = (ts) => {
+  if (!ts) return null;
+  // Support both ISO strings and "YYYY-MM-DD HH:mm:ss" (testing mode)
+  const s = typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+};
+
 function MainApp() {
   const [data, setData] = useState([]);
   const [error, setError] = useState(null);
@@ -545,14 +556,7 @@ function MainApp() {
   };
   const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
   // Timestamp helpers
-  const parseTs = (ts) => {
-    if (!ts) return null;
-    // Support both ISO strings and "YYYY-MM-DD HH:mm:ss" (testing mode)
-    const s = typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? null : d;
-  };
-  const pad2 = (n) => String(n).padStart(2, '0');
+  // parseTs and pad2 moved outside component
   
   // Format timestamp with timezone awareness
   const formatTimestampDirect = (isoString, isUtc = false) => {
@@ -585,23 +589,22 @@ function MainApp() {
     }
   };
   
-  const formatDateTime = (d, utc=false) => {
-    if (!d) return '—';
-    if (utc) {
-      const y = d.getUTCFullYear();
-      const M = d.getUTCMonth() + 1;
-      const D = d.getUTCDate();
-      const h = d.getUTCHours();
-      const m = d.getUTCMinutes();
-      const s = d.getUTCSeconds();
-      return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
-    }computeEtaMillis = useCallback(a.split(':').map(Number);
-        // Create ETA timestamp using the same timezone context as the base timestamp
-        // Since the backend already provides times in the correct timezone,
-        // we use the base timestamp's date and apply the ETA time
+  const computeEtaMillis = useCallback((entry) => {
+    if (!entry) return NaN;
+    if (entry.eta_timestamp) {
+      const d = parseTs(entry.eta_timestamp);
+      return d ? d.getTime() : NaN;
+    }
+    if (!entry.eta || !entry.timestamp) return NaN;
+    try {
+      const base = parseTs(entry.timestamp);
+      if (!base) return NaN;
+      const m = entry.eta.match(/(\d{1,2}):(\d{2})/);
+      if (m) {
+        const hh = parseInt(m[1], 10);
+        const mm = parseInt(m[2], 10);
         const dt = new Date(base.getTime());
         dt.setHours(hh, mm, 0, 0);
-        // If the ETA time is earlier than the message time, assume it's for the next day
         if (dt.getTime() <= base.getTime()) {
           dt.setDate(dt.getDate() + 1);
         }
@@ -609,7 +612,7 @@ function MainApp() {
       }
     } catch {}
     return NaN;
-  };
+  }, []);
 
   // Live-updating elapsed string for lastUpdated
   const [nowTick, setNowTick] = useState(Date.now());
@@ -621,7 +624,7 @@ function MainApp() {
   }, [live]);
   const updatedAgo = useMemo(() => {
     if (!lastUpdated) return '—';
-    const diffMs = Date.now() - lastUpdated.getTime();
+    const diffMs = nowTick - lastUpdated.getTime();
     const sec = Math.floor(diffMs / 1000);
     if (sec < 60) return 'Just now';
     const min = Math.floor(sec / 60);
@@ -643,7 +646,7 @@ function MainApp() {
     }
     
     // Fallback to raw ETA string if no timestamp
-    return entry.etnowTickown';
+    return entry.eta || 'Unknown';
   };
 
   // Determine if we are in unfiltered mode (show all messages including duplicates)
