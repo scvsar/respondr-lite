@@ -31,4 +31,5 @@ export const apiUrl = (path) => {
   return baseUrl ? `${baseUrl}${cleanPath}` : cleanPath;
 };
 
-export default { API_BASE_URL, apiUrl };
+const config = { API_BASE_URL, apiUrl };
+export default config;

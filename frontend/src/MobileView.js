@@ -145,26 +145,6 @@ export default function MobileView() {
     return isNaN(d.getTime()) ? null : d;
   };
 
-  const computeEtaMillis = (entry) => {
-    try {
-      if (entry.eta_timestamp) {
-        const d = parseTs(entry.eta_timestamp);
-        if (d) return d.getTime();
-      }
-      const eta = entry.eta || '';
-      const m = eta.match(/^\d{1,2}:\d{2}$/);
-      const base = parseTs(entry.timestamp);
-      if (m && base) {
-        const [hh, mm] = eta.split(':').map(Number);
-        const dt = new Date(base.getTime());
-        dt.setHours(hh, mm, 0, 0);
-        if (dt.getTime() <= base.getTime()) dt.setDate(dt.getDate() + 1);
-        return dt.getTime();
-      }
-    } catch {}
-    return Number.NaN;
-  };
-
   const etaDisplay = (entry) => {
     if (!entry) return 'Unknown';
     if (entry.eta_timestamp) return formatTimestampDirect(entry.eta_timestamp);
@@ -202,10 +182,6 @@ export default function MobileView() {
 
   // Summary stats
   const totalMessages = data.length;
-  const uniqueTotalResponders = useMemo(() => {
-    const ids = new Set(data.filter(e => statusOf(e) === 'Responding').map(e => e.user_id || e.name).filter(Boolean));
-    return ids.size;
-  }, [data]);
   const uniqueFilteredResponders = deduped.length;
   const avgMinutes = useMemo(() => {
     const times = deduped.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number' && x > 0);

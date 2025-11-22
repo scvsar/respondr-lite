@@ -216,7 +216,6 @@ const StatusTabs = ({
   const sortButton = (label, key) => (
     <button
       className="btn sort-btn"
-      aria-sort={sortBy.key === key ? (sortBy.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
       onClick={() => setSortBy(s => ({ key, dir: s.key === key && s.dir === 'desc' ? 'asc' : 'desc' }))}
       title={`Sort by ${label}`}
     >

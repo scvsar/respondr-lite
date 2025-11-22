@@ -13,7 +13,7 @@ import { apiUrl } from './config';
 
 // Simple auth gate: ensures user is authenticated and from an allowed domain
 function AuthGate({ children }) {
-  const [user, setUser] = React.useState(null);
+  const [, setUser] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [denied, setDenied] = React.useState(null);
   const loc = useLocation();
@@ -102,7 +102,7 @@ function AuthGate({ children }) {
 
 // Admin gate: ensures user is authenticated and has admin privileges
 function AdminGate({ children }) {
-  const [user, setUser] = React.useState(null);
+  const [, setUser] = React.useState(null);
   const [loading, setLoading] = React.useState(true);
   const [denied, setDenied] = React.useState(null);
 
@@ -202,7 +202,6 @@ function MainApp() {
   const INACTIVITY_TIMEOUT = inactivityTimeoutMinutes * 60 * 1000;
   const [isInactive, setIsInactive] = useState(false);
   const [lastActivity, setLastActivity] = useState(Date.now());
-  const inactivityTimerRef = useRef(null);
 
   // Fetch configuration on component mount
   useEffect(() => {
@@ -477,16 +476,6 @@ function MainApp() {
 
   const totalMessages = data.length;
 
-  const avgMinutes = () => {
-    const times = data
-      .map((entry) => entry.minutes_until_arrival)
-      .filter((x) => typeof x === "number" && x > 0);
-
-    if (times.length === 0) return "N/A";
-    const avg = times.reduce((a, b) => a + b, 0) / times.length;
-    return `${Math.round(avg)} minutes`;
-  };
-
   // Derived helpers
   const initials = (user?.email || user?.name || 'U').split('@')[0].split('.').map(s=>s[0]).join('').slice(0,2).toUpperCase();
   const statusOf = (entry) => {
@@ -606,29 +595,7 @@ function MainApp() {
       const m = d.getUTCMinutes();
       const s = d.getUTCSeconds();
       return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
-    }
-    // When useUTC is false, display times in local timezone
-    // The backend already provides timestamps in the correct timezone (PST/PDT)
-    // so we should use the local interpretation without additional timezone conversion
-    const y = d.getFullYear();
-    const M = d.getMonth() + 1;
-    const D = d.getDate();
-    const h = d.getHours();
-    const m = d.getMinutes();
-    const s = d.getSeconds();
-    return `${pad2(M)}/${pad2(D)}/${y} ${pad2(h)}:${pad2(m)}:${pad2(s)}`;
-  };
-  const computeEtaMillis = (entry) => {
-    try {
-      if (entry.eta_timestamp) {
-        const d = parseTs(entry.eta_timestamp);
-        if (d) return d.getTime();
-      }
-      const eta = entry.eta || '';
-      const m = eta.match(/^\d{1,2}:\d{2}$/);
-      const base = parseTs(entry.timestamp);
-      if (m && base) {
-        const [hh, mm] = eta.split(':').map(Number);
+    }computeEtaMillis = useCallback(a.split(':').map(Number);
         // Create ETA timestamp using the same timezone context as the base timestamp
         // Since the backend already provides times in the correct timezone,
         // we use the base timestamp's date and apply the ETA time
@@ -676,7 +643,7 @@ function MainApp() {
     }
     
     // Fallback to raw ETA string if no timestamp
-    return entry.eta || 'Unknown';
+    return entry.etnowTickown';
   };
 
   // Determine if we are in unfiltered mode (show all messages including duplicates)
@@ -723,7 +690,7 @@ function MainApp() {
       return sortBy.dir === 'asc' ? av - bv : bv - av;
     });
     return arr;
-  }, [filtered, sortBy]);
+  }, [filtered, sortBy, computeEtaMillis]);
 
   const avgMinutesVal = () => {
     // Average over unique users using latest message per user to avoid double-counting
@@ -891,15 +858,6 @@ function MainApp() {
       setSelected(new Set(ids));
     }
   };
-
-  const sortButton = (label, key) => (
-    <button
-      className="btn"
-      aria-sort={sortBy.key===key ? (sortBy.dir==='asc'?'ascending':'descending') : 'none'}
-      onClick={() => setSortBy(s => ({ key, dir: s.key===key && s.dir==='desc' ? 'asc' : 'desc' }))}
-      title={`Sort by ${label}`}
-    >{label} {sortBy.key===key ? (sortBy.dir==='asc'?'▲':'▼') : ''}</button>
-  );
 
   // Visitor counter (fake but fun!)
   const [visitorCount] = useState(() => Math.floor(Math.random() * 999999) + 100000);
