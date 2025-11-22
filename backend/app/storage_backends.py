@@ -199,9 +199,8 @@ class AzureTableStorage(BaseStorage):
         
         if self._client is not None:
             try:
-                # Simple health check - try to get table properties
-                table_client = self._client.get_table_client(self.table_name)
-                table_client.get_table_access_policy()
+                # Ensure table exists - this serves as both health check and repair
+                self._client.create_table_if_not_exists(self.table_name)
                 self._is_healthy_cached = True
                 return True
             except Exception as e:

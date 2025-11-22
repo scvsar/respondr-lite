@@ -308,17 +308,45 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         if debug:
             # Admin-only: require authenticated admin for debug payloads
             try:
-                token = await oauth2_scheme(request)
-                if token:
-                    user = require_auth(token)
+                # In local debug mode, we might not have a proper token if called from the frontend debugger
+                # Check if we are in local dev mode and allow bypass if configured
+                from ..config import ENABLE_LOCAL_AUTH, ALLOW_LOCAL_AUTH_BYPASS
+                
+                # Try to get token from header
+                auth_header = request.headers.get("Authorization")
+                if not auth_header and ENABLE_LOCAL_AUTH:
+                    # If no header, check for session cookie
+                    cookie_token = request.cookies.get("session_token")
+                    if cookie_token:
+                        auth_header = f"Bearer {cookie_token}"
+                
+                if auth_header:
+                    token = auth_header.replace("Bearer ", "")
+                    # Pass request=None to avoid re-extracting from header/cookie inside require_auth
+                    # since we already have the token string
+                    user = require_auth(request=request, token=token)
                     require_admin(user)
+                elif ALLOW_LOCAL_AUTH_BYPASS:
+                    logger.warning("Debug webhook allowed via local auth bypass")
                 else:
-                    raise HTTPException(status_code=401, detail="No token provided")
+                    # If we're here, we have no token and bypass is off
+                    # But wait! The frontend might be sending the token in the Authorization header
+                    # which oauth2_scheme should have picked up if we used it as a dependency.
+                    # Since we're calling it manually inside the function:
+                    token = await oauth2_scheme(request)
+                    if token:
+                        user = require_auth(token)
+                        require_admin(user)
+                    else:
+                        raise HTTPException(status_code=401, detail="No token provided for debug mode")
+
             except HTTPException:
                 raise
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Debug auth check failed: {e}")
                 # Fail closed if we can't determine auth
-                raise HTTPException(status_code=403, detail="Debug access requires admin")
+                raise HTTPException(status_code=403, detail=f"Debug access requires admin: {e}")
+            
             return {
                 "status": "ok",
                 "inputs": {

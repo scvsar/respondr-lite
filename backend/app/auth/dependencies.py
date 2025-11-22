@@ -40,7 +40,8 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                  
             try:
                 payload = jwt.decode(token_value, LOCAL_AUTH_SECRET_KEY, algorithms=["HS256"])
-                if payload.get("iss") not in ("local", None):
+                # Allow 'local' issuer or no issuer
+                if payload.get("iss") and payload.get("iss") != "local":
                     raise credentials_exception
                 return payload
             except jwt.ExpiredSignatureError:

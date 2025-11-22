@@ -76,6 +76,20 @@ class PayloadLogger:
             logger.info("Logged incoming payload to storage table")
             
         except Exception as e:
+            # Check for TableNotFound and try to recreate (self-healing)
+            error_msg = str(e)
+            if "TableNotFound" in error_msg or "ResourceNotFound" in error_msg or "404" in error_msg:
+                try:
+                    logger.info("Payload table not found, attempting to recreate...")
+                    self.table_client.create_table()
+                    
+                    # Retry insert
+                    self.table_client.create_entity(entity)
+                    logger.info("Logged incoming payload to storage table (after recreation)")
+                    return
+                except Exception as recreate_e:
+                    logger.error(f"Failed to recreate payload table: {recreate_e}")
+
             # Don't let logging errors affect the application
             logger.error(f"Failed to log payload: {e}")
 
