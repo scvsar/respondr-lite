@@ -27,6 +27,7 @@ services:
       - REACT_APP_AAD_TENANT_ID=organizations
       - REACT_APP_AAD_CLIENT_ID=9068684b-2e21-428a-bfd3-c945f4727425
       - API_AUDIENCE=api://9068684b-2e21-428a-bfd3-c945f4727425
+      - ENABLE_LLM_MOCK=${ENABLE_LLM_MOCK:-false}
       # Connect to the azurite service within the docker network
       - AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://azurite:10000/devstoreaccount1;QueueEndpoint=http://azurite:10001/devstoreaccount1;TableEndpoint=http://azurite:10002/devstoreaccount1;
     env_file:

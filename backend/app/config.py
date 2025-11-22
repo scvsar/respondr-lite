@@ -134,6 +134,9 @@ MAX_COMPLETION_TOKENS_CAP = int(os.getenv("MAX_COMPLETION_TOKENS_CAP", "2048"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 LLM_TOKEN_INCREASE_FACTOR = float(os.getenv("LLM_TOKEN_INCREASE_FACTOR", "1.5"))
 
+# Mock LLM configuration for offline development
+ENABLE_LLM_MOCK = os.getenv("ENABLE_LLM_MOCK", "false").lower() == "true"
+
 # LLM reasoning and verbosity configuration
 def _validate_llm_config():
     """Validate and return LLM configuration values with defaults."""

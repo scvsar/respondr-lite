@@ -4,7 +4,8 @@ param(
     [switch]$Frontend,
     [switch]$Interactive,
     [int]$FunctionPort = 7071,
-    [switch]$ForceKillOthers
+    [switch]$ForceKillOthers,
+    [switch]$Offline
 )
 
 # Default behavior if no switches provided: Start everything
@@ -117,7 +118,14 @@ function Start-FunctionLocal {
 function Start-BackendDocker {
     Write-Host "Starting Backend API in Docker..." -ForegroundColor Green
     $cwd = (Get-Location).Path
-    Start-NewWindow -Command "docker compose -f docker-compose.local.yml up --build" -WorkingDirectory $cwd -Title "Backend API (Docker)"
+    
+    $cmd = "docker compose -f docker-compose.local.yml up --build"
+    if ($Offline) {
+        Write-Host "Offline mode enabled: Mocking LLM." -ForegroundColor Yellow
+        $cmd = "`$env:ENABLE_LLM_MOCK='true'; " + $cmd
+    }
+    
+    Start-NewWindow -Command $cmd -WorkingDirectory $cwd -Title "Backend API (Docker)"
 }
 
 function Start-FrontendLocal {

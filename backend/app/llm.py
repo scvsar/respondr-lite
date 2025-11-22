@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from openai import AzureOpenAI
 from openai.types.chat import ChatCompletionMessageParam
@@ -10,7 +10,8 @@ from .config import (
     azure_openai_api_key, azure_openai_endpoint, azure_openai_deployment,
     azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ,
     DEFAULT_MAX_COMPLETION_TOKENS, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_CAP,
-    LLM_REASONING_EFFORT, LLM_VERBOSITY, LLM_MAX_RETRIES, LLM_TOKEN_INCREASE_FACTOR
+    LLM_REASONING_EFFORT, LLM_VERBOSITY, LLM_MAX_RETRIES, LLM_TOKEN_INCREASE_FACTOR,
+    ENABLE_LLM_MOCK
 )
 from .utils import extract_eta_from_text_local, extract_duration_eta, compute_eta_fields, now_tz
 
@@ -225,10 +226,62 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
     return sys_msg, user_msg
 
 
+def _call_mock_llm(text: str, base_dt: datetime) -> Dict[str, Any]:
+    """
+    Simulates an LLM response for local development/testing without Azure OpenAI.
+    """
+    text_lower = text.lower()
+    
+    # Default mock response
+    mock_response = {
+        "vehicle": "POV",
+        "eta_iso": "Unknown",
+        "status": "Unknown",
+        "evidence": "mock_default",
+        "confidence": 0.8
+    }
+
+    # Status detection
+    if any(x in text_lower for x in ["stand down", "10-22", "cancel", "not responding"]):
+        mock_response["status"] = "Not Responding"
+        mock_response["vehicle"] = "Unknown"
+    elif any(x in text_lower for x in ["eta", "en route", "responding", "omw", "coming", "headed"]):
+        mock_response["status"] = "Responding"
+    elif any(x in text_lower for x in ["available", "standing by"]):
+        mock_response["status"] = "Available"
+    
+    # Vehicle detection
+    sar_match = re.search(r"sar\s*[-]?\s*(\d+)", text_lower)
+    if sar_match:
+        mock_response["vehicle"] = f"SAR-{sar_match.group(1)}"
+    elif "rig" in text_lower:
+        mock_response["vehicle"] = "SAR Rig"
+
+    # ETA Mocking (simple duration)
+    # If we found "Responding" or similar, try to guess an ETA for the mock
+    if mock_response["status"] == "Responding":
+        # Look for "X min"
+        min_match = re.search(r"(\d+)\s*min", text_lower)
+        if min_match:
+            try:
+                mins = int(min_match.group(1))
+                eta_dt = base_dt + timedelta(minutes=mins)
+                mock_response["eta_iso"] = eta_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+                mock_response["evidence"] = f"Mock parsed {mins} min"
+            except Exception:
+                pass
+    
+    return mock_response
+
+
 def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], llm_client=None, debug: bool = False,
                    sys_prompt_override: Optional[str] = None, user_prompt_override: Optional[str] = None,
                    verbosity_override: Optional[str] = None, reasoning_effort_override: Optional[str] = None,
                    max_tokens_override: Optional[int] = None) -> Dict[str, Any]:
+    if ENABLE_LLM_MOCK:
+        logger.info(f"MOCK LLM: Processing '{text}'")
+        return _call_mock_llm(text, base_dt)
+
     c = llm_client or client
     if not c:
         return {"_llm_unavailable": True}
