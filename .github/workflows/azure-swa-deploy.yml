@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - preprod
+      - static
     paths:
       - 'frontend/**'
       - '.github/workflows/azure-swa-deploy.yml'
@@ -13,6 +14,7 @@ on:
     branches:
       - main
       - preprod
+      - static
     paths:
       - 'frontend/**'
 
