@@ -324,6 +324,9 @@ Navigate to your GitHub repository settings:
 | `AZURE_STATIC_WEB_APPS_API_TOKEN` | Get with: `az staticwebapp secrets list -g <rg> -n <swa-name> --query properties.apiKey -o tsv` | Deploy frontend to Static Web App |
 | `DOCKER_USERNAME` | Your Docker Hub username | Push backend images |
 | `DOCKER_TOKEN` | Your Docker Hub access token | Authenticate Docker push |
+| `AZURE_CLIENT_ID` | Application (client) ID of the Service Principal | Backend deployment (OIDC) |
+| `AZURE_TENANT_ID` | Directory (tenant) ID | Backend deployment (OIDC) |
+| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID | Backend deployment (OIDC) |
 
 **Add Variables** (`Settings` → `Secrets and variables` → `Actions` → `Variables` → `New repository variable`):
 
