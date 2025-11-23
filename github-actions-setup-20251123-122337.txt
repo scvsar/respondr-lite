@@ -1,0 +1,25 @@
+GitHub Actions CI/CD Setup
+==========================
+Date: 11/23/2025 12:23:37
+
+Azure Configuration:
+- Subscription ID: 19812688-0f95-4500-8af4-cc7aafb0fd57
+- Tenant ID: 844146d5-a7f1-4372-a333-8744fb1b07cf
+- Resource Group: respondr-ppe-eastus2
+- Service Principal: github-actions-respondr-preprod
+- Application ID: fcef6767-bb33-438a-82e8-b8e71a7ea2a7
+- Authentication: OIDC Federation
+
+GitHub Configuration:
+- Repository: scvsar/respondr-lite
+- Branch: static
+- OIDC Subject: repo:scvsar/respondr-lite:ref:refs/heads/static
+
+Required GitHub Secrets:
+- AZURE_CLIENT_ID: fcef6767-bb33-438a-82e8-b8e71a7ea2a7
+- AZURE_TENANT_ID: 844146d5-a7f1-4372-a333-8744fb1b07cf  
+- AZURE_SUBSCRIPTION_ID: 19812688-0f95-4500-8af4-cc7aafb0fd57
+
+- DOCKER_USERNAME: [Your Docker Hub username]
+- DOCKER_TOKEN: [Your Docker Hub access token]
+
