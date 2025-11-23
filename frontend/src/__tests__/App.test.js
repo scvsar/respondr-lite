@@ -17,6 +17,30 @@ jest.mock('react-router-dom', () => {
   };
   return Mocked;
 });
+
+// Mock MSAL and Local Auth modules
+jest.mock('../auth/msalClient', () => {
+  return {
+    getAccessToken: jest.fn().mockImplementation(() => {
+      console.log("MOCK getAccessToken CALLED");
+      return Promise.resolve('dummy.eyJuYW1lIjogIlRlc3QgVXNlciIsICJwcmVmZXJyZWRfdXNlcm5hbWUiOiAidGVzdEBleGFtcGxlLmNvbSJ9.dummy');
+    }),
+    msalInstance: {
+      initialize: jest.fn().mockResolvedValue(),
+      handleRedirectPromise: jest.fn().mockResolvedValue(null),
+      getAllAccounts: jest.fn().mockReturnValue([{ username: 'test@example.com' }]),
+      getActiveAccount: jest.fn().mockReturnValue({ username: 'test@example.com' }),
+      setActiveAccount: jest.fn(),
+      addEventCallback: jest.fn(),
+      removeEventCallback: jest.fn(),
+      logoutRedirect: jest.fn(),
+    },
+    initializeMsal: jest.fn().mockResolvedValue(),
+  };
+});
+
+const mockLocalToken = 'local.eyJkaXNwbGF5X25hbWUiOiJUZXN0IFVzZXIiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJpc19hZG1pbiI6dHJ1ZSwiYXV0aF90eXBlIjoibG9jYWwifQ==.sig';
+
 import { render, screen, waitFor, act } from '@testing-library/react';
 import App from '../App';
 
@@ -29,6 +53,13 @@ beforeEach(() => {
         ok: true,
         status: 200,
         json: async () => ({ authenticated: true, email: 'test@example.com', name: 'Test User' }),
+      };
+    }
+    if (u.includes('/api/config')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ geocities: { force_mode: false, enable_toggle: false } }),
       };
     }
     if (u.includes('/api/current-status')) {
@@ -89,9 +120,12 @@ beforeEach(() => {
     // Default OK empty response for any other endpoints the app might touch in tests
     return { ok: true, status: 200, json: async () => ({}) };
   });
+
+  window.localStorage.setItem('local_jwt', mockLocalToken);
 });
 
 afterEach(() => {
+  window.localStorage.clear();
   jest.restoreAllMocks();
   jest.clearAllTimers();
   jest.useRealTimers();
