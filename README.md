@@ -264,7 +264,19 @@ func azure functionapp publish <function-app-name>
 
 #### 5. Update Environment Variables
 
-Update the Container App with the generated values:
+The deployment script creates the resources but does not automatically inject sensitive secrets (like connection strings and API keys) into the Container App. You can use the helper script to fetch these values and update the app automatically:
+
+```powershell
+# Run the secrets helper
+./deployment/get-secrets.ps1
+```
+
+This script will:
+1. Auto-discover your resources in the resource group
+2. Fetch the Storage Connection String and OpenAI Keys
+3. Update the Container App environment variables
+
+Alternatively, you can update them manually using the Azure CLI:
 
 ```powershell
 # Get resource names from deployment
@@ -467,8 +479,8 @@ The application uses numerous environment variables for configuration. Below is 
 | `AZURE_STORAGE_CONNECTION_STRING` | Storage account connection string | - | Yes |
 | `STORAGE_TABLE_NAME` | Table name for messages | `ResponderMessages` | No |
 | `STORAGE_QUEUE_NAME` | Queue name for incoming messages | `RespondrIncoming` | No |
-| `STORAGE_BACKEND` | Primary storage backend | `azure_table` | No |
-| `STORAGE_FALLBACK` | Fallback storage backend | `memory` | No |
+| `STORAGE_BACKEND` | Primary storage (`azure_table`, `file`, `memory`) | `azure_table` | No |
+| `STORAGE_FALLBACK` | Fallback storage (`file`, `memory`) | `memory` | No |
 
 #### Azure OpenAI
 
@@ -974,8 +986,6 @@ If migrating from the original Kubernetes-based deployment:
 ## Support and Documentation
 
 - **Architecture Details**: See [docs/serverless-refactor-brief.md](docs/serverless-refactor-brief.md)
-- **Local Auth Setup**: See [LOCAL_AUTH_README.md](LOCAL_AUTH_README.md)
-- **Storage Configuration**: See [backend/STORAGE_CONFIG.md](backend/STORAGE_CONFIG.md)
 - **Deployment Scripts**: See [deployment/](deployment/) directory
 
 ## Contributing
