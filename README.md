@@ -333,6 +333,8 @@ Navigate to your GitHub repository settings:
 | Variable Name | Value | Purpose |
 |---------------|-------|---------|
 | `REACT_APP_API_URL` | `https://<container-app>.azurecontainerapps.io` | Frontend API endpoint |
+| `REACT_APP_AAD_CLIENT_ID` | Application (client) ID of the App Registration | Frontend Auth (Entra ID) |
+| `REACT_APP_AAD_TENANT_ID` | Directory (tenant) ID | Frontend Auth (Entra ID) |
 
 #### 6. Deploy Frontend to Static Web App
 
