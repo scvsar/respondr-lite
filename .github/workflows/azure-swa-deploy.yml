@@ -44,6 +44,9 @@ jobs:
         env:
           # Set the API URL for the frontend to communicate with the Container App
           REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL }}
+          # Authentication Configuration
+          REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID }}
+          REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID }}
           # Don't treat ESLint warnings as errors in CI
           CI: false
 
