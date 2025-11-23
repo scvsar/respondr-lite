@@ -80,9 +80,12 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                      # Some tokens might not have email, but for this app we expect it.
                      pass 
                 
-                allowed_domains = os.getenv("ALLOWED_EMAIL_DOMAINS", "").split(",")
-                if email and allowed_domains and allowed_domains != [""]:
-                    if not any(email.endswith("@" + d.strip()) for d in allowed_domains if d.strip()):
+                allowed_domains = [d.strip() for d in os.getenv("ALLOWED_EMAIL_DOMAINS", "").split(",") if d.strip()]
+                if email and allowed_domains:
+                    # Case-insensitive check
+                    email_lower = email.lower()
+                    if not any(email_lower.endswith("@" + d.lower()) for d in allowed_domains):
+                        print(f"Access denied for {email}: Domain not in {allowed_domains}")
                         raise HTTPException(status_code=403, detail="Email domain not allowed")
                 
                 return payload

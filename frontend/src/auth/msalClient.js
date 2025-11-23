@@ -70,14 +70,9 @@ export async function getAccessToken() {
     const result = await msalInstance.acquireTokenSilent(request);
     return result.accessToken;
   } catch (error) {
-    console.warn("Silent token acquisition failed, trying popup", error);
-    try {
-        const result = await msalInstance.acquireTokenPopup(request);
-        return result.accessToken;
-    } catch (popupError) {
-        console.error("Popup token acquisition failed", popupError);
-        throw popupError;
-    }
+    console.warn("Silent token acquisition failed", error);
+    // Do not try popup automatically - let the caller handle the login flow
+    return null;
   }
 }
 
