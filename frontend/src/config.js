@@ -12,10 +12,11 @@ const getApiBaseUrl = () => {
   
   // For Static Web Apps, try to detect the Container App URL
   // This could be set via staticwebapp.config.json or environment variables
-  if (window.location.hostname.includes('azurestaticapps.net')) {
-    // You'll need to set this based on your Container App URL
-    // This could be configured via Azure Static Web Apps configuration
-    return window.__API_BASE_URL__ || '';
+  if (typeof window !== 'undefined' && window.location.hostname.includes('azurestaticapps.net')) {
+    // Allow runtime override injected by hosting environment
+    if (window.__API_BASE_URL__) {
+      return window.__API_BASE_URL__;
+    }
   }
   
   // Fallback to relative URLs (same domain)

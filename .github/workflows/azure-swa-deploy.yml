@@ -1,5 +1,8 @@
 name: Azure Static Web Apps CI/CD
 
+env:
+  CONTAINER_APP_FQDN: respondrlite-ca-afb70ccc.centralus.azurecontainerapps.io
+
 on:
   push:
     branches:
@@ -43,7 +46,7 @@ jobs:
           ###### End of Repository/Build Configurations ######
         env:
           # Set the API URL for the frontend to communicate with the Container App
-          REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL }}
+          REACT_APP_API_URL: https://${{ env.CONTAINER_APP_FQDN }}
           # Authentication Configuration
           REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID }}
           REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID }}
