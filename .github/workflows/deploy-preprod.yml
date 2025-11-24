@@ -187,7 +187,10 @@ jobs:
             -n ${{ env.CONTAINER_APP_NAME }} \
             --image ${IMAGE} \
             --revision-suffix ${REVISION_SUFFIX} \
-            --set-env-vars REDEPLOY_AT=$(date +%Y%m%d-%H%M%S) \
+            --set-env-vars \
+              REDEPLOY_AT=$(date +%Y%m%d-%H%M%S) \
+              REACT_APP_AAD_TENANT_ID=${{ secrets.REACT_APP_AAD_TENANT_ID }} \
+              REACT_APP_AAD_CLIENT_ID=${{ secrets.REACT_APP_AAD_CLIENT_ID }} \
             --query "properties.configuration.ingress.fqdn" \
             -o tsv
           
