@@ -191,6 +191,7 @@ jobs:
               REDEPLOY_AT=$(date +%Y%m%d-%H%M%S) \
               REACT_APP_AAD_TENANT_ID=${{ vars.REACT_APP_AAD_TENANT_ID }} \
               REACT_APP_AAD_CLIENT_ID=${{ vars.REACT_APP_AAD_CLIENT_ID }} \
+              INACTIVITY_TIMEOUT_MINUTES=${{ vars.INACTIVITY_TIMEOUT_MINUTES }} \
             --query "properties.configuration.ingress.fqdn" \
             -o tsv
           

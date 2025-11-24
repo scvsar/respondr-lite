@@ -427,13 +427,13 @@ resource staticWebApp 'Microsoft.Web/staticSites@2023-01-01' = if (!empty(static
   }
 }
 
-// RBAC: allow the Container App's managed identity to process queue messages
+// RBAC: allow the Container App's managed identity to process queue messages AND check queue length (for KEDA)
 resource queueProcessorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(queue.id, containerAppName, 'queue-msg-processor')
   scope: queue
   properties: {
-    // Storage Queue Data Message Processor
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8a0f0c08-91a1-4084-bc3d-661d67233fed')
+    // Storage Queue Data Contributor (includes Read for KEDA and Process/Delete for App)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
     principalId: respondr.identity.principalId
     principalType: 'ServicePrincipal'
   }
