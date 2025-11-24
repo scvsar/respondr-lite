@@ -108,7 +108,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.backend
           push: true
           tags: ${{ steps.tags.outputs.TAGS }}
           cache-from: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache

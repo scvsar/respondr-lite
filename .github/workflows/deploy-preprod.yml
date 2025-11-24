@@ -156,7 +156,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.backend
           push: true
           tags: |
             ${{ env.DOCKER_REPO }}:${{ steps.version.outputs.NEW_TAG }}
