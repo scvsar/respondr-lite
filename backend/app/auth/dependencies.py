@@ -1,3 +1,4 @@
+import logging
 import os
 import jwt
 from typing import Optional
@@ -9,9 +10,29 @@ from ..local_auth import extract_session_token_from_request
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
+logger = logging.getLogger(__name__)
+
 # Entra ID Config
 TENANT_ID = os.getenv("REACT_APP_AAD_TENANT_ID") or os.getenv("AZURE_TENANT_ID")
-API_AUDIENCE = (
+def _normalize_audience(value: Optional[str]) -> Optional[str]:
+    """Strip scope suffixes like /access_as_user from api:// audiences."""
+    if not value:
+        return None
+
+    trimmed = value.strip()
+    if not trimmed:
+        return None
+
+    if trimmed.startswith("api://"):
+        without_scheme = trimmed[len("api://") :]
+        # Keep only the GUID / app identifier portion before any scope segment
+        parts = without_scheme.split("/", 1)
+        return f"api://{parts[0]}" if parts and parts[0] else trimmed
+
+    return trimmed
+
+
+API_AUDIENCE = _normalize_audience(
     os.getenv("API_AUDIENCE")
     or os.getenv("REACT_APP_AAD_API_SCOPE")
     or os.getenv("REACT_APP_AAD_CLIENT_ID")
@@ -94,7 +115,23 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                 
                 return payload
             except Exception as e:
-                print(f"Entra validation error: {e}")
+                actual_aud = "unknown"
+                try:
+                    unverified_payload = jwt.decode(
+                        token_value,
+                        options={"verify_signature": False, "verify_aud": False, "verify_iss": False},
+                        algorithms=["RS256"],
+                    )
+                    actual_aud = unverified_payload.get("aud", actual_aud)
+                except Exception as inspect_error:
+                    logger.debug("Could not decode token for diagnostics: %s", inspect_error)
+
+                logger.warning(
+                    "Entra validation error: %s (expected audience=%s, token audience=%s)",
+                    e,
+                    API_AUDIENCE,
+                    actual_aud,
+                )
                 raise credentials_exception
         else:
             raise credentials_exception
