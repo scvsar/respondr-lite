@@ -64,9 +64,6 @@ def _extract_unverified_claim(token_value: str, claim: str) -> Optional[Union[st
 
 
 def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)):
-    print("🔍 REQUIRE_AUTH CALLED - START")
-    logger.info("🔍 REQUIRE_AUTH CALLED - START (via logger)")
-    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -75,16 +72,12 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
     
     token_value: Optional[str] = token if token else extract_session_token_from_request(request)
     if not token_value:
-        print("❌ No token found")
-        logger.warning("❌ No token found")
         raise credentials_exception
 
     try:
         # First, try to decode header to see alg
         unverified_header = jwt.get_unverified_header(token_value)
         alg = unverified_header.get("alg")
-        print(f"🔑 Token algorithm: {alg}")
-        logger.info(f"🔑 Token algorithm: {alg}")
 
         raw_audience = _extract_unverified_claim(token_value, "aud")
         normalized_raw_audience: Optional[str] = None
@@ -93,51 +86,29 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
         else:
             normalized_raw_audience = _normalize_audience(raw_audience)
         
-        print(f"👀 Raw audience: {raw_audience}")
-        print(f"👀 Normalized audience: {normalized_raw_audience}")
-        logger.info(f"👀 Raw audience: {raw_audience}, Normalized: {normalized_raw_audience}")
-        
         if alg == "HS256":
-            print("🏠 Local auth token detected (HS256)")
-            logger.info("🏠 Local auth token detected (HS256)")
             # Local Auth
             if not LOCAL_AUTH_SECRET_KEY:
-                 print("❌ LOCAL_AUTH_SECRET_KEY not configured")
                  raise HTTPException(status_code=500, detail="Local auth not configured")
                  
             try:
-                print(f"🔓 Decoding with secret key (length: {len(LOCAL_AUTH_SECRET_KEY)})")
                 payload = jwt.decode(token_value, LOCAL_AUTH_SECRET_KEY, algorithms=["HS256"])
-                print(f"✅ Local token decoded successfully: {payload.get('sub', 'no-sub')}")
-                logger.info(f"✅ Local token decoded successfully for user: {payload.get('sub', 'unknown')}")
                 # Allow 'local' issuer or no issuer
                 if payload.get("iss") and payload.get("iss") != "local":
-                    print(f"❌ Invalid issuer: {payload.get('iss')}")
                     raise credentials_exception
                 return payload
-            except jwt.ExpiredSignatureError as e:
-                print(f"❌ Token expired: {e}")
+            except jwt.ExpiredSignatureError:
                 raise HTTPException(status_code=401, detail="Token expired")
             except jwt.InvalidTokenError as e:
-                print(f"❌ Invalid token: {e}")
-                logger.error(f"❌ Local auth token validation failed: {e}")
+                logger.warning("Local auth token validation failed: %s", e)
                 raise credentials_exception
                 
         elif alg == "RS256":
-            print("🔐 Entra ID token detected (RS256)")
-            logger.info("🔐 Entra ID token detected (RS256)")
             # Entra ID
             if not jwks_client:
                  raise HTTPException(status_code=500, detail="Entra ID not configured")
 
             try:
-                print(f"🎯 Expected audience: {API_AUDIENCE}")
-                print(f"🎯 Provided audience: {normalized_raw_audience}")
-                logger.info(
-                    "Entra auth attempt: expected_audience=%s provided_audience=%s",
-                    API_AUDIENCE or "<unset>",
-                    normalized_raw_audience or "<missing>",
-                )
                 signing_key = jwks_client.get_signing_key_from_jwt(token_value)
                 
                 # We need to know the audience. 
@@ -173,13 +144,11 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                     # Case-insensitive check
                     email_lower = email.lower()
                     if not any(email_lower.endswith("@" + d.lower()) for d in allowed_domains):
-                        print(f"Access denied for {email}: Domain not in {allowed_domains}")
+                        logger.warning("Access denied for %s: Domain not in allowed list", email)
                         raise HTTPException(status_code=403, detail="Email domain not allowed")
                 
                 return payload
             except Exception as e:
-                print(f"❌ Entra validation failed: {e}")
-                logger.error(f"❌ Entra validation failed: {e}")
                 actual_aud = "unknown"
                 try:
                     unverified_payload = jwt.decode(
@@ -192,10 +161,10 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                     logger.debug("Could not decode token for diagnostics: %s", inspect_error)
 
                 logger.warning(
-                    "Entra validation error: %s (expected audience=%s, token audience=%s)",
-                    e,
+                    "Entra token validation failed (expected aud=%s, received aud=%s): %s",
                     API_AUDIENCE,
                     actual_aud,
+                    str(e),
                 )
                 raise credentials_exception
         else:
