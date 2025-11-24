@@ -3,7 +3,7 @@ import './App.css';
 import { apiGet } from './api';
 import { msalInstance } from './auth/msalClient';
 
-// Minimal, focused mobile view: Name, Vehicle, ETA for Responding only
+// Minimal, focused view for mobile: Name, Vehicle, ETA for Responding only
 export default function MobileView() {
   const [data, setData] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
