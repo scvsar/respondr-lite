@@ -148,6 +148,9 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                         raise HTTPException(status_code=403, detail="Email domain not allowed")
                 
                 return payload
+            except HTTPException:
+                # Re-raise HTTP exceptions (like 403 for domain restrictions)
+                raise
             except Exception as e:
                 actual_aud = "unknown"
                 try:
