@@ -11,7 +11,11 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token", auto_error=False)
 
 # Entra ID Config
 TENANT_ID = os.getenv("REACT_APP_AAD_TENANT_ID") or os.getenv("AZURE_TENANT_ID")
-API_AUDIENCE = os.getenv("API_AUDIENCE") or os.getenv("REACT_APP_AAD_CLIENT_ID")
+API_AUDIENCE = (
+    os.getenv("API_AUDIENCE")
+    or os.getenv("REACT_APP_AAD_API_SCOPE")
+    or os.getenv("REACT_APP_AAD_CLIENT_ID")
+)
 
 JWKS_URL = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
 
