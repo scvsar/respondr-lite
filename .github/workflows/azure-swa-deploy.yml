@@ -47,6 +47,7 @@ jobs:
           # Authentication Configuration
           REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID }}
           REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID }}
+          REACT_APP_AAD_API_SCOPE: ${{ vars.REACT_APP_AAD_API_SCOPE }}
           # Don't treat ESLint warnings as errors in CI
           CI: false
 
