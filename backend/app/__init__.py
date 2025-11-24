@@ -64,6 +64,14 @@ async def log_requests(request: Request, call_next):
         tag = "HEALTH_CHECK"
     elif path.startswith("/api/"):
         tag = "API_REQUEST"
+        # Log auth header presence for API requests
+        auth_header = request.headers.get("authorization", "")
+        if auth_header:
+            print(f"🔵 API request to {path} with auth header: {auth_header[:20]}...")
+            logger.info(f"API request to {path} with auth header: {auth_header[:20]}...")
+        else:
+            print(f"🔴 API request to {path} WITHOUT auth header")
+            logger.warning(f"API request to {path} WITHOUT auth header")
     else:
         tag = "OTHER_REQUEST"
     

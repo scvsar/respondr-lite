@@ -64,6 +64,9 @@ def _extract_unverified_claim(token_value: str, claim: str) -> Optional[Union[st
 
 
 def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)):
+    print("🟢 require_auth called")
+    logger.info("require_auth called")
+    
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -72,12 +75,16 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
     
     token_value: Optional[str] = token if token else extract_session_token_from_request(request)
     if not token_value:
+        print("🔴 No token found in require_auth")
+        logger.warning("No token found in require_auth")
         raise credentials_exception
 
     try:
         # First, try to decode header to see alg
         unverified_header = jwt.get_unverified_header(token_value)
         alg = unverified_header.get("alg")
+        print(f"🔑 Token algorithm: {alg}")
+        logger.info(f"Token algorithm: {alg}")
 
         raw_audience = _extract_unverified_claim(token_value, "aud")
         normalized_raw_audience: Optional[str] = None
@@ -104,11 +111,16 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                 raise credentials_exception
                 
         elif alg == "RS256":
+            print("🔐 RS256 token detected")
+            logger.info("RS256 token detected")
             # Entra ID
             if not jwks_client:
+                 print("❌ JWKS client not configured")
                  raise HTTPException(status_code=500, detail="Entra ID not configured")
 
             try:
+                print(f"🎯 Validating token with audience: {API_AUDIENCE}")
+                logger.info(f"Validating token with audience: {API_AUDIENCE}")
                 signing_key = jwks_client.get_signing_key_from_jwt(token_value)
                 
                 # We need to know the audience. 
@@ -133,6 +145,9 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                     options=options
                 )
                 
+                print(f"✅ Token validated successfully for {payload.get('preferred_username', 'unknown')}")
+                logger.info(f"Token validated successfully for {payload.get('preferred_username', 'unknown')}")
+                
                 # Enforce domain restrictions
                 email = payload.get("preferred_username") or payload.get("email")
                 if not email:
@@ -150,8 +165,11 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                 return payload
             except HTTPException:
                 # Re-raise HTTP exceptions (like 403 for domain restrictions)
+                print("❌ HTTP exception during validation")
                 raise
             except Exception as e:
+                print(f"❌ Token validation failed: {type(e).__name__}: {str(e)}")
+                logger.error(f"Token validation failed: {type(e).__name__}: {str(e)}")
                 actual_aud = "unknown"
                 try:
                     unverified_payload = jwt.decode(
