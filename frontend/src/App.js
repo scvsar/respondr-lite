@@ -24,27 +24,7 @@ function AuthGate({ children }) {
     let cancelled = false;
     const load = async () => {
       try {
-        // Check for local token
-        const localToken = getLocalToken();
-        if (localToken) {
-            try {
-                const payload = JSON.parse(atob(localToken.split('.')[1]));
-                if (cancelled) return;
-                setUser({
-                    authenticated: true,
-                    name: payload.display_name || payload.username,
-                    email: payload.email,
-                    is_admin: payload.is_admin,
-                    auth_type: 'local'
-                });
-                setLoading(false);
-                return;
-            } catch (e) {
-                console.error("Invalid local token", e);
-            }
-        }
-
-        // Check for MSAL token
+        // Check for MSAL token first (prefer SSO over local auth)
         const msalToken = await getAccessToken();
         if (msalToken) {
              try {
@@ -62,6 +42,26 @@ function AuthGate({ children }) {
              } catch (e) {
                  console.error("Invalid MSAL token", e);
              }
+        }
+
+        // Fall back to local auth token
+        const localToken = getLocalToken();
+        if (localToken) {
+            try {
+                const payload = JSON.parse(atob(localToken.split('.')[1]));
+                if (cancelled) return;
+                setUser({
+                    authenticated: true,
+                    name: payload.display_name || payload.username,
+                    email: payload.email,
+                    is_admin: payload.is_admin,
+                    auth_type: 'local'
+                });
+                setLoading(false);
+                return;
+            } catch (e) {
+                console.error("Invalid local token", e);
+            }
         }
 
         if (cancelled) return;

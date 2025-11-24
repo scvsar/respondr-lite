@@ -3,11 +3,12 @@ import { getLocalToken } from "./auth/localAuth";
 import { apiUrl } from "./config";
 
 async function getAuthHeader() {
-  const local = getLocalToken();
-  if (local) return { Authorization: `Bearer ${local}` };
-  
+  // Prefer MSAL/Entra tokens over local auth tokens
   const aad = await getAccessToken();
   if (aad) return { Authorization: `Bearer ${aad}` };
+  
+  const local = getLocalToken();
+  if (local) return { Authorization: `Bearer ${local}` };
   
   return {};
 }
