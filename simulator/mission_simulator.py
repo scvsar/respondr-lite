@@ -94,8 +94,8 @@ LLM_VERBOSITY = os.getenv("LLM_VERBOSITY", "medium")               # low|medium|
 # Azure Storage configuration
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
 AZURE_STORAGE_ACCOUNT = os.getenv("AZURE_STORAGE_ACCOUNT")
-# Force the correct table name for post-mission analysis
-STORAGE_TABLE_NAME = "respondermessagespreprod"  # Always use preprod table for analysis
+# Use the same table as the main app to keep analysis in sync
+STORAGE_TABLE_NAME = "ResponderMessages"
 logger.info(f"Using table: {STORAGE_TABLE_NAME}")
 
 
@@ -193,28 +193,28 @@ class LLMPlanner:
         self.reasoning_effort = LLM_REASONING_EFFORT
         self.verbosity = LLM_VERBOSITY
 
-        # Prefer OpenAI over Azure OpenAI
-        if OPENAI_API_KEY and OpenAI:
+        # Prefer Azure OpenAI if configured (since we are migrating), otherwise OpenAI
+        if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AzureOpenAI:
+            try:
+                self.client = AzureOpenAI(
+                    api_key=AZURE_OPENAI_API_KEY,
+                    api_version="2024-12-01-preview",
+                    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+                )
+                self.using_azure = True
+                self.model_primary = AZURE_OPENAI_DEPLOYMENT
+                self.model_fallback = AZURE_OPENAI_DEPLOYMENT
+                logger.info(f"Azure OpenAI client initialized with deployment: {AZURE_OPENAI_DEPLOYMENT}")
+            except Exception as e:
+                logger.warning(f"Failed to init Azure OpenAI client: {e}")
+
+        # Fallback to OpenAI if Azure not used/failed
+        if not self.client and OPENAI_API_KEY and OpenAI:
             try:
                 self.client = OpenAI(api_key=OPENAI_API_KEY)
                 logger.info("OpenAI client initialized.")
             except Exception as e:
                 logger.warning(f"Failed to init OpenAI client: {e}")
-                
-        # Fallback to Azure OpenAI if OpenAI fails
-        if not self.client and AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AzureOpenAI:
-            try:
-                self.client = AzureOpenAI(
-                    api_key=AZURE_OPENAI_API_KEY,
-                    api_version="2024-12-01-preview",  # Match the .env setting
-                    azure_endpoint=AZURE_OPENAI_ENDPOINT,
-                )
-                self.using_azure = True
-                self.model_primary = AZURE_OPENAI_DEPLOYMENT
-                self.model_fallback = AZURE_OPENAI_DEPLOYMENT  # Same deployment for fallback
-                logger.info(f"Azure OpenAI client initialized as fallback with deployment: {AZURE_OPENAI_DEPLOYMENT}")
-            except Exception as e:
-                logger.warning(f"Failed to init Azure OpenAI client: {e}")
 
         if not self.client:
             logger.warning("No LLM client available. Will fall back to template plan.")
@@ -292,6 +292,17 @@ class LLMPlanner:
             else:
                 kwargs["max_tokens"] = max_tokens
                 kwargs["temperature"] = 0.6
+            
+            # Azure OpenAI specific adjustments
+            if self.using_azure:
+                # Azure doesn't support max_tokens for o1/gpt-5 models, ensure we use max_completion_tokens
+                if "max_tokens" in kwargs:
+                    del kwargs["max_tokens"]
+                    kwargs["max_completion_tokens"] = max_tokens
+                
+                # Azure doesn't support temperature for o1/gpt-5 models
+                if "temperature" in kwargs and (model.startswith("gpt-5") or model.startswith("o1")):
+                    del kwargs["temperature"]
             if include_new_params and not self.using_azure:
                 # GPT‑5 params only work with OpenAI, not Azure OpenAI currently
                 kwargs["reasoning_effort"] = self.reasoning_effort
@@ -304,7 +315,17 @@ class LLMPlanner:
             elif json_object:
                 kwargs["response_format"] = {"type": "json_object"}
 
-            return self.client.chat.completions.create(**kwargs)
+            logger.info(f"Calling LLM with model={model}, use_schema={use_schema}, json_object={json_object}")
+            start_ts = time.time()
+            try:
+                resp = self.client.chat.completions.create(**kwargs)
+                duration = time.time() - start_ts
+                logger.info(f"LLM call returned in {duration:.2f}s")
+                return resp
+            except Exception as e:
+                duration = time.time() - start_ts
+                logger.warning(f"LLM call failed after {duration:.2f}s: {e}")
+                raise e
 
         # Strategy: Simplified for Azure gpt-5-nano deployment
         if self.using_azure:
@@ -398,6 +419,24 @@ Constraints:
 - At least 3 distinct home_group_id values across the team
 - Front-load initial responses (<15 min), 5–15% cancellations, 20–35% follow-ups/status later
 - Each message < 20 words, no real phone numbers
+
+Output format (STRICT):
+{{
+    "team": [
+        {{"name": "...", "experience_level": "rookie", "personality": "precise", "vehicle_preference": "POV", "home_group_id": "6846970"}}
+    ],
+    "messages": [
+        {{"sender_index": 0, "type": "initial_response", "text": "Responding POV ETA 25", "offset_sec": 120}}
+    ],
+    "window_minutes": 45
+}}
+
+Requirements for the JSON you return:
+- The value of "team" MUST be an array with one object per responder (never an object/dictionary).
+- The value of "messages" MUST be an array with one object per message.
+- Every responder object MUST include: name, experience_level, personality, vehicle_preference, home_group_id.
+- Every message object MUST include: sender_index, type, text, offset_sec. Indices refer to the team array.
+- Provide only valid JSON with double quotes and no commentary or markdown fences.
 """
         schema = self._mission_schema(min_team, max_team, min_window_min, max_window_min)
 
@@ -745,8 +784,32 @@ class MissionSimulator:
         Returns (team, messages, window_minutes).
         """
         min_window, max_window = window_bounds
-        team_raw = raw.get("team") or []
-        msgs_raw = raw.get("messages") or []
+        team_raw = raw.get("team") if isinstance(raw, dict) else []
+        if isinstance(team_raw, dict):
+            if isinstance(team_raw.get("members"), list):
+                team_raw = team_raw.get("members")
+            else:
+                # Some models return a dictionary keyed by index; attempt to coerce to list
+                try:
+                    team_raw = list(team_raw.values())
+                except Exception:
+                    team_raw = []
+        if not isinstance(team_raw, list):
+            logger.warning("LLM plan provided non-list team; forcing fallback")
+            team_raw = []
+
+        msgs_raw = raw.get("messages") if isinstance(raw, dict) else []
+        if isinstance(msgs_raw, dict):
+            if isinstance(msgs_raw.get("items"), list):
+                msgs_raw = msgs_raw.get("items")
+            else:
+                try:
+                    msgs_raw = list(msgs_raw.values())
+                except Exception:
+                    msgs_raw = []
+        if not isinstance(msgs_raw, list):
+            logger.warning("LLM plan provided non-list messages; forcing fallback")
+            msgs_raw = []
         window_minutes = raw.get("window_minutes") or random.randint(min_window, max_window)
         window_minutes = int(clamp(int(window_minutes), min_window, max_window))
 
@@ -755,6 +818,8 @@ class MissionSimulator:
         ids = self._assign_ids(len(team_raw))
         uniq_groups = set()
         for i, t in enumerate(team_raw):
+            if not isinstance(t, dict):
+                continue
             name = (t.get("name") or "Responder").strip()
             exp = t.get("experience_level") or random.choice(["rookie", "experienced", "veteran"])
             pers = t.get("personality") or random.choice(["precise", "casual", "talkative", "quiet"])
@@ -794,6 +859,8 @@ class MissionSimulator:
         # Materialize messages (validated)
         messages: List[PlannedMessage] = []
         for m in msgs_raw:
+            if not isinstance(m, dict):
+                continue
             try:
                 sender_index = int(m.get("sender_index", 0))
                 if not (0 <= sender_index < len(team)):
@@ -1058,6 +1125,8 @@ class MissionSimulator:
                 max_window_min=self.max_window_min,
             )
 
+        plan_source = "llm" if plan_raw else "fallback"
+
         # Fallback simple plan if LLM unavailable/failed
         if not plan_raw:
             logger.warning("LLM planning unavailable; falling back to template-based plan.")
@@ -1067,11 +1136,20 @@ class MissionSimulator:
         team, messages, window_minutes = self._validate_and_materialize_plan(
             plan_raw, mission_group_id, (self.min_window_min, self.max_window_min)
         )
+
+        if plan_source == "llm" and (not team or not messages):
+            logger.warning("LLM plan missing required sections; regenerating via template fallback.")
+            plan_raw = self._fallback_plan(location, start_time, mission_group_id)
+            plan_source = "fallback"
+            team, messages, window_minutes = self._validate_and_materialize_plan(
+                plan_raw, mission_group_id, (self.min_window_min, self.max_window_min)
+            )
+
         if not team:
-            logger.error("No team in plan; aborting mission.")
+            logger.error("No team in plan after fallback; aborting mission.")
             return
         if not messages:
-            logger.error("No messages in plan; aborting mission.")
+            logger.error("No messages in plan after fallback; aborting mission.")
             return
 
         # Log unique home groups after team materialization
