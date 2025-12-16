@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
@@ -259,7 +260,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             logger.warning(f"Failed to get responder context for ETA validation: {e}")
             other_responders = []
 
-        parsed = extract_details_from_text(
+        parsed = await run_in_threadpool(
+            extract_details_from_text,
             enriched_text,
             base_time=message_dt,
             prev_eta_iso=prev_eta_iso,
@@ -456,7 +458,8 @@ async def parse_debug(request: ParseDebugRequest, _: dict = Depends(require_admi
         if not base_time:
             base_time = datetime.now(APP_TZ)
         
-        result = extract_details_from_text(
+        result = await run_in_threadpool(
+            extract_details_from_text,
             request.text, 
             base_time=base_time,
             prev_eta_iso=request.prev_eta_iso
