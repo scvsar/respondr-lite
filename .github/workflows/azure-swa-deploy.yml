@@ -5,7 +5,6 @@ on:
     branches:
       - main
       - preprod
-      - static
     paths:
       - 'frontend/**'
       - '.github/workflows/azure-swa-deploy.yml'
@@ -14,41 +13,60 @@ on:
     branches:
       - main
       - preprod
-      - static
     paths:
       - 'frontend/**'
 
 jobs:
-  build_and_deploy_job:
-    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+  deploy-preprod:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/preprod'
     runs-on: ubuntu-latest
-    name: Build and Deploy Job
+    name: Deploy Static Web App (preprod)
     steps:
       - uses: actions/checkout@v3
         with:
           submodules: true
           lfs: false
       - name: Build And Deploy
-        id: builddeploy
+        id: builddeploy-preprod
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PURPLE_BUSH_0C7489C0F }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e. PR comments)
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PREPROD }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          ###### Repository/Build Configurations - These values can be configured to match your app requirements. ######
-          # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
-          app_location: "/frontend" # App source code path
-          api_location: "" # Api source code path - optional
-          output_location: "build" # Built app content directory - optional
-          ###### End of Repository/Build Configurations ######
+          app_location: "/frontend"
+          api_location: ""
+          output_location: "build"
         env:
-          # Set the API URL for the frontend to communicate with the Container App
-          REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL }}
-          # Authentication Configuration
-          REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID }}
-          REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID }}
-          REACT_APP_AAD_API_SCOPE: ${{ vars.REACT_APP_AAD_API_SCOPE }}
-          # Don't treat ESLint warnings as errors in CI
+          REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL_PREPROD }}
+          REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID_PREPROD }}
+          REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID_PREPROD }}
+          REACT_APP_AAD_API_SCOPE: ${{ vars.REACT_APP_AAD_API_SCOPE_PREPROD }}
+          CI: false
+
+  deploy-prod:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    name: Deploy Static Web App (prod)
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          submodules: true
+          lfs: false
+      - name: Build And Deploy
+        id: builddeploy-prod
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PROD }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "/frontend"
+          api_location: ""
+          output_location: "build"
+        env:
+          REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL_PROD }}
+          REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID_PROD }}
+          REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID_PROD }}
+          REACT_APP_AAD_API_SCOPE: ${{ vars.REACT_APP_AAD_API_SCOPE_PROD }}
           CI: false
 
   close_pull_request_job:
@@ -60,5 +78,5 @@ jobs:
         id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
         with:
-          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PURPLE_BUSH_0C7489C0F }}
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PREPROD }}
           action: "close"

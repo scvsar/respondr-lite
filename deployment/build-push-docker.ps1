@@ -1,6 +1,8 @@
 param(
   [string]$Repo = "randytreit/respondr",
   [string]$Dockerfile = ".\Dockerfile",
+  [ValidateSet('preprod','prod')][string]$Channel = 'preprod',
+  [switch]$PushLatest,
   [switch]$Deploy,
   [string]$ResourceGroup = "respondrlite"
 )
@@ -94,6 +96,9 @@ $nextTag = Get-NextTag $latest
 Write-Host "Latest tag seen: $($latest ?? '<none>')"
 Write-Host "Next tag: $nextTag"
 
+$envAlias = $Channel
+$includeLatest = $PushLatest.IsPresent -or $Channel -eq 'prod'
+
 $IMAGE = "${Repo}:${nextTag}"
 
 # Build the image from the specified Dockerfile and tag it with the new tag
@@ -107,14 +112,26 @@ try {
   throw "Build completed but image '$IMAGE' not found locally. Aborting push."
 }
 
-# Also tag the built image as "latest"
-& docker tag "$IMAGE" "${Repo}:latest"
+# Tag the channel alias (preprod/prod)
+Write-Host "Tagging channel alias: ${Repo}:$envAlias"
+& docker tag "$IMAGE" "${Repo}:$envAlias"
 
-# Push both the new tag and the latest tag
+if ($includeLatest) {
+  Write-Host "Tagging latest alias"
+  & docker tag "$IMAGE" "${Repo}:latest"
+}
+
+# Push tags
 Write-Host "Pushing: $IMAGE"
 & docker push "$IMAGE"
-Write-Host "Pushing: ${Repo}:latest"
-& docker push "${Repo}:latest"
+
+Write-Host "Pushing channel alias: ${Repo}:$envAlias"
+& docker push "${Repo}:$envAlias"
+
+if ($includeLatest) {
+  Write-Host "Pushing: ${Repo}:latest"
+  & docker push "${Repo}:latest"
+}
 
 # Optional deployment step
 if ($Deploy) {

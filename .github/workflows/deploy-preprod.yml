@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - preprod
-      - static
   workflow_dispatch:  # Allow manual trigger
 
 env:
@@ -125,7 +124,7 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
       
-      # Generate version tag (date.buildnumber format)
+      # Generate version tag (date.buildnumber format) and preprod alias
       - name: Generate version tag
         id: version
         run: |
@@ -152,7 +151,7 @@ jobs:
           echo "Generated tag: ${NEW_TAG}"
       
       # Build and push Docker image
-      - name: Build and push Docker image
+      - name: Build and push Docker image (preprod channel)
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -160,7 +159,6 @@ jobs:
           push: true
           tags: |
             ${{ env.DOCKER_REPO }}:${{ steps.version.outputs.NEW_TAG }}
-            ${{ env.DOCKER_REPO }}:latest
             ${{ env.DOCKER_REPO }}:preprod
           cache-from: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache
           cache-to: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache,mode=max

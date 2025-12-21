@@ -1,0 +1,87 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Docker image tag to deploy (e.g. 2025-12-19.3 or main)"
+        required: true
+      revision_suffix:
+        description: "Optional revision suffix override"
+        required: false
+      resource_group:
+        description: "Optional resource group override"
+        required: false
+      container_app:
+        description: "Optional container app name override"
+        required: false
+  push:
+    tags:
+      - "release-*"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DOCKER_REPO: randytreit/respondr-lite
+
+jobs:
+  deploy:
+    name: Deploy tagged image to prod ACA
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve parameters
+        id: params
+        run: |
+          RG_INPUT="${{ github.event.inputs.resource_group }}"
+          APP_INPUT="${{ github.event.inputs.container_app }}"
+          IMAGE_TAG_INPUT="${{ github.event.inputs.image_tag }}"
+
+          # Allow release-* tag pushes to auto-use the tag name as the image tag
+          if [ -z "$IMAGE_TAG_INPUT" ] && [ "${{ github.event_name }}" = "push" ]; then
+            IMAGE_TAG_INPUT="${GITHUB_REF##*/}"
+          fi
+
+          if [ -z "$IMAGE_TAG_INPUT" ]; then
+            echo "image_tag is required" >&2
+            exit 1
+          fi
+
+          echo "rg=${RG_INPUT:-${{ vars.RESOURCE_GROUP_PROD }}}" >> $GITHUB_OUTPUT
+          echo "app=${APP_INPUT:-${{ vars.CONTAINER_APP_NAME_PROD }}}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG_INPUT}" >> $GITHUB_OUTPUT
+          echo "suffix=${{ github.event.inputs.revision_suffix || '' }}" >> $GITHUB_OUTPUT
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to Azure Container Apps
+        run: |
+          RG="${{ steps.params.outputs.rg }}"
+          APP="${{ steps.params.outputs.app }}"
+          IMAGE="docker.io/${{ env.DOCKER_REPO }}:${{ steps.params.outputs.image_tag }}"
+          SUFFIX="${{ steps.params.outputs.suffix }}"
+          if [ -z "$SUFFIX" ]; then
+            SUFFIX="prod-$(date -u +"%Y%m%d-%H%M%S")"
+          fi
+
+          echo "Deploying $IMAGE to $APP in $RG (suffix=$SUFFIX)"
+          az containerapp update \
+            -g "$RG" \
+            -n "$APP" \
+            --image "$IMAGE" \
+            --revision-suffix "$SUFFIX" \
+            --set-env-vars REDEPLOY_AT=$(date -u +"%Y%m%d-%H%M%S")
+
+          FQDN=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.ingress.fqdn" -o tsv)
+          echo "Deployment complete. FQDN: https://$FQDN"
+          echo "## 🚀 Prod Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "Image: $IMAGE" >> $GITHUB_STEP_SUMMARY
+          echo "Container App: $APP" >> $GITHUB_STEP_SUMMARY
+          echo "Resource Group: $RG" >> $GITHUB_STEP_SUMMARY
+          echo "FQDN: https://$FQDN" >> $GITHUB_STEP_SUMMARY

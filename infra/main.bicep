@@ -336,7 +336,6 @@ resource respondr 'Microsoft.App/containerApps@2025-01-01' = {
           resources: { cpu: 1, memory: '2Gi' }
         }
       ]
-      revisionSuffix: 'v4'
       scale: {
         minReplicas: containerMinReplicas
         maxReplicas: containerMaxReplicas

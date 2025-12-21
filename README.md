@@ -148,6 +148,18 @@ sequenceDiagram
 
 ## Deployment
 
+### Environments: prod vs preprod
+- Keep **separate resource groups** for each environment. Run `deployment/deploy-from-scratch.ps1` twice (once per RG/UniqueId) with the desired container image tag and region.
+- Frontend (Static Web App): `main` branch deploys to prod SWA using `azure-swa-deploy.yml`; `preprod` branch deploys to preprod SWA with its own token and API/AAD variables.
+- Backend images:
+  - Preprod: push to `preprod` branch or run `./deployment/build-push-docker.ps1 -Dockerfile .\Dockerfile.backend -Repo randytreit/respondr-lite -Channel preprod`. Produces dated tags and `:preprod` (no `latest`).
+  - Prod: push to `main` branch or run `./deployment/build-push-docker.ps1 -Dockerfile .\Dockerfile.backend -Repo randytreit/respondr-lite -Channel prod`. Produces dated tags, `:prod`, and `:latest`.
+- Deploying backend:
+  - Preprod: `deploy-preprod.yml` auto-deploys the dated tag to the preprod Container App on `preprod` branch pushes.
+  - Prod: use `deploy-prod.yml` (workflow_dispatch or release-* tag) to deploy an explicit image tag to the prod Container App; prod is not auto-deployed from CI.
+- App registration: single registration is fine; add both reply URLs (prod and preprod ACA FQDN/custom domain).
+- CORS/allowed origins: set `ALLOWED_ORIGINS` and `STATIC_WEB_APP_URL` per environment after deploy (or parameterize when running deploy-from-scratch).
+
 ### Prerequisites
 
 Before deploying, ensure you have:

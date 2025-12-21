@@ -90,17 +90,14 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
       
-      - name: Generate version tags
+      - name: Generate version tags (main channel only)
         id: tags
         run: |
-          # Generate tags for CI builds
           COMMIT_SHA="${{ github.sha }}"
           DATE_TAG="ci-$(date -u +"%Y%m%d")"
-          
-          TAGS="${{ env.DOCKER_REPO }}:latest"
-          TAGS="${TAGS},${{ env.DOCKER_REPO }}:${COMMIT_SHA:0:8}"
+          TAGS="${{ env.DOCKER_REPO }}:${COMMIT_SHA:0:8}"
           TAGS="${TAGS},${{ env.DOCKER_REPO }}:${DATE_TAG}"
-          
+          TAGS="${TAGS},${{ env.DOCKER_REPO }}:main"
           echo "TAGS=${TAGS}" >> $GITHUB_OUTPUT
           echo "Generated tags: ${TAGS}"
       
@@ -123,35 +120,3 @@ jobs:
           echo "${{ steps.tags.outputs.TAGS }}" | sed 's/,/\n/g' | sed 's/^/- `/' | sed 's/$/`/' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Commit**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-
-  deploy-prod:
-    name: Deploy to Production
-    needs: [build-and-push]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Azure CLI Login
-        uses: azure/login@v2
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      
-      - name: Deploy to Production Container App
-        run: |
-          # Use latest tag for production deployments
-          IMAGE_TAG="${{ env.DOCKER_REPO }}:latest"
-          
-          # Get current timestamp for revision suffix
-          TIMESTAMP=$(date -u +"%Y%m%d%H%M%S")
-          
-          echo "Deploying to production with image: ${IMAGE_TAG}"
-          
-          az containerapp update \
-            --resource-group respondrlite \
-            --name respondr-prod-app \
-            --image "${IMAGE_TAG}" \
-            --revision-suffix "main-${TIMESTAMP}"
-          
-          echo "Production deployment completed with revision suffix: main-${TIMESTAMP}"
