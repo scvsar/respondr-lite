@@ -16,6 +16,8 @@ on:
         description: "Optional container app name override"
         required: false
   push:
+    branches:
+      - main
     tags:
       - "release-*"
 
@@ -38,9 +40,13 @@ jobs:
           APP_INPUT="${{ github.event.inputs.container_app }}"
           IMAGE_TAG_INPUT="${{ github.event.inputs.image_tag }}"
 
-          # Allow release-* tag pushes to auto-use the tag name as the image tag
+          # If triggered by a push, choose a sensible default image tag
           if [ -z "$IMAGE_TAG_INPUT" ] && [ "${{ github.event_name }}" = "push" ]; then
-            IMAGE_TAG_INPUT="${GITHUB_REF##*/}"
+            if [[ "$GITHUB_REF" == refs/tags/release-* ]]; then
+              IMAGE_TAG_INPUT="${GITHUB_REF#refs/tags/}"
+            elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
+              IMAGE_TAG_INPUT="main"
+            fi
           fi
 
           if [ -z "$IMAGE_TAG_INPUT" ]; then
