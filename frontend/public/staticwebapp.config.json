@@ -3,13 +3,21 @@
     {
       "route": "/api/*",
       "rewrite": "/api/*"
-    },
-    {
-      "route": "/*",
-      "serve": "/index.html",
-      "statusCode": 200
     }
   ],
+  "navigationFallback": {
+    "rewrite": "/index.html",
+    "exclude": [
+      "/static/*",
+      "/*.css",
+      "/*.js",
+      "/*.ico",
+      "/*.json",
+      "/manifest.json",
+      "/robots.txt",
+      "/favicon.ico"
+    ]
+  },
   "responseOverrides": {
     "401": {
       "redirect": "/.auth/login/aad",

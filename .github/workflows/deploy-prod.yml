@@ -27,11 +27,80 @@ permissions:
 
 env:
   DOCKER_REPO: randytreit/respondr-lite
+  REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL_PROD }}
+  REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID_PROD }}
+  REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID_PROD }}
+  REACT_APP_AAD_API_SCOPE: ${{ vars.REACT_APP_AAD_API_SCOPE_PROD }}
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Cache Node modules
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+
+      - name: Run backend tests
+        env:
+          WEBHOOK_API_KEY: test-key
+          ALLOWED_EMAIL_DOMAINS: scvsar.org,rtreit.com,respondr.local
+          ENABLE_LOCAL_AUTH: true
+          LOCAL_AUTH_SECRET_KEY: test-secret-key
+          PYTEST_CURRENT_TEST: true
+        run: |
+          cd backend
+          python run_tests.py
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run frontend tests
+        run: |
+          cd frontend
+          npm test -- --watchAll=false --ci --coverage
+
   deploy:
     name: Deploy tagged image to prod ACA
     runs-on: ubuntu-latest
+    needs: test
+
     steps:
       - name: Resolve parameters
         id: params
@@ -40,7 +109,6 @@ jobs:
           APP_INPUT="${{ github.event.inputs.container_app }}"
           IMAGE_TAG_INPUT="${{ github.event.inputs.image_tag }}"
 
-          # If triggered by a push, choose a sensible default image tag
           if [ -z "$IMAGE_TAG_INPUT" ] && [ "${{ github.event_name }}" = "push" ]; then
             if [[ "$GITHUB_REF" == refs/tags/release-* ]]; then
               IMAGE_TAG_INPUT="${GITHUB_REF#refs/tags/}"
@@ -62,9 +130,15 @@ jobs:
       - name: Azure Login
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Show Azure target
+        run: |
+          echo "Azure tenant: ${{ env.AZURE_TENANT_ID }}"
+          echo "Azure subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
+          echo "Azure client-id: ${{ env.AZURE_CLIENT_ID }}"
 
       - name: Deploy to Azure Container Apps
         run: |
@@ -82,7 +156,12 @@ jobs:
             -n "$APP" \
             --image "$IMAGE" \
             --revision-suffix "$SUFFIX" \
-            --set-env-vars REDEPLOY_AT=$(date -u +"%Y%m%d-%H%M%S")
+            --set-env-vars \
+              REDEPLOY_AT=$(date -u +"%Y%m%d-%H%M%S") \
+              REACT_APP_AAD_TENANT_ID=${{ env.REACT_APP_AAD_TENANT_ID }} \
+              REACT_APP_AAD_CLIENT_ID=${{ env.REACT_APP_AAD_CLIENT_ID }} \
+              REACT_APP_API_URL=${{ env.REACT_APP_API_URL }} \
+              REACT_APP_AAD_API_SCOPE=${{ env.REACT_APP_AAD_API_SCOPE }}
 
           FQDN=$(az containerapp show -g "$RG" -n "$APP" --query "properties.configuration.ingress.fqdn" -o tsv)
           echo "Deployment complete. FQDN: https://$FQDN"
@@ -91,3 +170,38 @@ jobs:
           echo "Container App: $APP" >> $GITHUB_STEP_SUMMARY
           echo "Resource Group: $RG" >> $GITHUB_STEP_SUMMARY
           echo "FQDN: https://$FQDN" >> $GITHUB_STEP_SUMMARY
+
+      - name: Set up Node.js for SWA
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps for SWA
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend for SWA
+        working-directory: frontend
+        env:
+          REACT_APP_API_URL: ${{ env.REACT_APP_API_URL }}
+          REACT_APP_AAD_CLIENT_ID: ${{ env.REACT_APP_AAD_CLIENT_ID }}
+          REACT_APP_AAD_TENANT_ID: ${{ env.REACT_APP_AAD_TENANT_ID }}
+          REACT_APP_AAD_API_SCOPE: ${{ env.REACT_APP_AAD_API_SCOPE }}
+          CI: false
+        run: npm run build
+
+      - name: Deploy Static Web App (prod)
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PROD }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "/frontend"
+          api_location: ""
+          output_location: "build"
+        env:
+          REACT_APP_API_URL: ${{ env.REACT_APP_API_URL }}
+          REACT_APP_AAD_CLIENT_ID: ${{ env.REACT_APP_AAD_CLIENT_ID }}
+          REACT_APP_AAD_TENANT_ID: ${{ env.REACT_APP_AAD_TENANT_ID }}
+          REACT_APP_AAD_API_SCOPE: ${{ env.REACT_APP_AAD_API_SCOPE }}
+          CI: false

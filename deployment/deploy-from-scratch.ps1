@@ -5,7 +5,8 @@ param(
     [Parameter(Mandatory = $true)] [string]$ContainerImage,
     [string]$RepositoryUrl = "",
     [string]$RepositoryBranch = "main",
-    [string]$GithubToken = ""
+  [string]$GithubToken = "",
+  [string]$PrimaryFrontendUrl = ""
 )
 
 # create the resource group if it doesn't exist using az cli
@@ -283,9 +284,24 @@ Log "Container App URL: $caUrl"
 
 # 3. Update Container App with ALLOWED_ORIGINS and STATIC_WEB_APP_URL
 Log "Updating Container App environment variables..."
-$allowedOrigins = "$swaUrl,https://preprod.scvsar.app,https://main.scvsar.app"
+$primaryOrigin = $swaUrl
+if ($PrimaryFrontendUrl) {
+  $primaryOrigin = $PrimaryFrontendUrl.Trim()
+  if ($primaryOrigin -and -not $primaryOrigin.StartsWith("https://")) {
+    $primaryOrigin = "https://$primaryOrigin"
+  }
+}
+
+$originList = @(
+  $swaUrl,
+  $primaryOrigin,
+  "https://preprod.scvsar.app",
+  "https://respondr.scvsar.app"
+) | Where-Object { $_ -and $_.Trim() } | Select-Object -Unique
+
+$allowedOrigins = ($originList -join ",")
 # Note: This update might trigger a new revision
-az containerapp update -n $ContainerAppName -g $ResourceGroup --set-env-vars "ALLOWED_ORIGINS=$allowedOrigins" "STATIC_WEB_APP_URL=$swaUrl"
+az containerapp update -n $ContainerAppName -g $ResourceGroup --set-env-vars "ALLOWED_ORIGINS=$allowedOrigins" "STATIC_WEB_APP_URL=$primaryOrigin"
 Log "Container App updated."
 
 # 4. Update Function App with CONTAINER_APP_WAKE_URL
