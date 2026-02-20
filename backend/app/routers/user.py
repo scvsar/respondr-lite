@@ -17,20 +17,38 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _extract_user_email(user: dict) -> Optional[str]:
+    """Extract the most reliable email/UPN-like identifier from auth payload."""
+    if not isinstance(user, dict):
+        return None
+
+    for key in ("preferred_username", "email", "upn", "unique_name"):
+        value = user.get(key)
+        if isinstance(value, str) and "@" in value:
+            return value.strip().lower()
+
+    emails = user.get("emails")
+    if isinstance(emails, list):
+        for item in emails:
+            if isinstance(item, str) and "@" in item:
+                return item.strip().lower()
+
+    return None
+
 @router.get("/api/user")
 def get_user_info(user: dict = Depends(require_auth)) -> JSONResponse:
     """Get user info from the validated JWT token."""
     
     # Extract info from token payload
-    email = user.get("preferred_username") or user.get("email")
+    email = _extract_user_email(user)
     name = user.get("name") or user.get("display_name") or email
     is_admin = user.get("is_admin", False)
     auth_type = user.get("auth_type", "entra") # Default to entra if not specified (local has it)
     
-    # If Entra, check admin status again (though require_admin does it, require_auth doesn't)
-    if auth_type != "local" and email:
-         if email.lower() in [u.lower() for u in allowed_admin_users]:
-             is_admin = True
+    # Apply explicit admin allowlist by email for any auth type.
+    if email and email.lower() in [u.lower() for u in allowed_admin_users]:
+        is_admin = True
 
     return JSONResponse(content={
         "authenticated": True,

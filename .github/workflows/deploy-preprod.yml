@@ -10,9 +10,14 @@ env:
   DOCKER_REPO: randytreit/respondr-lite
   RESOURCE_GROUP: respondr-ppe-eastus2
   CONTAINER_APP_NAME: respondrlite-ca-afb70ccc  # Update this with your actual Container App name
-  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  REACT_APP_API_URL: ${{ vars.REACT_APP_API_URL_PREPROD }}
+  REACT_APP_AAD_CLIENT_ID: ${{ vars.REACT_APP_AAD_CLIENT_ID_PREPROD }}
+  REACT_APP_AAD_TENANT_ID: ${{ vars.REACT_APP_AAD_TENANT_ID_PREPROD }}
+  REACT_APP_AAD_API_SCOPE: ${{ vars.REACT_APP_AAD_API_SCOPE_PREPROD }}
+  # These are not secret; store them as GitHub Actions *Variables* so you can view/audit them.
+  AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+  AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
 jobs:
   test:
@@ -170,6 +175,12 @@ jobs:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Show Azure target
+        run: |
+          echo "Azure tenant: ${{ env.AZURE_TENANT_ID }}"
+          echo "Azure subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
+          echo "Azure client-id: ${{ env.AZURE_CLIENT_ID }}"
       
       # Deploy to Azure Container Apps
       - name: Deploy to Azure Container Apps
@@ -187,8 +198,10 @@ jobs:
             --revision-suffix ${REVISION_SUFFIX} \
             --set-env-vars \
               REDEPLOY_AT=$(date +%Y%m%d-%H%M%S) \
-              REACT_APP_AAD_TENANT_ID=${{ vars.REACT_APP_AAD_TENANT_ID }} \
-              REACT_APP_AAD_CLIENT_ID=${{ vars.REACT_APP_AAD_CLIENT_ID }} \
+              REACT_APP_AAD_TENANT_ID=${{ env.REACT_APP_AAD_TENANT_ID }} \
+              REACT_APP_AAD_CLIENT_ID=${{ env.REACT_APP_AAD_CLIENT_ID }} \
+              REACT_APP_API_URL=${{ env.REACT_APP_API_URL }} \
+              REACT_APP_AAD_API_SCOPE=${{ env.REACT_APP_AAD_API_SCOPE }} \
               INACTIVITY_TIMEOUT_MINUTES=${{ vars.INACTIVITY_TIMEOUT_MINUTES }} \
             --query "properties.configuration.ingress.fqdn" \
             -o tsv
@@ -230,6 +243,42 @@ jobs:
           - **Triggered by**: ${{ github.actor }}
           - **Workflow run**: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
           EOF
+
+      # Build and deploy Static Web App
+      - name: Set up Node.js for SWA
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install frontend deps for SWA
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend for SWA
+        working-directory: frontend
+        env:
+          REACT_APP_API_URL: ${{ env.REACT_APP_API_URL }}
+          REACT_APP_AAD_CLIENT_ID: ${{ env.REACT_APP_AAD_CLIENT_ID }}
+          REACT_APP_AAD_TENANT_ID: ${{ env.REACT_APP_AAD_TENANT_ID }}
+          REACT_APP_AAD_API_SCOPE: ${{ env.REACT_APP_AAD_API_SCOPE }}
+          CI: false
+        run: npm run build
+
+      - name: Deploy Static Web App (preprod)
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_PREPROD }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: "upload"
+          app_location: "/frontend"
+          api_location: ""
+          output_location: "build"
+        env:
+          REACT_APP_API_URL: ${{ env.REACT_APP_API_URL }}
+          REACT_APP_AAD_CLIENT_ID: ${{ env.REACT_APP_AAD_CLIENT_ID }}
+          REACT_APP_AAD_TENANT_ID: ${{ env.REACT_APP_AAD_TENANT_ID }}
+          REACT_APP_AAD_API_SCOPE: ${{ env.REACT_APP_AAD_API_SCOPE }}
+          CI: false
       
       # Optional: Send notification (Slack, Teams, etc.)
       # - name: Send notification

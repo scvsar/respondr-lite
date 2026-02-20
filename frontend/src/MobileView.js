@@ -115,6 +115,7 @@ export default function MobileView() {
     "14533239": "MSAR Mission Response",
     "106549466": "ESAR Coordination",
     "16649586": "OSU-MISSION RESPONSE",
+    "19801892": "Tracker Team",
   };
   const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
 

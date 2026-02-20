@@ -38,6 +38,11 @@ export async function initializeMsal() {
                 if (response) {
                     console.log("Login successful via redirect", response);
                     msalInstance.setActiveAccount(response.account);
+              } else {
+                const existing = msalInstance.getAllAccounts();
+                if (!msalInstance.getActiveAccount() && existing.length > 0) {
+                  msalInstance.setActiveAccount(existing[0]);
+                }
                 }
             } catch (error) {
                 console.error("Redirect handling failed", error);
@@ -60,10 +65,18 @@ export async function getAccessToken() {
   if (accounts.length === 0) {
       return null;
   }
+
+  // Prefer explicitly active account; fall back to first cached account.
+  // This prevents accidentally using a stale token from a different user.
+  let account = msalInstance.getActiveAccount();
+  if (!account) {
+    account = accounts[0];
+    msalInstance.setActiveAccount(account);
+  }
   
   const request = {
     scopes: [apiScope],
-    account: accounts[0],
+    account,
   };
 
   try {

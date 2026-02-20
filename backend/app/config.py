@@ -172,4 +172,5 @@ GROUP_ID_TO_TEAM: Dict[str, str] = {
     "14533239": "MSAR",
     "106549466": "ESAR",
     "16649586": "OSU",
+    "19801892": "Tracker",
 }

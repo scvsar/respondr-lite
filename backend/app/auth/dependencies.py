@@ -40,6 +40,8 @@ API_AUDIENCE = _normalize_audience(
     or os.getenv("REACT_APP_AAD_CLIENT_ID")
 )
 
+AAD_CLIENT_ID = (os.getenv("REACT_APP_AAD_CLIENT_ID") or "").strip()
+
 if API_AUDIENCE:
     logger.info("Configured API audience: %s", API_AUDIENCE)
 else:
@@ -48,6 +50,25 @@ else:
 JWKS_URL = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
 
 jwks_client = PyJWKClient(JWKS_URL) if TENANT_ID else None
+
+
+def _extract_user_email(payload: dict) -> Optional[str]:
+    """Extract the most reliable email/UPN-like identifier from token payload."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("preferred_username", "email", "upn", "unique_name"):
+        value = payload.get(key)
+        if isinstance(value, str) and "@" in value:
+            return value.strip().lower()
+
+    emails = payload.get("emails")
+    if isinstance(emails, (list, tuple)):
+        for item in emails:
+            if isinstance(item, str) and "@" in item:
+                return item.strip().lower()
+
+    return None
 
 
 def _extract_unverified_claim(token_value: str, claim: str) -> Optional[Union[str, list]]:
@@ -131,9 +152,20 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                     "verify_aud": bool(API_AUDIENCE),
                     "verify_iss": False,
                 }
+                audiences = []
+                if API_AUDIENCE:
+                    audiences.append(API_AUDIENCE)
+                    if API_AUDIENCE.startswith("api://"):
+                        bare = API_AUDIENCE[len("api://"):]
+                        if bare:
+                            audiences.append(bare)
+                if AAD_CLIENT_ID and AAD_CLIENT_ID not in audiences:
+                    audiences.append(AAD_CLIENT_ID)
+
+                audience_param = audiences if len(audiences) > 1 else (audiences[0] if audiences else None)
                 logger.debug(
-                    "Validating Entra token using audience=%s (verify_aud=%s)",
-                    API_AUDIENCE or "<none>",
+                    "Validating Entra token using audiences=%s (verify_aud=%s)",
+                    audiences if audiences else ["<none>"],
                     options["verify_aud"],
                 )
                 
@@ -141,7 +173,7 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                     token_value,
                     signing_key.key,
                     algorithms=["RS256"],
-                    audience=API_AUDIENCE,
+                    audience=audience_param,
                     options=options
                 )
                 
@@ -149,10 +181,9 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
                 logger.info(f"Token validated successfully for {payload.get('preferred_username', 'unknown')}")
                 
                 # Enforce domain restrictions
-                email = payload.get("preferred_username") or payload.get("email")
+                email = _extract_user_email(payload)
                 if not email:
-                     # Some tokens might not have email, but for this app we expect it.
-                     pass 
+                    logger.warning("No email-like claim found in token; claims keys=%s", list(payload.keys()))
                 
                 allowed_domains = [d.strip() for d in os.getenv("ALLOWED_EMAIL_DOMAINS", "").split(",") if d.strip()]
                 if email and allowed_domains:
@@ -202,13 +233,17 @@ def require_admin(user: dict = Depends(require_auth)):
     # Check if user is admin
     # Local auth has "is_admin" in payload
     if user.get("auth_type") == "local":
-        if not user.get("is_admin"):
-             raise HTTPException(status_code=403, detail="Admin privileges required")
+        local_is_admin = bool(user.get("is_admin"))
+        local_email = (user.get("email") or "").strip().lower()
+        email_allowlisted = local_email in [u.lower() for u in allowed_admin_users]
+        if not (local_is_admin or email_allowlisted):
+            raise HTTPException(status_code=403, detail="Admin privileges required")
         return user
         
     # Entra ID
-    email = user.get("preferred_username") or user.get("email")
+    email = _extract_user_email(user)
     if not email:
+        logger.warning("Admin check failed: no email-like claim present. keys=%s", list(user.keys()))
         raise HTTPException(status_code=403, detail="Email required for admin check")
         
     if email.lower() not in [u.lower() for u in allowed_admin_users]:

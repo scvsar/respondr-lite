@@ -33,7 +33,7 @@ function AuthGate({ children }) {
                 setUser({
                     authenticated: true,
                     name: payload.name,
-                    email: payload.preferred_username || payload.email,
+                  email: payload.preferred_username || payload.email || payload.upn || payload.unique_name,
                     is_admin: false, // Roles check needed if critical, or let backend enforce
                     auth_type: 'aad'
                 });
@@ -523,6 +523,7 @@ function MainApp() {
     "14533239": "MSAR Mission Response",
     "106549466": "ESAR Coordination",
     "16649586": "OSU-MISSION RESPONSE",
+    "19801892": "Tracker Team",
   };
   const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
   // Timestamp helpers
@@ -999,7 +1000,7 @@ function MainApp() {
           <label className="toggle"><input type="checkbox" checked={useUTC} onChange={e=>setUseUTC(e.target.checked)} /> UTC</label>
           <button className="btn" onClick={()=>fetchData()} title="Refresh now">Refresh</button>
           <button className="btn" onClick={exportCsv} title="Export CSV">Export</button>
-          <a href="/deleted-dashboard" className="btn" target="_blank" rel="noopener noreferrer" title="View deleted messages">Deleted</a>
+          <a href={`${process.env.REACT_APP_API_URL || ''}/deleted-dashboard`} className="btn" target="_blank" rel="noopener noreferrer" title="View deleted messages">Deleted</a>
           {/* Clear-all removed; use Edit Mode delete instead */}
           <span style={{width:12}} />
           {isAdmin && (
@@ -1184,6 +1185,13 @@ function App() {
   const shouldUseMobile = React.useCallback(() => {
     try {
       if (typeof window === 'undefined') return false;
+      // Important: don't redirect during auth callback handling.
+      // On mobile Safari/Edge, redirecting from "/" to "/m" here can drop
+      // MSAL response params before handleRedirectPromise() processes them.
+      const hash = window.location.hash || '';
+      const search = window.location.search || '';
+      const hasAuthCallback = /(^|[?&#])(code|id_token|access_token|state)=/i.test(hash + '&' + search);
+      if (hasAuthCallback) return false;
       const params = new URLSearchParams(window.location.search);
       const desktopParam = params.get('desktop');
       const mobileParam = params.get('mobile');

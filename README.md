@@ -150,13 +150,15 @@ sequenceDiagram
 
 ### Environments: prod vs preprod
 - Keep **separate resource groups** for each environment. Run `deployment/deploy-from-scratch.ps1` twice (once per RG/UniqueId) with the desired container image tag and region.
-- Frontend (Static Web App): `main` branch deploys to prod SWA using `azure-swa-deploy.yml`; `preprod` branch deploys to preprod SWA with its own token and API/AAD variables.
+- Frontend (Static Web App):
+  - `deploy-preprod.yml` deploys preprod frontend on pushes to `preprod`.
+  - `deploy-prod.yml` deploys prod frontend on pushes to `main`, `release-*` tags, or manual dispatch.
 - Backend images:
   - Preprod: push to `preprod` branch or run `./deployment/build-push-docker.ps1 -Dockerfile .\Dockerfile.backend -Repo randytreit/respondr-lite -Channel preprod`. Produces dated tags and `:preprod` (no `latest`).
   - Prod: push to `main` branch or run `./deployment/build-push-docker.ps1 -Dockerfile .\Dockerfile.backend -Repo randytreit/respondr-lite -Channel prod`. Produces dated tags, `:prod`, and `:latest`.
 - Deploying backend:
   - Preprod: `deploy-preprod.yml` auto-deploys the dated tag to the preprod Container App on `preprod` branch pushes.
-  - Prod: use `deploy-prod.yml` (workflow_dispatch or release-* tag) to deploy an explicit image tag to the prod Container App; prod is not auto-deployed from CI.
+  - Prod: `deploy-prod.yml` deploys on `main` pushes, `release-*` tags, or manual dispatch (workflow_dispatch).
 - App registration: single registration is fine; add both reply URLs (prod and preprod ACA FQDN/custom domain).
 - CORS/allowed origins: set `ALLOWED_ORIGINS` and `STATIC_WEB_APP_URL` per environment after deploy (or parameterize when running deploy-from-scratch).
 
@@ -226,6 +228,7 @@ $LOCATION = "eastus2"
 $UNIQUE_ID = "myorg"  # Short identifier for unique resource names
 $DOCKER_IMAGE = "docker.io/jdoe/respondr-lite:latest"
 $GITHUB_REPO = "https://github.com/yourusername/respondr-lite"
+$REPO_BRANCH = "main" # Use "preprod" when creating the preprod environment
 $GITHUB_TOKEN = "<your-github-pat>"
 
 # Create resource group
@@ -238,7 +241,7 @@ az group create --name $RESOURCE_GROUP --location $LOCATION
   -Location $LOCATION `
   -ContainerImage $DOCKER_IMAGE `
   -RepositoryUrl $GITHUB_REPO `
-  -RepositoryBranch "static" `
+  -RepositoryBranch $REPO_BRANCH `
   -GithubToken $GITHUB_TOKEN
 ```
 
@@ -325,7 +328,7 @@ az functionapp config appsettings set `
     "CONTAINER_APP_WAKE_URL=https://$CONTAINER_APP.azurecontainerapps.io/api/wake"
 ```
 
-#### 5. Configure GitHub Secrets and Variables
+#### 6. Configure GitHub Secrets, Variables, and OIDC
 
 Navigate to your GitHub repository settings:
 
@@ -333,48 +336,98 @@ Navigate to your GitHub repository settings:
 
 | Secret Name | Value | Purpose |
 |-------------|-------|---------|
-| `AZURE_STATIC_WEB_APPS_API_TOKEN` | Get with: `az staticwebapp secrets list -g <rg> -n <swa-name> --query properties.apiKey -o tsv` | Deploy frontend to Static Web App |
+| `AZURE_STATIC_WEB_APPS_API_TOKEN_PREPROD` | Get with: `az staticwebapp secrets list -g <preprod-rg> -n <preprod-swa-name> --query properties.apiKey -o tsv` | Deploy preprod frontend to Static Web App |
+| `AZURE_STATIC_WEB_APPS_API_TOKEN_PROD` | Get with: `az staticwebapp secrets list -g <prod-rg> -n <prod-swa-name> --query properties.apiKey -o tsv` | Deploy prod frontend to Static Web App |
 | `DOCKER_USERNAME` | Your Docker Hub username | Push backend images |
 | `DOCKER_TOKEN` | Your Docker Hub access token | Authenticate Docker push |
-| `AZURE_CLIENT_ID` | Application (client) ID of the Service Principal | Backend deployment (OIDC) |
-| `AZURE_TENANT_ID` | Directory (tenant) ID | Backend deployment (OIDC) |
-| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID | Backend deployment (OIDC) |
 
 **Add Variables** (`Settings` → `Secrets and variables` → `Actions` → `Variables` → `New repository variable`):
 
 | Variable Name | Value | Purpose |
 |---------------|-------|---------|
-| `REACT_APP_API_URL` | `https://<container-app>.azurecontainerapps.io` | Frontend API endpoint |
-| `REACT_APP_AAD_CLIENT_ID` | Application (client) ID of the App Registration | Frontend Auth (Entra ID) |
-| `REACT_APP_AAD_TENANT_ID` | Directory (tenant) ID | Frontend Auth (Entra ID) |
+| `AZURE_CLIENT_ID` | Application (client) ID of the Service Principal/App Registration | Azure OIDC login in deploy workflows |
+| `AZURE_TENANT_ID` | Directory (tenant) ID | Azure OIDC login in deploy workflows |
+| `AZURE_SUBSCRIPTION_ID` | Azure Subscription ID | Azure OIDC login in deploy workflows |
+| `RESOURCE_GROUP_PROD` | `<prod-rg-name>` | Default prod target for `deploy-prod.yml` |
+| `CONTAINER_APP_NAME_PROD` | `<prod-container-app-name>` | Default prod Container App for `deploy-prod.yml` |
+| `REACT_APP_API_URL_PREPROD` | `https://<preprod-container-app>.azurecontainerapps.io` | Frontend build-time API URL (preprod) |
+| `REACT_APP_AAD_CLIENT_ID_PREPROD` | Entra App client ID | Frontend auth config (preprod) |
+| `REACT_APP_AAD_TENANT_ID_PREPROD` | Tenant ID or `organizations` | Frontend auth config (preprod) |
+| `REACT_APP_AAD_API_SCOPE_PREPROD` | `api://<client-id>/access_as_user` | Frontend auth scope (preprod) |
+| `REACT_APP_API_URL_PROD` | `https://<prod-container-app>.azurecontainerapps.io` | Frontend build-time API URL (prod) |
+| `REACT_APP_AAD_CLIENT_ID_PROD` | Entra App client ID | Frontend auth config (prod) |
+| `REACT_APP_AAD_TENANT_ID_PROD` | Tenant ID or `organizations` | Frontend auth config (prod) |
+| `REACT_APP_AAD_API_SCOPE_PROD` | `api://<client-id>/access_as_user` | Frontend auth scope (prod) |
 
-#### 6. Deploy Frontend to Static Web App
+> Compatibility note: if you maintain older workflow variants that read `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` from **Secrets** instead of **Variables**, set both to avoid drift-related failures.
 
-The frontend deploys automatically via GitHub Actions when you push to the `static` branch:
+Quick CLI example to fetch deployment tokens (you cannot view them in GitHub once saved):
+
+```bash
+# Preprod
+az staticwebapp secrets list -n respondrlite-spa-2c97a5f4 -g respondr-ppe-eastus2 --query properties.apiKey -o tsv
+
+# Prod
+az staticwebapp secrets list -n respondrlite-spa-6e55ed6c -g respondr-prod-centralus --query properties.apiKey -o tsv
+```
+
+**OIDC + RBAC setup (required for backend deploy workflows)**
+
+Create federated credentials for both deployment branches (`main` and `preprod`) and grant RBAC on both resource groups:
 
 ```powershell
-# Switch to static branch
-git checkout static
+$APP_ID = "<azure-app-client-id>"
+$SUB = "<subscription-id>"
+$RG_PREPROD = "<preprod-rg>"
+$RG_PROD = "<prod-rg>"
 
-# Ensure you have the latest changes
-git pull origin static
+# 1) Ensure service principal exists
+az ad sp create --id $APP_ID
 
-# Push to trigger deployment
-git push origin static
+# 2) Federated credential for preprod branch
+az ad app federated-credential create --id $APP_ID --parameters '{"name":"github-preprod-deployment","issuer":"https://token.actions.githubusercontent.com","subject":"repo:<org>/<repo>:ref:refs/heads/preprod","description":"GitHub Actions preprod deployment","audiences":["api://AzureADTokenExchange"]}'
+
+# 3) Federated credential for main branch
+az ad app federated-credential create --id $APP_ID --parameters '{"name":"github-main-deployment","issuer":"https://token.actions.githubusercontent.com","subject":"repo:<org>/<repo>:ref:refs/heads/main","description":"GitHub Actions prod deployment","audiences":["api://AzureADTokenExchange"]}'
+
+# 4) Contributor on both RGs
+$SP_OBJECT_ID = az ad sp show --id $APP_ID --query id -o tsv
+az role assignment create --assignee-object-id $SP_OBJECT_ID --role Contributor --scope "/subscriptions/$SUB/resourceGroups/$RG_PREPROD"
+az role assignment create --assignee-object-id $SP_OBJECT_ID --role Contributor --scope "/subscriptions/$SUB/resourceGroups/$RG_PROD"
+```
+
+#### 7. Deploy Frontend and Backend via GitHub Actions
+
+Deployment triggers:
+
+- Push to `preprod` → runs `.github/workflows/deploy-preprod.yml` (tests + backend deploy + preprod SWA deploy)
+- Push to `main` → runs `.github/workflows/deploy-prod.yml` (prod backend deploy + prod SWA deploy)
+- Optional manual prod deploy: Actions → **Deploy to Production** → provide `image_tag`
+
+Example:
+
+```powershell
+# Preprod
+git checkout preprod
+git push origin preprod
+
+# Prod
+git checkout main
+git push origin main
 ```
 
 **Monitor the deployment**:
 1. Go to your GitHub repository
 2. Click the "Actions" tab
 3. Watch the "Azure Static Web Apps CI/CD" workflow
-4. Deployment typically takes 3-5 minutes
+4. Deployment typically takes 3-10 minutes depending on image build/push and SWA publish
 
 **Verify deployment**:
 - Visit your Static Web App URL
 - You should see the RespondrLite login page
 - Check browser console (F12) for any errors
 
-#### 7. Configure GroupMe Webhook
+#### 8. Configure GroupMe Webhook
 
 Get your webhook URL with the Function Key (code):
 
@@ -404,7 +457,7 @@ Write-Host "Configure GroupMe bot callback URL to: $WEBHOOK_URL"
 3. Set **Callback URL** to the URL above
 4. Save
 
-#### 8. Test the Deployment
+#### 9. Test the Deployment
 
 **Test Authentication**:
 1. Visit Static Web App URL
@@ -864,11 +917,26 @@ Three workflows orchestrate automated testing and deployments:
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `.github/workflows/ci.yml` | PRs to `main`, pushes to `main` | Runs backend + frontend tests. On `main` pushes it builds and pushes the backend image to Docker Hub and (optionally) deploys the `main` image to production Container Apps. |
-| `.github/workflows/deploy-preprod.yml` | Pushes to `preprod` | Runs full test matrix, builds a tagged backend image, and updates the preproduction Container App using Azure OIDC credentials. |
-| `.github/workflows/azure-swa-deploy.yml` | PRs/pushes touching `frontend/` on `main` or `preprod` | Builds the React app and uploads it to the Static Web App. Requires the `AZURE_STATIC_WEB_APPS_API_TOKEN` secret and the `REACT_APP_API_URL` repository variable. |
+| `.github/workflows/ci.yml` | PRs to `main`, pushes to `main` | Runs backend + frontend tests and builds/pushes backend Docker tags for the `main` channel. |
+| `.github/workflows/deploy-preprod.yml` | Pushes to `preprod` (+ manual dispatch) | Runs tests, builds/pushes preprod backend image, deploys preprod Container App, then deploys preprod Static Web App. |
+| `.github/workflows/deploy-prod.yml` | Pushes to `main`, `release-*` tags, and manual dispatch | Deploys prod backend Container App and prod Static Web App. Supports manual image selection via `image_tag`. |
 
-Use `./.github/workflows/setup-github-actions.ps1` to create the Azure service principal and seed the required secrets/variables from the CLI.
+Use `./.github/workflows/setup-github-actions.ps1` to create the Azure app/service principal and seed baseline settings. Then verify branch federated credentials and env-specific variables from the deployment checklist above.
+
+### CI/CD quick validation checklist (clean environment)
+
+After first-time setup, verify all of the following before expecting successful deploys:
+
+1. **Repo secrets exist**: `AZURE_STATIC_WEB_APPS_API_TOKEN_PREPROD`, `AZURE_STATIC_WEB_APPS_API_TOKEN_PROD`, `DOCKER_USERNAME`, `DOCKER_TOKEN`.
+2. **Repo variables exist**: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `RESOURCE_GROUP_PROD`, `CONTAINER_APP_NAME_PROD`, and all `REACT_APP_*_{PREPROD|PROD}` values.
+3. **OIDC federated credentials exist** for both branch subjects:
+  - `repo:<org>/<repo>:ref:refs/heads/preprod`
+  - `repo:<org>/<repo>:ref:refs/heads/main`
+4. **RBAC is assigned**: service principal has `Contributor` on both preprod and prod RGs.
+5. **Smoke test**:
+  - push one commit to `preprod` and confirm `deploy-preprod.yml` succeeds,
+  - push one commit to `main` and confirm `deploy-prod.yml` succeeds,
+  - confirm both SWA URLs render the app (not the default Azure welcome page).
 
 ### Manual container deployments (optional)
 
@@ -1016,5 +1084,3 @@ If migrating from the original Kubernetes-based deployment:
 ## License
 
 MIT — see [LICENSE](LICENSE) file for details.
-
-# poke
