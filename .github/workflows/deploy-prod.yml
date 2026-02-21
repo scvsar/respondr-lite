@@ -5,7 +5,7 @@ on:
     inputs:
       image_tag:
         description: "Docker image tag to deploy (e.g. 2025-12-19.3 or main)"
-        required: true
+        required: false
       revision_suffix:
         description: "Optional revision suffix override"
         required: false
@@ -43,6 +43,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -116,13 +118,9 @@ jobs:
             if [[ "$GITHUB_REF" == refs/tags/release-* ]]; then
               IMAGE_TAG_INPUT="${GITHUB_REF#refs/tags/}"
             elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
-              IMAGE_TAG_INPUT="main"
+              # On main pushes, build a fresh backend image in this workflow
+              IMAGE_TAG_INPUT=""
             fi
-          fi
-
-          if [ -z "$IMAGE_TAG_INPUT" ]; then
-            echo "image_tag is required" >&2
-            exit 1
           fi
 
           echo "rg=${RG_INPUT:-${{ vars.RESOURCE_GROUP_PROD }}}" >> $GITHUB_OUTPUT
@@ -130,7 +128,87 @@ jobs:
           echo "image_tag=${IMAGE_TAG_INPUT}" >> $GITHUB_OUTPUT
           echo "suffix=${{ github.event.inputs.revision_suffix || '' }}" >> $GITHUB_OUTPUT
 
+      - name: Detect backend changes
+        id: backend_decision
+        shell: bash
+        run: |
+          BACKEND_DEPLOY=false
+          REASON="No backend-related changes detected on main push"
+
+          # Explicit image tag means deploy backend regardless of changed files.
+          if [ -n "${{ steps.params.outputs.image_tag }}" ]; then
+            BACKEND_DEPLOY=true
+            REASON="Explicit image_tag provided"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Manual run without image_tag should still build+deploy backend.
+            BACKEND_DEPLOY=true
+            REASON="Manual workflow dispatch"
+          else
+            BEFORE="${{ github.event.before }}"
+            AFTER="${{ github.sha }}"
+
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              BACKEND_DEPLOY=true
+              REASON="No previous SHA available"
+            else
+              CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
+              echo "Changed files:"
+              echo "$CHANGED_FILES"
+
+              if echo "$CHANGED_FILES" | grep -E '^(backend/|Dockerfile\.backend|\.github/workflows/deploy-prod\.yml)' >/dev/null; then
+                BACKEND_DEPLOY=true
+                REASON="Backend-related files changed"
+              fi
+            fi
+          fi
+
+          echo "backend_deploy=$BACKEND_DEPLOY" >> $GITHUB_OUTPUT
+          echo "reason=$REASON" >> $GITHUB_OUTPUT
+          echo "Backend deploy: $BACKEND_DEPLOY ($REASON)"
+
+      - name: Set up Docker Buildx
+        if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Generate prod image tag
+        if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
+        id: built_tag
+        run: |
+          echo "value=prod-${GITHUB_SHA::8}-$(date -u +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Build and push Docker image (prod)
+        if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.backend
+          push: true
+          tags: |
+            ${{ env.DOCKER_REPO }}:${{ steps.built_tag.outputs.value }}
+            ${{ env.DOCKER_REPO }}:prod
+            ${{ env.DOCKER_REPO }}:latest
+          cache-from: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REPO }}:buildcache,mode=max
+
+      - name: Resolve deploy image tag
+        if: steps.backend_decision.outputs.backend_deploy == 'true'
+        id: deploy_tag
+        run: |
+          if [ -n "${{ steps.params.outputs.image_tag }}" ]; then
+            echo "value=${{ steps.params.outputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ steps.built_tag.outputs.value }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Azure Login
+        if: steps.backend_decision.outputs.backend_deploy == 'true'
         uses: azure/login@v2
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
@@ -138,16 +216,18 @@ jobs:
           subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
       - name: Show Azure target
+        if: steps.backend_decision.outputs.backend_deploy == 'true'
         run: |
           echo "Azure tenant: ${{ env.AZURE_TENANT_ID }}"
           echo "Azure subscription: ${{ env.AZURE_SUBSCRIPTION_ID }}"
           echo "Azure client-id: ${{ env.AZURE_CLIENT_ID }}"
 
       - name: Deploy to Azure Container Apps
+        if: steps.backend_decision.outputs.backend_deploy == 'true'
         run: |
           RG="${{ steps.params.outputs.rg }}"
           APP="${{ steps.params.outputs.app }}"
-          IMAGE="docker.io/${{ env.DOCKER_REPO }}:${{ steps.params.outputs.image_tag }}"
+          IMAGE="docker.io/${{ env.DOCKER_REPO }}:${{ steps.deploy_tag.outputs.value }}"
           SUFFIX="${{ steps.params.outputs.suffix }}"
           if [ -z "$SUFFIX" ]; then
             SUFFIX="prod-$(date -u +"%Y%m%d-%H%M%S")"
@@ -173,6 +253,13 @@ jobs:
           echo "Container App: $APP" >> $GITHUB_STEP_SUMMARY
           echo "Resource Group: $RG" >> $GITHUB_STEP_SUMMARY
           echo "FQDN: https://$FQDN" >> $GITHUB_STEP_SUMMARY
+
+      - name: Skip backend deploy summary
+        if: steps.backend_decision.outputs.backend_deploy != 'true'
+        run: |
+          echo "## ⏭️ Backend Deploy Skipped" >> $GITHUB_STEP_SUMMARY
+          echo "Reason: ${{ steps.backend_decision.outputs.reason }}" >> $GITHUB_STEP_SUMMARY
+          echo "Static Web App deployment will continue." >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Node.js for SWA
         uses: actions/setup-node@v4
