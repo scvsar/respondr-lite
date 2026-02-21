@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './AdminPanel.css';
 import { apiGet, apiCall, apiPost } from './api';
+import { apiUrl, LOCAL_AUTH_UI_ENABLED } from './config';
 
 function AdminPanel() {
   const [users, setUsers] = useState([]);
@@ -8,6 +9,42 @@ function AdminPanel() {
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('users');
   const [showCreateUser, setShowCreateUser] = useState(false);
+  const [localAuthEnabled, setLocalAuthEnabled] = useState(Boolean(LOCAL_AUTH_UI_ENABLED));
+
+  useEffect(() => {
+    // Prefer static build-time flag when provided.
+    if (LOCAL_AUTH_UI_ENABLED !== null) {
+      setLocalAuthEnabled(Boolean(LOCAL_AUTH_UI_ENABLED));
+      return;
+    }
+
+    let cancelled = false;
+
+    const checkLocalAuthEnabled = async () => {
+      try {
+        const response = await fetch(apiUrl('/api/auth/local/enabled'));
+        if (!response.ok) {
+          if (!cancelled) {
+            setLocalAuthEnabled(false);
+          }
+          return;
+        }
+        const data = await response.json();
+        if (!cancelled) {
+          setLocalAuthEnabled(Boolean(data?.enabled));
+        }
+      } catch {
+        if (!cancelled) {
+          setLocalAuthEnabled(false);
+        }
+      }
+    };
+
+    checkLocalAuthEnabled();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (activeTab === 'users') {
@@ -65,24 +102,24 @@ function AdminPanel() {
         {activeTab === 'users' && (
           <UserManagement 
             users={users}
-            setUsers={setUsers}
             loading={loading}
             error={error}
             showCreateUser={showCreateUser}
             setShowCreateUser={setShowCreateUser}
+            localAuthEnabled={localAuthEnabled}
             onRefresh={fetchUsers}
           />
         )}
         
         {activeTab === 'settings' && (
-          <SystemSettings />
+          <SystemSettings localAuthEnabled={localAuthEnabled} />
         )}
       </div>
     </div>
   );
 }
 
-function UserManagement({ users, setUsers, loading, error, showCreateUser, setShowCreateUser, onRefresh }) {
+function UserManagement({ users, loading, error, showCreateUser, setShowCreateUser, localAuthEnabled, onRefresh }) {
   const [resetPasswordUser, setResetPasswordUser] = useState(null);
 
   const handleDeleteUser = async (username) => {
@@ -120,10 +157,16 @@ function UserManagement({ users, setUsers, loading, error, showCreateUser, setSh
         <button 
           className="btn btn-primary"
           onClick={() => setShowCreateUser(true)}
+          disabled={!localAuthEnabled}
+          title={!localAuthEnabled ? 'Local auth is disabled in this environment' : 'Create local user'}
         >
           Create New User
         </button>
       </div>
+
+      {!localAuthEnabled && (
+        <div className="error-message">Local authentication is disabled in this environment. Enable it to create/manage local users.</div>
+      )}
 
       {error && <div className="error-message">{error}</div>}
 
@@ -231,7 +274,7 @@ function CreateUserModal({ onClose, onSuccess }) {
     setError('');
 
     try {
-      const response = await apiPost('/api/auth/local/admin/create-user', {
+      const data = await apiPost('/api/auth/local/admin/create-user', {
         username: formData.username,
         password: formData.password,
         email: formData.email,
@@ -240,16 +283,14 @@ function CreateUserModal({ onClose, onSuccess }) {
         is_admin: formData.is_admin
       });
 
-      const data = await response.json();
-
       if (data.success) {
         onSuccess();
         onClose();
       } else {
-        setError(data.error || 'Failed to create user');
+        setError(data.error || data.detail || data.message || 'Failed to create user');
       }
     } catch (err) {
-      setError('Network error. Please try again.');
+      setError(err?.message || 'Network error. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -400,21 +441,19 @@ function ResetPasswordModal({ user, onClose, onSuccess }) {
     setError('');
 
     try {
-      const response = await apiPost('/api/auth/local/admin/reset-password', {
+      const data = await apiPost('/api/auth/local/admin/reset-password', {
         username: user.username,
         new_password: newPassword
       });
-
-      const data = await response.json();
 
       if (data.success) {
         onSuccess();
         onClose();
       } else {
-        setError(data.error || 'Failed to reset password');
+        setError(data.error || data.detail || data.message || 'Failed to reset password');
       }
     } catch (err) {
-      setError('Network error. Please try again.');
+      setError(err?.message || 'Network error. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -468,7 +507,7 @@ function ResetPasswordModal({ user, onClose, onSuccess }) {
   );
 }
 
-function SystemSettings() {
+function SystemSettings({ localAuthEnabled }) {
   return (
     <div className="system-settings">
       <div className="section-header">
@@ -479,7 +518,9 @@ function SystemSettings() {
         <h3>Authentication</h3>
         <div className="setting-item">
           <label>Local Authentication</label>
-          <span className="status enabled">Enabled</span>
+          <span className={`status ${localAuthEnabled ? 'enabled' : 'disabled'}`}>
+            {localAuthEnabled ? 'Enabled' : 'Disabled'}
+          </span>
         </div>
         <div className="setting-item">
           <label>SSO Authentication</label>

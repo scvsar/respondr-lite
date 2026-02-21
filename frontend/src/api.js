@@ -59,8 +59,16 @@ export async function apiPost(path, body) {
         body: JSON.stringify(body)
     });
 
-    if (!res.ok) {
-        throw new Error(`API error: ${res.status}`);
+    let data = null;
+    try {
+        data = await res.json();
+    } catch {
+        data = null;
     }
-    return res.json();
+
+    if (!res.ok) {
+        const message = data?.detail || data?.error || data?.message || `API error: ${res.status}`;
+        throw new Error(message);
+    }
+    return data;
 }

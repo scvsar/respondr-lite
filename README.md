@@ -355,10 +355,12 @@ Navigate to your GitHub repository settings:
 | `REACT_APP_AAD_CLIENT_ID_PREPROD` | Entra App client ID | Frontend auth config (preprod) |
 | `REACT_APP_AAD_TENANT_ID_PREPROD` | Tenant ID or `organizations` | Frontend auth config (preprod) |
 | `REACT_APP_AAD_API_SCOPE_PREPROD` | `api://<client-id>/access_as_user` | Frontend auth scope (preprod) |
+| `REACT_APP_ENABLE_LOCAL_AUTH_PREPROD` | `true` or `false` | Frontend static toggle for showing External Login/Admin local-user UI in preprod |
 | `REACT_APP_API_URL_PROD` | `https://<prod-container-app>.azurecontainerapps.io` | Frontend build-time API URL (prod) |
 | `REACT_APP_AAD_CLIENT_ID_PROD` | Entra App client ID | Frontend auth config (prod) |
 | `REACT_APP_AAD_TENANT_ID_PROD` | Tenant ID or `organizations` | Frontend auth config (prod) |
 | `REACT_APP_AAD_API_SCOPE_PROD` | `api://<client-id>/access_as_user` | Frontend auth scope (prod) |
+| `REACT_APP_ENABLE_LOCAL_AUTH_PROD` | `true` or `false` | Frontend static toggle for showing External Login/Admin local-user UI in prod |
 
 > Compatibility note: if you maintain older workflow variants that read `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, and `AZURE_SUBSCRIPTION_ID` from **Secrets** instead of **Variables**, set both to avoid drift-related failures.
 
