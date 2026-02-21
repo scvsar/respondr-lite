@@ -191,7 +191,7 @@ code .env
 - `ALLOWED_EMAIL_DOMAINS` - Your organization domain(s)
 - `ALLOWED_ADMIN_USERS` - Admin email address(es)
 - `ALLOWED_GROUPME_GROUP_IDS` - Comma-separated list of GroupMe Group IDs (Required for GroupMe integration)
-- `WEBHOOK_API_KEY` - **Leave empty** for GroupMe integration (uses Azure Function key validation)
+- `WEBHOOK_API_KEY` - Optional shared secret for webhook hardening (`?k=` or `X-Webhook-Token`)
 
 **Note**: Azure OpenAI and Storage connection strings will be populated after infrastructure deployment.
 
@@ -322,8 +322,9 @@ az functionapp config appsettings set `
   --name $FUNCTION_APP `
   --resource-group $RESOURCE_GROUP `
   --settings `
-    "AZURE_STORAGE_CONNECTION_STRING=<from-deployment-output>" `
+    "AzureWebJobsStorage=<from-deployment-output>" `
     "STORAGE_QUEUE_NAME=respondr-incoming" `
+    "ALLOWED_GROUPME_GROUP_IDS=<comma-separated-group-ids>" `
     "WEBHOOK_API_KEY=<from-your-env>" `
     "CONTAINER_APP_WAKE_URL=https://$CONTAINER_APP.azurecontainerapps.io/api/wake"
 ```
@@ -523,7 +524,7 @@ The application uses numerous environment variables for configuration. Below is 
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `WEBHOOK_API_KEY` | Custom API key for webhook auth. **Leave empty for GroupMe** (uses Azure Function key). | - | No |
+| `WEBHOOK_API_KEY` | Optional shared secret checked by function code (`?k=` or `X-Webhook-Token`). | - | No |
 | `ALLOWED_EMAIL_DOMAINS` | Comma-separated allowed email domains | `scvsar.org,rtreit.com` | No |
 | `ALLOWED_ADMIN_USERS` | Comma-separated admin user emails | - | No |
 | `ALLOWED_GROUPME_GROUP_IDS` | Comma-separated allowed GroupMe group IDs. **Required if WEBHOOK_API_KEY is empty**. | - | Yes (for GroupMe) |
@@ -546,9 +547,10 @@ The application uses numerous environment variables for configuration. Below is 
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `AZURE_STORAGE_CONNECTION_STRING` | Storage account connection string | - | Yes |
+| `AZURE_STORAGE_CONNECTION_STRING` | Backend/Container App storage connection string | - | Yes (backend) |
+| `AzureWebJobsStorage` | Function App storage connection string (runtime + queue binding) | - | Yes (function) |
 | `STORAGE_TABLE_NAME` | Table name for messages | `ResponderMessages` | No |
-| `STORAGE_QUEUE_NAME` | Queue name for incoming messages | `RespondrIncoming` | No |
+| `STORAGE_QUEUE_NAME` | Queue name for incoming messages | `respondr-incoming` | Yes |
 | `STORAGE_BACKEND` | Primary storage (`azure_table`, `file`, `memory`) | `azure_table` | No |
 | `STORAGE_FALLBACK` | Fallback storage (`file`, `memory`) | `memory` | No |
 
@@ -566,9 +568,9 @@ The application uses numerous environment variables for configuration. Below is 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
 | `ENABLE_LLM_MOCK` | Enable mock LLM for offline dev | `false` | No |
-| `DEFAULT_MAX_COMPLETION_TOKENS` | Default completion tokens | `1024` | No |
+| `DEFAULT_MAX_COMPLETION_TOKENS` | Default completion tokens | `2048` | No |
 | `MIN_COMPLETION_TOKENS` | Minimum completion tokens | `128` | No |
-| `MAX_COMPLETION_TOKENS_CAP` | Maximum completion tokens | `2048` | No |
+| `MAX_COMPLETION_TOKENS_CAP` | Maximum completion tokens | `4096` | No |
 | `LLM_MAX_RETRIES` | Max retry attempts | `3` | No |
 | `LLM_TOKEN_INCREASE_FACTOR` | Token increase on retry | `1.5` | No |
 | `LLM_REASONING_EFFORT` | Reasoning effort level | `medium` | No |
@@ -584,7 +586,23 @@ The application uses numerous environment variables for configuration. Below is 
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `REACT_APP_INACTIVITY_MINUTES` | Dashboard inactivity timeout | `10` | No |
+| `INACTIVITY_TIMEOUT_MINUTES` | Backend-provided dashboard inactivity timeout (minutes) | `10` | No |
+
+### Service-specific required env vars (quick reference)
+
+- **Function App (`groupme_ingest`)**
+  - `AzureWebJobsStorage`
+  - `STORAGE_QUEUE_NAME`
+  - `ALLOWED_GROUPME_GROUP_IDS` (if `WEBHOOK_API_KEY` is empty)
+  - Optional: `WEBHOOK_API_KEY`, `CONTAINER_APP_WAKE_URL`, `ENABLE_FUNCTION_PAYLOAD_LOGGING`, `FUNCTION_PAYLOAD_TABLE`
+
+- **Container App (FastAPI + queue listener)**
+  - `AZURE_STORAGE_CONNECTION_STRING`
+  - `STORAGE_QUEUE_NAME`
+  - `AZURE_OPENAI_ENDPOINT`
+  - `AZURE_OPENAI_API_KEY`
+  - `AZURE_OPENAI_DEPLOYMENT`
+  - Optional: `STORAGE_TABLE_NAME`, `INACTIVITY_TIMEOUT_MINUTES`, `ALLOWED_EMAIL_DOMAINS`, `ALLOWED_ADMIN_USERS`
 
 #### Debug & Development
 
@@ -612,6 +630,7 @@ Create a `.env` file for local development:
 ```bash
 # Azure Storage
 AZURE_STORAGE_CONNECTION_STRING=<connection-string>
+AzureWebJobsStorage=<connection-string>
 STORAGE_QUEUE_NAME=respondr-incoming
 STORAGE_TABLE_NAME=ResponderMessages
 
@@ -636,7 +655,7 @@ LOCAL_AUTH_SESSION_HOURS=24
 CONTAINER_APP_WAKE_URL=https://<your-container-app>.azurecontainerapps.io/api/wake
 
 # Frontend Inactivity Detection
-REACT_APP_INACTIVITY_MINUTES=10
+INACTIVITY_TIMEOUT_MINUTES=10
 ```
 
 ### Custom Domains & TLS
@@ -682,7 +701,7 @@ The Azure Function can wake the Container App when new messages arrive:
 
 The dashboard automatically pauses API calls after user inactivity:
 
-- **Default timeout**: 10 minutes (configurable via `REACT_APP_INACTIVITY_MINUTES`)
+- **Default timeout**: 10 minutes (configurable via `INACTIVITY_TIMEOUT_MINUTES`)
 - **Activity detection**: Mouse movement, clicks, keyboard input, scrolling
 - **Visual indicator**: Shows "(Paused - Inactive)" in orange when paused
 - **Auto-resume**: Any user interaction resumes live updates
