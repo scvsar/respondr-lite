@@ -233,6 +233,7 @@ function MainApp() {
   const [useUTC, setUseUTC] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
   const [user, setUser] = useState(null);
   const isAdmin = Boolean(user && user.is_admin);
   // popover removed
@@ -454,6 +455,30 @@ function MainApp() {
     };
     loadUser();
   }, []);
+
+  // Close profile menu on outside click / Escape
+  useEffect(() => {
+    const onPointerDown = (event) => {
+      if (!menuOpen) return;
+      if (menuRef.current && !menuRef.current.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [menuOpen]);
 
   const totalMessages = data.length;
 
@@ -883,7 +908,7 @@ function MainApp() {
           { /* Optional mission title placeholder */ }
           <div className="mission-title" title="Mission/Incident">&nbsp;</div>
         </div>
-        <div className="right" style={{position:'relative'}}>
+        <div className="right" style={{position:'relative'}} ref={menuRef}>
           <div className="avatar" onClick={()=>setMenuOpen(v=>!v)} aria-haspopup="menu" aria-expanded={menuOpen}>{initials}</div>
           {menuOpen && (
             <div className="menu" role="menu">

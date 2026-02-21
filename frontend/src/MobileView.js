@@ -10,8 +10,61 @@ export default function MobileView() {
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
   const [live, setLive] = useState(true);
+  const [timeFilter, setTimeFilter] = useState('24h');
+  const [customTimeStart, setCustomTimeStart] = useState('');
+  const [inactivityTimeoutMinutes, setInactivityTimeoutMinutes] = useState(10);
+  const [isInactive, setIsInactive] = useState(false);
+  const [autoPaused, setAutoPaused] = useState(false);
+  const [lastActivity, setLastActivity] = useState(Date.now());
   const [authChecked, setAuthChecked] = useState(false);
   const [accessDenied, setAccessDenied] = useState(null);
+  const INACTIVITY_TIMEOUT = inactivityTimeoutMinutes * 60 * 1000;
+
+  const parseTs = (ts) => {
+    if (!ts) return null;
+    const s = typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const getTimeFilterUrl = useCallback(() => {
+    let url = '/api/responders';
+    if (timeFilter === 'all') return url;
+
+    const now = new Date();
+    let since;
+    switch (timeFilter) {
+      case '1h':
+        since = new Date(now.getTime() - 1 * 60 * 60 * 1000);
+        break;
+      case '6h':
+        since = new Date(now.getTime() - 6 * 60 * 60 * 1000);
+        break;
+      case '12h':
+        since = new Date(now.getTime() - 12 * 60 * 60 * 1000);
+        break;
+      case '24h':
+        since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case '3d':
+        since = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
+        break;
+      case '7d':
+        since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'custom':
+        since = customTimeStart ? parseTs(customTimeStart) : null;
+        break;
+      default:
+        since = null;
+        break;
+    }
+
+    if (since) {
+      url += `?since=${since.toISOString()}`;
+    }
+    return url;
+  }, [timeFilter, customTimeStart]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -27,7 +80,7 @@ export default function MobileView() {
           return;
         }
       } catch {}
-      const json = await apiGet('/api/responders');
+      const json = await apiGet(getTimeFilterUrl());
       setData(json);
       setIsLoading(false);
       setLastUpdated(new Date());
@@ -36,7 +89,47 @@ export default function MobileView() {
       setError(String(e.message || e));
       setIsLoading(false);
     }
+  }, [getTimeFilterUrl]);
+
+  // Fetch backend configuration (inactivity timeout)
+  useEffect(() => {
+    const fetchConfig = async () => {
+      try {
+        const config = await apiGet('/api/config');
+        if (config?.inactivity?.timeout_minutes) {
+          setInactivityTimeoutMinutes(config.inactivity.timeout_minutes);
+        }
+      } catch {}
+    };
+    fetchConfig();
   }, []);
+
+  // Track user activity for auto-pause parity with desktop
+  const handleUserActivity = useCallback(() => {
+    setLastActivity(Date.now());
+    if (isInactive) {
+      setIsInactive(false);
+      setAutoPaused(false);
+    }
+  }, [isInactive]);
+
+  useEffect(() => {
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach(event => document.addEventListener(event, handleUserActivity));
+    return () => events.forEach(event => document.removeEventListener(event, handleUserActivity));
+  }, [handleUserActivity]);
+
+  useEffect(() => {
+    const checkInactivity = () => {
+      const idleMs = Date.now() - lastActivity;
+      if (idleMs >= INACTIVITY_TIMEOUT && !isInactive && live) {
+        setIsInactive(true);
+        setAutoPaused(true);
+      }
+    };
+    const intervalId = setInterval(checkInactivity, 30000);
+    return () => clearInterval(intervalId);
+  }, [lastActivity, INACTIVITY_TIMEOUT, isInactive, live]);
 
   const firstLoadRef = useRef(true);
   useEffect(() => {
@@ -47,14 +140,21 @@ export default function MobileView() {
     let id;
     const poll = async () => {
       // If Live is off, don't schedule the next poll
-      if (!live) return;
+      if (!live || autoPaused) return;
       id = setTimeout(async () => {
         try { await fetchData(); } finally { poll(); }
       }, 15000);
     };
     poll();
     return () => { if (id) clearTimeout(id); };
-  }, [fetchData, live]);
+  }, [fetchData, live, autoPaused]);
+
+  // Refresh immediately when time filter changes
+  useEffect(() => {
+    if (!firstLoadRef.current) {
+      fetchData();
+    }
+  }, [timeFilter, customTimeStart, fetchData]);
 
   // Helpers local to this view
   const statusOf = (entry) => {
@@ -134,13 +234,6 @@ export default function MobileView() {
       if (isNaN(d.getTime())) return '—';
       return `${pad2(d.getMonth()+1)}/${pad2(d.getDate())}/${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
     } catch { return '—'; }
-  };
-
-  const parseTs = (ts) => {
-    if (!ts) return null;
-    const s = typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? null : d;
   };
 
   const etaDisplay = (entry) => {
@@ -227,6 +320,35 @@ export default function MobileView() {
         </div>
       </div>
 
+      <div style={{display:'flex', gap:8, alignItems:'center', margin:'8px 12px 12px', flexWrap:'wrap'}}>
+        <label style={{fontSize:12, opacity:0.85}}>Window</label>
+        <select
+          className="btn"
+          value={timeFilter}
+          onChange={(e) => setTimeFilter(e.target.value)}
+          style={{minWidth:96}}
+          aria-label="Message time window"
+        >
+          <option value="1h">1h</option>
+          <option value="6h">6h</option>
+          <option value="12h">12h</option>
+          <option value="24h">24h</option>
+          <option value="3d">3d</option>
+          <option value="7d">7d</option>
+          <option value="all">All</option>
+          <option value="custom">Custom</option>
+        </select>
+        {timeFilter === 'custom' && (
+          <input
+            type="datetime-local"
+            className="btn"
+            value={customTimeStart}
+            onChange={(e) => setCustomTimeStart(e.target.value)}
+            aria-label="Custom start time"
+          />
+        )}
+      </div>
+
       {error && (
         <div className="empty" role="alert">{error}</div>
       )}
@@ -285,7 +407,19 @@ export default function MobileView() {
       <div className="mobile-footer">
         <span className="live-dot" aria-hidden /> Updated {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '—'}
         <label className="toggle" style={{marginLeft:12}}>
-          <input type="checkbox" checked={live} onChange={(e)=>setLive(e.target.checked)} /> Live
+          <input
+            type="checkbox"
+            checked={live && !autoPaused}
+            onChange={(e) => {
+              const next = e.target.checked;
+              setLive(next);
+              if (next) {
+                setIsInactive(false);
+                setAutoPaused(false);
+                setLastActivity(Date.now());
+              }
+            }}
+          /> Live {autoPaused && <span style={{color:'#ff9800', fontSize:'0.9em'}}>(Paused - Inactive)</span>}
         </label>
       </div>
     </div>
