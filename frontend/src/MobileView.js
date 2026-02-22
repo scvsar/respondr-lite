@@ -105,7 +105,9 @@ export default function MobileView() {
   }, []);
 
   // Track user activity for auto-pause parity with desktop
-  const handleUserActivity = useCallback(() => {
+  const handleUserActivity = useCallback((event) => {
+    // Ignore synthetic/non-user events
+    if (event && event.isTrusted === false) return;
     setLastActivity(Date.now());
     if (isInactive) {
       setIsInactive(false);
@@ -114,7 +116,9 @@ export default function MobileView() {
   }, [isInactive]);
 
   useEffect(() => {
-    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    // Only treat explicit user input as activity.
+    // Avoid passive events like mousemove/scroll that can be triggered during auto-refresh.
+    const events = ['pointerdown', 'keydown', 'touchstart', 'wheel'];
     events.forEach(event => document.addEventListener(event, handleUserActivity));
     return () => events.forEach(event => document.removeEventListener(event, handleUserActivity));
   }, [handleUserActivity]);

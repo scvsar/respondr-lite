@@ -255,7 +255,9 @@ function MainApp() {
   });
 
   // Track user activity
-  const handleUserActivity = useCallback(() => {
+  const handleUserActivity = useCallback((event) => {
+    // Ignore synthetic/non-user events
+    if (event && event.isTrusted === false) return;
     setLastActivity(Date.now());
     if (isInactive) {
       setIsInactive(false);
@@ -269,7 +271,9 @@ function MainApp() {
 
   // Set up activity listeners
   useEffect(() => {
-    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    // Only treat explicit user input as activity.
+    // Avoid passive events like mousemove/scroll that can be triggered while the page auto-refreshes.
+    const events = ['pointerdown', 'keydown', 'touchstart', 'wheel'];
     events.forEach(event => {
       document.addEventListener(event, handleUserActivity);
     });
