@@ -1078,20 +1078,8 @@ Typical monthly costs (low usage):
 - **Rate Limiting**: Built-in protection against abuse
 - **Audit Logging**: All authentication and data modification events logged
 
-## Migration from Kubernetes
+## Support
 
-If migrating from the original Kubernetes-based deployment:
-
-1. **Export existing data** from Redis/previous storage
-2. **Deploy new infrastructure** using deployment scripts
-3. **Import data** to Azure Table Storage
-4. **Update GroupMe bot** webhook URL to Function endpoint
-5. **Verify processing** with webhook debugger
-6. **Decommission old infrastructure** once validated
-
-## Support and Documentation
-
-- **Architecture Details**: See [docs/serverless-refactor-brief.md](docs/serverless-refactor-brief.md)
 - **Deployment Scripts**: See [deployment/](deployment/) directory
 
 ## Contributing
