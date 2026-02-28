@@ -1,10 +1,47 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import './LoginChoice.css';
 import { msalInstance, msalConfig, initializeMsal } from './auth/msalClient';
 import { localLogin } from './auth/localAuth';
+import { apiUrl, LOCAL_AUTH_UI_ENABLED } from './config';
 
 function LoginChoice() {
   const [showLocalLogin, setShowLocalLogin] = useState(false);
+  const [localAuthEnabled, setLocalAuthEnabled] = useState(Boolean(LOCAL_AUTH_UI_ENABLED));
+
+  useEffect(() => {
+    // Prefer static build-time flag when provided.
+    if (LOCAL_AUTH_UI_ENABLED !== null) {
+      setLocalAuthEnabled(Boolean(LOCAL_AUTH_UI_ENABLED));
+      return;
+    }
+
+    let cancelled = false;
+
+    const checkLocalAuthEnabled = async () => {
+      try {
+        const response = await fetch(apiUrl('/api/auth/local/enabled'));
+        if (!response.ok) {
+          if (!cancelled) {
+            setLocalAuthEnabled(false);
+          }
+          return;
+        }
+        const data = await response.json();
+        if (!cancelled) {
+          setLocalAuthEnabled(Boolean(data?.enabled));
+        }
+      } catch {
+        if (!cancelled) {
+          setLocalAuthEnabled(false);
+        }
+      }
+    };
+
+    checkLocalAuthEnabled();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSSOLogin = async () => {
     if (!msalConfig.isConfigured) {
@@ -24,6 +61,7 @@ function LoginChoice() {
   };
 
   const handleLocalLogin = () => {
+    if (!localAuthEnabled) return;
     setShowLocalLogin(true);
   };
 
@@ -52,16 +90,18 @@ function LoginChoice() {
             </div>
           </button>
 
-          <button 
-            className="login-option local-login" 
-            onClick={handleLocalLogin}
-          >
-            <div className="login-icon">👤</div>
-            <div className="login-text">
-              <h3>External Login</h3>
-              <p>Username and password</p>
-            </div>
-          </button>
+          {localAuthEnabled && (
+            <button 
+              className="login-option local-login" 
+              onClick={handleLocalLogin}
+            >
+              <div className="login-icon">👤</div>
+              <div className="login-text">
+                <h3>External Login</h3>
+                <p>Username and password</p>
+              </div>
+            </button>
+          )}
         </div>
       </div>
     </div>
