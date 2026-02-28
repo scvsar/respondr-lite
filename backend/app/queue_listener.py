@@ -4,12 +4,32 @@ import asyncio
 import json
 import logging
 import os
+from typing import Optional
 
 from azure.storage.queue import QueueClient
 
 from .routers.webhook import WebhookMessage, webhook_handler
 
 logger = logging.getLogger(__name__)
+
+
+def _get_queue_api_version(conn_str: str) -> Optional[str]:
+    """Return an explicit queue API version when needed (primarily for Azurite)."""
+    explicit_version = os.getenv("AZURE_STORAGE_QUEUE_API_VERSION", "").strip()
+    if explicit_version:
+        return explicit_version
+
+    lowered = conn_str.lower()
+    is_azurite = (
+        "devstoreaccount1" in lowered
+        or "127.0.0.1:10001" in lowered
+        or "localhost:10001" in lowered
+        or "azurite:10001" in lowered
+    )
+    if is_azurite:
+        return "2021-12-02"
+
+    return None
 
 
 async def ensure_queue_exists(queue: QueueClient, queue_name: str) -> bool:
@@ -55,7 +75,16 @@ async def listen_to_queue() -> None:
         logger.warning("Queue connection not configured; skipping listener")
         return
 
-    queue = QueueClient.from_connection_string(conn_str, queue_name)
+    queue_api_version = _get_queue_api_version(conn_str)
+    if queue_api_version:
+        logger.info("Using queue API version %s", queue_api_version)
+        queue = QueueClient.from_connection_string(
+            conn_str,
+            queue_name,
+            api_version=queue_api_version,
+        )
+    else:
+        queue = QueueClient.from_connection_string(conn_str, queue_name)
 
     # Ensure queue exists before starting listener
     queue_ready = await ensure_queue_exists(queue, queue_name)

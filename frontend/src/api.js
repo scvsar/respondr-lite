@@ -1,5 +1,5 @@
 import { getAccessToken } from "./auth/msalClient";
-import { getLocalToken } from "./auth/localAuth";
+import { getLocalToken, logoutLocal } from "./auth/localAuth";
 import { apiUrl } from "./config";
 
 async function getAuthHeader() {
@@ -20,7 +20,8 @@ export async function apiGet(path) {
   const res = await fetch(url, { headers });
   if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
-          // Handle unauthorized - maybe redirect to login or throw specific error
+                    // Clear stale local auth so the app can return to the login chooser
+                    logoutLocal();
           console.error("Unauthorized access");
       }
       throw new Error(`API error: ${res.status}`);

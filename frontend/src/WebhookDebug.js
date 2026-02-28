@@ -222,7 +222,7 @@ export default function WebhookDebug() {
       <div className="page-header">
         <div className="header-content">
           <div className="header-title-section">
-            <div className="title">Webhook Debugger</div>
+            <div className="title">Webhook Debugger - {user?.name}</div>
             <div className="subtitle">Post test messages to <code className="mono">/webhook?debug=true</code> and inspect prompts, parsing, and storage.</div>
           </div>
           <button 

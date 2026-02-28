@@ -362,7 +362,11 @@ function MainApp() {
           setData([]);
           return;
         }
-      } catch {}
+      } catch {
+        setIsLoading(false);
+        setData([]);
+        return;
+      }
       
       setError(null);
       const url = getTimeFilterUrl();

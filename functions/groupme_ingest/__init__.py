@@ -3,6 +3,7 @@ import os
 import traceback
 import urllib.request
 import urllib.error
+from typing import Optional
 
 import azure.functions as func
 from azure.storage.queue import QueueClient
@@ -11,6 +12,25 @@ from azure.core.exceptions import ResourceExistsError
 from .schemas import GroupMeMessage
 from .payload_logger import log_payload
 from pydantic import ValidationError
+
+
+def _get_queue_api_version(conn_str: str) -> Optional[str]:
+    """Return an explicit queue API version when needed (primarily for Azurite)."""
+    explicit_version = os.getenv("AZURE_STORAGE_QUEUE_API_VERSION", "").strip()
+    if explicit_version:
+        return explicit_version
+
+    lowered = conn_str.lower()
+    is_azurite = (
+        "devstoreaccount1" in lowered
+        or "127.0.0.1:10001" in lowered
+        or "localhost:10001" in lowered
+        or "azurite:10001" in lowered
+    )
+    if is_azurite:
+        return "2021-12-02"
+
+    return None
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """HTTP trigger function that enqueues messages to Azure Storage Queue."""
@@ -96,7 +116,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
 
     try:
         # check if queue exists and if not, create it
-        queue = QueueClient.from_connection_string(conn_str, queue_name)
+        queue_api_version = _get_queue_api_version(conn_str)
+        if queue_api_version:
+            logging.info("Using queue API version %s", queue_api_version)
+            queue = QueueClient.from_connection_string(
+                conn_str,
+                queue_name,
+                api_version=queue_api_version,
+            )
+        else:
+            queue = QueueClient.from_connection_string(conn_str, queue_name)
         try:
             r = queue.create_queue()
             print(r)
