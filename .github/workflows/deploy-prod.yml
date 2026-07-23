@@ -107,6 +107,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Resolve parameters
         id: params
@@ -152,13 +154,17 @@ jobs:
               BACKEND_DEPLOY=true
               REASON="No previous SHA available"
             else
-              CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER" || true)
-              echo "Changed files:"
-              echo "$CHANGED_FILES"
-
-              if echo "$CHANGED_FILES" | grep -E '^(backend/|Dockerfile\.backend|\.github/workflows/deploy-prod\.yml)' >/dev/null; then
+              if ! CHANGED_FILES=$(git diff --name-only "$BEFORE" "$AFTER"); then
                 BACKEND_DEPLOY=true
-                REASON="Backend-related files changed"
+                REASON="Could not inspect changed files"
+              else
+                echo "Changed files:"
+                echo "$CHANGED_FILES"
+
+                if echo "$CHANGED_FILES" | grep -E '^(backend/|Dockerfile\.backend|\.github/workflows/deploy-prod\.yml)' >/dev/null; then
+                  BACKEND_DEPLOY=true
+                  REASON="Backend-related files changed"
+                fi
               fi
             fi
           fi
