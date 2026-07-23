@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Investigation"
+  short_description: "Trace defects to their verified root cause"
+  default_prompt: "Use $debug-investigation to reproduce and trace this Respondr Lite defect."

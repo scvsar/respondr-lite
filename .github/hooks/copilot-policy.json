@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "pre-tool": [
+      {
+        "script": ".github/hooks/scripts/pre-tool-policy.ps1",
+        "tools": ["edit", "create"],
+        "description": "Checks edited files for obvious secrets and sensitive Respondr artifact paths."
+      }
+    ],
+    "post-tool": [
+      {
+        "script": ".github/hooks/scripts/post-build-check.ps1",
+        "tools": ["powershell"],
+        "description": "Observes project validation commands for optional agent diagnostics."
+      }
+    ]
+  }
+}

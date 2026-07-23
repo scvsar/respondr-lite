@@ -1,0 +1,4 @@
+interface:
+  display_name: "Feature Implementation"
+  short_description: "Implement scoped Respondr Lite features safely"
+  default_prompt: "Use $feature-implementation to implement this scoped Respondr Lite change."
