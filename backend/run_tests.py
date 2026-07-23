@@ -10,7 +10,9 @@ def main():
     
     # Run only our working test files to avoid hanging/broken tests
     working_tests = [
-        "tests/test_storage_working.py", 
+        "tests/test_storage_working.py",
+        "tests/test_queue_idempotency.py",
+        "tests/test_cleanup_duplicate_responders.py",
         "tests/test_main.py",
         "tests/test_retention.py"
     ]

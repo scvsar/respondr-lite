@@ -1,13 +1,14 @@
 """Webhook and message parsing endpoints."""
 
+import hashlib
 import logging
+import uuid
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from typing import Dict, Any, Optional
 from pydantic import BaseModel
-import uuid
 
 from ..config import webhook_api_key, disable_api_key_check, APP_TZ, GROUP_ID_TO_TEAM
 from ..llm import extract_details_from_text, build_prompts
@@ -47,6 +48,19 @@ class ParseDebugRequest(BaseModel):
     prev_eta_iso: Optional[str] = None
 
 
+def _build_storage_message_id(
+    group_id: Optional[str],
+    source_message_id: Optional[str],
+) -> str:
+    """Build an Azure Table-safe stable ID for a source message."""
+    if not source_message_id:
+        return str(uuid.uuid4())
+
+    identity = f"{group_id or 'unknown'}:{source_message_id}"
+    digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return f"groupme-{digest}"
+
+
 def verify_api_key(api_key: Optional[str] = None):
     """Verify API key for webhook endpoints."""
     if disable_api_key_check:
@@ -71,11 +85,32 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         group_id = message.group_id or "unknown"
         team = GROUP_ID_TO_TEAM.get(group_id, "Unknown")
         name_l = (message.name or "").strip().lower()
+        storage_message_id = _build_storage_message_id(group_id, message.id)
 
         # Look up previous ETA for this responder (same group) to allow persistence on updates
         prev_eta_iso: Optional[str] = None
         try:
             history = get_messages() or []
+            existing_message = next(
+                (
+                    item
+                    for item in history
+                    if item.get("id") == storage_message_id
+                ),
+                None,
+            )
+            if existing_message is not None:
+                logger.info(
+                    "Skipped duplicate GroupMe message %s",
+                    storage_message_id[:20],
+                )
+                if debug:
+                    return {
+                        "status": "duplicate",
+                        "stored_message": existing_message,
+                    }
+                return {"status": "duplicate"}
+
             # Sort latest first; prefer same group_id and same name
             # Look for the most recent ETA that was actually calculated (not inherited)
             for m in sorted(history, key=lambda x: x.get("created_at", 0), reverse=True):
@@ -280,7 +315,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         if isinstance(minutes, int) and minutes <= 0 and arrival_status == "Responding":
             arrival_status = "Arrived"
         new_message = {
-            "id": str(uuid.uuid4()),
+            "id": storage_message_id,
             "groupme_id": message.id,  # Store GroupMe message ID for debugging
             "name": message.name,
             "text": message.text,
@@ -299,9 +334,10 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             "group_id": group_id,
             "created_at": message.created_at,
         }
-        
+
         # Store message in storage layer
-        add_message(new_message)
+        if not add_message(new_message):
+            raise RuntimeError("Failed to save responder message")
         logger.info(
             f"Processed webhook message from {message.name}: {parsed['vehicle']} ETA {parsed['eta']}"
             + (f" (prev_eta carried)" if prev_eta_iso else "")
