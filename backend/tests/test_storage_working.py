@@ -53,20 +53,15 @@ class TestStorageInterface:
             "timestamp": datetime.now(APP_TZ).isoformat()
         }
         
-        # Mock the storage functions to avoid Redis dependency
-        with patch('app.storage.get_messages', return_value=[]):
-            with patch('app.storage.save_messages') as mock_save:
-                # The add_message function doesn't return the message, it just adds it
-                storage.add_message(test_message)
-                
-                # Verify save_messages was called
-                mock_save.assert_called_once()
-                
-                # Check that the message was added to the list passed to save_messages
-                saved_messages = mock_save.call_args[0][0]
-                assert len(saved_messages) == 1
-                assert saved_messages[0]['name'] == test_message['name']
-                assert saved_messages[0]['text'] == test_message['text']
+        with patch.object(
+            storage._storage_manager,
+            "add_message",
+            return_value=True,
+        ) as mock_add:
+            result = storage.add_message(test_message)
+
+        assert result is True
+        mock_add.assert_called_once_with(test_message)
 
     def test_message_id_generation(self):
         """Test that messages can be processed without causing errors."""
@@ -75,13 +70,14 @@ class TestStorageInterface:
             "text": "Message without ID"
         }
         
-        with patch('app.storage.get_messages', return_value=[]):
-            with patch('app.storage.save_messages') as mock_save:
-                # Just test that the function works without errors
-                storage.add_message(test_message)
-                
-                # Verify it was called
-                mock_save.assert_called_once()
+        with patch.object(
+            storage._storage_manager,
+            "add_message",
+            return_value=True,
+        ) as mock_add:
+            assert storage.add_message(test_message) is True
+
+        mock_add.assert_called_once_with(test_message)
 
     def test_message_timestamp_generation(self):
         """Test that messages can be added without timestamps."""
@@ -90,13 +86,14 @@ class TestStorageInterface:
             "text": "Message without timestamp"
         }
         
-        with patch('app.storage.get_messages', return_value=[]):
-            with patch('app.storage.save_messages') as mock_save:
-                # Just test that the function works
-                storage.add_message(test_message)
-                
-                # Verify save was called
-                mock_save.assert_called_once()
+        with patch.object(
+            storage._storage_manager,
+            "add_message",
+            return_value=True,
+        ) as mock_add:
+            assert storage.add_message(test_message) is True
+
+        mock_add.assert_called_once_with(test_message)
 
     def test_update_message_logic(self):
         """Test update message functionality."""

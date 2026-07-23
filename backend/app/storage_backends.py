@@ -32,6 +32,15 @@ class BaseStorage(ABC):
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
         """Save all active messages. Returns True on success."""
         pass
+
+    def add_message(self, message: Dict[str, Any]) -> bool:
+        """Add or replace one active message."""
+        messages = self.get_messages()
+        message_id = message.get("id")
+        if message_id:
+            messages = [item for item in messages if item.get("id") != message_id]
+        messages.append(message)
+        return self.save_messages(messages)
     
     @abstractmethod
     def get_deleted_messages(self) -> List[Dict[str, Any]]:
@@ -68,6 +77,15 @@ class MemoryStorage(BaseStorage):
     
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
         self._messages = messages.copy()
+        return True
+
+    def add_message(self, message: Dict[str, Any]) -> bool:
+        message_id = message.get("id")
+        if message_id:
+            self._messages = [
+                item for item in self._messages if item.get("id") != message_id
+            ]
+        self._messages.append(message.copy())
         return True
     
     def get_deleted_messages(self) -> List[Dict[str, Any]]:
@@ -122,6 +140,14 @@ class FileStorage(BaseStorage):
     
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
         return self._write_json_file(self.messages_file, messages)
+
+    def add_message(self, message: Dict[str, Any]) -> bool:
+        messages = self.get_messages()
+        message_id = message.get("id")
+        if message_id:
+            messages = [item for item in messages if item.get("id") != message_id]
+        messages.append(message)
+        return self.save_messages(messages)
     
     def get_deleted_messages(self) -> List[Dict[str, Any]]:
         return self._read_json_file(self.deleted_file)
@@ -298,6 +324,25 @@ class AzureTableStorage(BaseStorage):
         except Exception as e:
             logger.error(f"Failed to get messages from Azure Table Storage: {e}")
             raise
+
+    def add_message(self, message: Dict[str, Any]) -> bool:
+        """Atomically add or replace one active message."""
+        if not self.is_healthy() or self._client is None:
+            return False
+
+        message_id = message.get("id")
+        if not message_id:
+            logger.error("Cannot save a message without an id")
+            return False
+
+        try:
+            table_client = self._client.get_table_client(self.table_name)
+            entity = self._message_to_entity(message, "messages")
+            table_client.upsert_entity(entity)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save message {message_id}: {e}")
+            return False
     
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
         """Save all active messages to Azure Table Storage."""

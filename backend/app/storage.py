@@ -200,6 +200,61 @@ class StorageManager:
                 return self.save_messages(messages)  # Recursive retry with fallback
             
             return False
+
+    def add_message(self, message: Dict[str, Any]) -> bool:
+        """Add or replace one active message."""
+
+        if is_testing:
+            import main
+            messages = getattr(main, "messages", _test_messages)
+            message_id = message.get("id")
+            if message_id:
+                messages[:] = [
+                    item for item in messages if item.get("id") != message_id
+                ]
+            messages.append(message)
+            return True
+
+        self._ensure_backend()
+
+        try:
+            backend = self.current_backend
+            assert backend is not None
+
+            success = backend.add_message(message)
+            if success:
+                logger.debug(
+                    "Saved message %s to %s",
+                    message.get("id", "unknown"),
+                    backend.backend_type.value,
+                )
+            else:
+                logger.warning(
+                    "Failed to save message %s to %s",
+                    message.get("id", "unknown"),
+                    backend.backend_type.value,
+                )
+                if (
+                    self.current_backend == self.primary_backend
+                    and self.fallback_backend
+                ):
+                    logger.warning(
+                        "Switching to fallback storage for add operation"
+                    )
+                    self.current_backend = self.fallback_backend
+                    return self.add_message(message)
+            return success
+        except Exception as e:
+            backend = self.current_backend
+            backend_name = backend.backend_type.value if backend else "unknown"
+            logger.error(f"Failed to add message to {backend_name}: {e}")
+
+            if self.current_backend == self.primary_backend and self.fallback_backend:
+                logger.warning("Switching to fallback storage for add operation")
+                self.current_backend = self.fallback_backend
+                return self.add_message(message)
+
+            return False
     
     def get_deleted_messages(self) -> List[Dict[str, Any]]:
         """Get all deleted messages from storage."""
@@ -311,10 +366,8 @@ def get_storage_info() -> Dict[str, Any]:
 
 # Legacy functions that might be used by other parts of the codebase
 def add_message(message: Dict[str, Any]):
-    """Add a new message."""
-    messages = get_messages()
-    messages.append(message)
-    save_messages(messages)
+    """Add or replace one message."""
+    return _storage_manager.add_message(message)
 
 
 def delete_message(msg_id: str) -> bool:

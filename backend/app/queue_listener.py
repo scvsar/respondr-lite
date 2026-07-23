@@ -4,13 +4,55 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from azure.storage.queue import QueueClient
 
 from .routers.webhook import WebhookMessage, webhook_handler
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
+DEFAULT_VISIBILITY_RENEWAL_SECONDS = 120
+
+
+def _positive_int_setting(name: str, default: int) -> int:
+    """Read a positive integer setting."""
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("Invalid %s setting; using %s", name, default)
+        return default
+
+    if value < 1:
+        logger.warning("Invalid %s setting; using %s", name, default)
+        return default
+
+    return value
+
+
+def _queue_timing_settings() -> tuple[int, int]:
+    """Return the visibility timeout and renewal interval."""
+    visibility_timeout = _positive_int_setting(
+        "QUEUE_VISIBILITY_TIMEOUT_SECONDS",
+        DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+    )
+    renewal_interval = _positive_int_setting(
+        "QUEUE_VISIBILITY_RENEWAL_SECONDS",
+        DEFAULT_VISIBILITY_RENEWAL_SECONDS,
+    )
+    if renewal_interval >= visibility_timeout:
+        renewal_interval = max(1, visibility_timeout // 2)
+        logger.warning(
+            "Queue visibility renewal must be shorter than the timeout; using %s",
+            renewal_interval,
+        )
+
+    return visibility_timeout, renewal_interval
 
 
 def _get_queue_api_version(conn_str: str) -> Optional[str]:
@@ -66,6 +108,76 @@ async def ensure_queue_exists(queue: QueueClient, queue_name: str) -> bool:
                 return False
 
 
+async def _renew_message_visibility(
+    queue: QueueClient,
+    message_state: Dict[str, Any],
+    stop_event: asyncio.Event,
+    visibility_timeout: int,
+    renewal_interval: int,
+) -> None:
+    """Renew one message lease until processing stops."""
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=renewal_interval)
+            return
+        except asyncio.TimeoutError:
+            updated_message = await asyncio.to_thread(
+                queue.update_message,
+                message_state["message"],
+                visibility_timeout=visibility_timeout,
+            )
+            message_state["message"] = updated_message
+            logger.debug("Renewed queue message visibility")
+
+
+async def process_queue_message(
+    queue: QueueClient,
+    message: Any,
+    visibility_timeout: int,
+    renewal_interval: int,
+) -> bool:
+    """Process and delete one queue message."""
+    message_state: Dict[str, Any] = {"message": message}
+    stop_event = asyncio.Event()
+    renewal_task = asyncio.create_task(
+        _renew_message_visibility(
+            queue,
+            message_state,
+            stop_event,
+            visibility_timeout,
+            renewal_interval,
+        )
+    )
+    processing_success = False
+
+    try:
+        payload = json.loads(message.content)
+        web_msg = WebhookMessage(**payload)
+        await webhook_handler(web_msg, request=None, debug=False)
+        processing_success = True
+    except Exception:
+        logger.exception("Failed processing queue message")
+    finally:
+        stop_event.set()
+        try:
+            await renewal_task
+        except Exception:
+            logger.exception("Failed to renew queue message visibility")
+
+    if not processing_success:
+        return False
+
+    try:
+        await asyncio.to_thread(
+            queue.delete_message,
+            message_state["message"],
+        )
+        return True
+    except Exception:
+        logger.exception("Failed to delete processed message")
+        return False
+
+
 async def listen_to_queue() -> None:
     """Continuously poll Azure Storage Queue and process messages."""
     conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
@@ -93,27 +205,23 @@ async def listen_to_queue() -> None:
     else:
         logger.warning("Queue is not accessible, will retry periodically...")
 
+    visibility_timeout, renewal_interval = _queue_timing_settings()
+
     while True:
         try:
             messages = await asyncio.to_thread(
-                queue.receive_messages, messages_per_page=5, visibility_timeout=30
+                queue.receive_messages,
+                messages_per_page=1,
+                max_messages=1,
+                visibility_timeout=visibility_timeout,
             )
             for msg in messages:
-                processing_success = False
-                try:
-                    payload = json.loads(msg.content)
-                    web_msg = WebhookMessage(**payload)
-                    await webhook_handler(web_msg, request=None, debug=False)
-                    processing_success = True
-                except Exception:
-                    logger.exception("Failed processing queue message")
-                    # Don't delete failed messages - let them retry after visibility timeout
-                finally:
-                    if processing_success:
-                        try:
-                            await asyncio.to_thread(queue.delete_message, msg)
-                        except Exception:
-                            logger.exception("Failed to delete processed message")
+                await process_queue_message(
+                    queue,
+                    msg,
+                    visibility_timeout,
+                    renewal_interval,
+                )
         except Exception as e:
             error_msg = str(e).lower()
             if "not found" in error_msg or "does not exist" in error_msg:

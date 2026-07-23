@@ -43,22 +43,22 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
       - name: Cache Python dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
@@ -66,7 +66,7 @@ jobs:
             ${{ runner.os }}-pip-
 
       - name: Cache Node modules
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: frontend/node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('frontend/package-lock.json') }}
@@ -106,7 +106,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Resolve parameters
         id: params
@@ -169,11 +169,11 @@ jobs:
 
       - name: Set up Docker Buildx
         if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to Docker Hub
         if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
@@ -186,7 +186,7 @@ jobs:
 
       - name: Build and push Docker image (prod)
         if: steps.backend_decision.outputs.backend_deploy == 'true' && steps.params.outputs.image_tag == ''
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile.backend
@@ -210,7 +210,7 @@ jobs:
 
       - name: Azure Login
         if: steps.backend_decision.outputs.backend_deploy == 'true'
-        uses: azure/login@v2
+        uses: azure/login@v3
         with:
           client-id: ${{ env.AZURE_CLIENT_ID }}
           tenant-id: ${{ env.AZURE_TENANT_ID }}
@@ -263,7 +263,7 @@ jobs:
           echo "Static Web App deployment will continue." >> $GITHUB_STEP_SUMMARY
 
       - name: Set up Node.js for SWA
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
 
