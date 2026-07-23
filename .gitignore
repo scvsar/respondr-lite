@@ -7,6 +7,11 @@ __pycache__/
 *.so
 
 .claude/*
+!.claude/settings.json
+!.claude/agents/
+!.claude/agents/**
+!.claude/skills/
+!.claude/skills/**
 
 # Distribution / packaging
 .Python
@@ -278,7 +283,6 @@ private-notes.md
 
 cookies.txt
 github-actions-setup-20250827-163919.txt
-CLAUDE.md
 
 last_mission.txt
 missions/

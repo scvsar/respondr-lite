@@ -1,0 +1,4 @@
+interface:
+  display_name: "Emoji Cleanup"
+  short_description: "Remove decorative emoji without breaking intent"
+  default_prompt: "Use $emoji-cleanup to remove inappropriate emoji from this change."

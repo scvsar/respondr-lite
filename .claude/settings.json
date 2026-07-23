@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PROJECT_DIR}/.github/hooks/scripts/pre-tool-policy.ps1\"",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
