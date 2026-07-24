@@ -34,6 +34,7 @@ def _markdown(run: dict[str, Any]) -> str:
     lines = [
         "# Respondr evaluation report",
         "",
+        f"- Dataset type: `{run['dataset'].get('kind', 'unknown')}`",
         f"- Dataset fingerprint: `{run['dataset']['fingerprint']}`",
         f"- Evaluation split: `{run['dataset']['evaluation_split']}`",
         f"- Reviewed evaluation cases: {run['dataset']['evaluation_case_count']}",

@@ -66,6 +66,7 @@ def test_results_api_lists_and_returns_private_reports(tmp_path):
         "created_at": "2026-07-23T23:57:59Z",
         "dataset": {
             "fingerprint": "synthetic-fingerprint",
+            "kind": "synthetic",
             "evaluation_split": "dev",
             "evaluation_case_count": 3,
         },
@@ -91,6 +92,9 @@ def test_results_api_lists_and_returns_private_reports(tmp_path):
 
     assert page.status_code == 200
     assert "benchmark results" in page.text
+    assert "Technical JSON" in page.text
+    assert "Run setup" in page.text
     assert listing.json()["runs"][0]["file"] == report_path.name
+    assert listing.json()["runs"][0]["dataset_kind"] == "synthetic"
     assert detail.json()["least_expensive_meeting_target"] == "heuristic-v1"
     assert traversal.status_code == 404

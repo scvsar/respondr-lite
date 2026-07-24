@@ -55,12 +55,23 @@
     .case-value small { color:var(--muted); }
     .case-value.bad { border-left:3px solid var(--bad); padding-left:.45rem; }
     .case-value.good { border-left:3px solid var(--good); padding-left:.45rem; }
+    .info-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem; }
+    .info-group { background:#10181e; border:1px solid var(--line); border-radius:9px; padding:.8rem; }
+    .info-group h3 { color:var(--text); }
+    .key-values { display:grid; grid-template-columns:minmax(110px,.7fr) minmax(0,1.3fr); gap:.42rem .75rem; margin:0; }
+    .key-values dt { color:var(--muted); }
+    .key-values dd { margin:0; overflow-wrap:anywhere; }
+    code.inline { color:#c7d8e4; background:#0b1217; border-radius:4px; padding:.12rem .3rem; }
+    .summary-line { color:var(--muted); font-size:.82rem; margin:.6rem 0; }
+    .compact-table th,.compact-table td { padding:.45rem; font-size:.78rem; }
     details { border-top:1px solid var(--line); padding-top:.7rem; margin-top:.7rem; }
+    details summary { color:var(--muted); cursor:pointer; }
     pre { white-space:pre-wrap; overflow-wrap:anywhere; color:#bfd0dc; font-size:.76rem; max-height:260px; overflow:auto; }
     #error { color:var(--bad); min-height:1.1rem; }
     @media (max-width:900px) {
       .overview { grid-template-columns:repeat(2,minmax(140px,1fr)); }
       .grid-2 { grid-template-columns:1fr; }
+      .info-grid { grid-template-columns:1fr; }
       header { align-items:flex-start; flex-direction:column; }
       .toolbar { justify-content:flex-start; }
     }
@@ -102,7 +113,8 @@
       <section class="card">
         <h2>Selected strategy</h2>
         <div id="target"></div>
-        <details open><summary>Configuration and fingerprints</summary><pre id="configuration"></pre></details>
+        <div id="strategyDetails"></div>
+        <details><summary>Technical JSON</summary><pre id="configuration"></pre></details>
       </section>
     </div>
     <div class="grid-2">
@@ -130,8 +142,9 @@
       </div>
     </section>
     <section class="card">
-      <h2>Run metadata</h2>
-      <pre id="metadata"></pre>
+      <h2>Run setup</h2>
+      <div id="runDetails" class="info-grid"></div>
+      <details><summary>Technical JSON</summary><pre id="metadata"></pre></details>
     </section>
   </main>
   <script>
@@ -142,6 +155,33 @@
     const pct = value => value === null || value === undefined ? 'n/a' : `${(Number(value)*100).toFixed(1)}%`;
     const num = (value,digits=2) => value === null || value === undefined ? 'n/a' : Number(value).toFixed(digits);
     const short = value => value ? String(value).slice(0,12) : 'n/a';
+    const fileName = value => value ? String(value).split(/[\\/]/).pop() : 'Unknown';
+    const yesNo = value => value === null || value === undefined ? 'Unknown' : value ? 'Yes' : 'No';
+    const friendlyLabels = {
+      char_wb:'Character word boundary',
+      eta_accuracy:'ETA accuracy',
+      eta_tolerance_minutes:'ETA tolerance (minutes)',
+      max_features:'Maximum features',
+      ngram_range:'N-gram range',
+      sublinear_tf:'Sublinear TF',
+      use_idf:'Use IDF',
+    };
+    const human = value => {
+      const raw=String(value || '');
+      if (friendlyLabels[raw]) return friendlyLabels[raw];
+      const acronyms={api:'API',eta:'ETA',f1:'F1',gpt:'GPT',json:'JSON',ml:'ML',tf:'TF',utc:'UTC'};
+      return raw.split('_').map(word=>acronyms[word.toLowerCase()] || `${word.charAt(0).toUpperCase()}${word.slice(1)}`).join(' ');
+    };
+    const display = value => {
+      if (value === null || value === undefined || value === '') return 'Not set';
+      if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+      return String(value);
+    };
+    const friendlyDate = value => {
+      if (!value) return 'Unknown';
+      const parsed=new Date(value);
+      return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
+    };
     function node(tag,text,className) {
       const value=document.createElement(tag);
       if (text !== undefined) value.textContent=text;
@@ -152,6 +192,30 @@
       const box=node('div',undefined,'stat');
       box.append(node('span',label),node('strong',value));
       return box;
+    }
+    function keyValues(entries) {
+      const list=node('dl',undefined,'key-values');
+      for (const [label,value,kind] of entries) {
+        list.append(node('dt',label));
+        const item=node('dd');
+        const content=node(kind === 'code' ? 'code' : 'span',display(value),kind === 'code' ? 'inline' : undefined);
+        if (kind === 'code' && value) content.title=String(value);
+        item.append(content);
+        list.append(item);
+      }
+      return list;
+    }
+    function infoGroup(title,entries) {
+      const group=node('section',undefined,'info-group');
+      group.append(node('h3',title),keyValues(entries));
+      return group;
+    }
+    function datasetLabel(dataset) {
+      const kind=dataset.kind || (String(dataset.path || '').includes('synthetic_seed') ? 'synthetic' : 'unknown');
+      if (kind === 'synthetic') return 'Synthetic fixture';
+      if (kind === 'reviewed-production') return 'Reviewed production sample';
+      if (kind === 'reviewed') return 'Reviewed dataset';
+      return 'Dataset type unknown';
     }
     async function loadRuns() {
       const response=await fetch('/api/results');
@@ -180,13 +244,14 @@
     }
     function render() {
       const dataset=report.dataset || {};
-      el('subtitle').textContent=`${report.created_at || 'Unknown time'} · ${dataset.evaluation_split || 'unknown'} split · ${dataset.evaluation_case_count || 0} reviewed cases`;
+      const dataName=datasetLabel(dataset);
+      el('subtitle').textContent=`${dataName} · ${friendlyDate(report.created_at)} · ${dataset.evaluation_split || 'unknown'} split · ${dataset.evaluation_case_count || 0} cases`;
       el('overview').replaceChildren(
         stat('Selected strategy',report.least_expensive_meeting_target || 'No strategy passed'),
-        stat('Reviewed cases',String(dataset.evaluation_case_count || 0)),
+        stat('Dataset',dataName),
+        stat('Cases',String(dataset.evaluation_case_count || 0)),
         stat('Evaluation split',dataset.evaluation_split || 'Unknown'),
-        stat('ETA tolerance',`${report.eta_tolerance_minutes ?? 'n/a'} min`),
-        stat('Dataset fingerprint',short(dataset.fingerprint))
+        stat('ETA tolerance',`${report.eta_tolerance_minutes ?? 'n/a'} min`)
       );
       el('strategy').replaceChildren();
       for (const experiment of report.experiments || []) {
@@ -201,6 +266,7 @@
       renderPaired();
       renderCaseFilters();
       renderCases();
+      renderRunDetails();
       el('metadata').textContent=JSON.stringify({
         schema_version:report.schema_version,
         created_at:report.created_at,
@@ -252,8 +318,91 @@
         failures.forEach(value=>list.append(node('li',value)));
         el('target').append(list);
       }
+      renderStrategyDetails(experiment);
       el('configuration').textContent=JSON.stringify(experiment.strategy || {},null,2);
       renderConfusion(experiment.metrics?.status_confusion || {});
+    }
+    function renderStrategyDetails(experiment) {
+      const strategy=experiment.strategy || {};
+      const details=el('strategyDetails');
+      const primary=[
+        ['Type',human(strategy.kind || 'unknown')],
+        ['Name',strategy.name || experiment.name]
+      ];
+      const optional=[
+        ['Model',strategy.model_id],
+        ['Deployment',strategy.deployment],
+        ['Prompt',strategy.prompt],
+        ['Reasoning',strategy.reasoning_effort],
+        ['Verbosity',strategy.verbosity],
+        ['Token limit',strategy.max_tokens],
+        ['API version',strategy.azure_api_version]
+      ].filter(item=>item[1] !== null && item[1] !== undefined && item[1] !== '');
+      const groups=[infoGroup('Strategy',primary.concat(optional))];
+      const params=strategy.selected_params || {};
+      if (Object.keys(params).length) {
+        groups.push(infoGroup('Selected parameters',Object.entries(params).map(([key,value])=>[human(key),value])));
+      }
+      const fingerprints=[
+        ['Prompt fingerprint',strategy.prompt_fingerprint,'code'],
+        ['Code fingerprint',strategy.production_code_fingerprint,'code']
+      ].filter(item=>item[1]);
+      if (fingerprints.length) groups.push(infoGroup('Reproducibility',fingerprints));
+      const sweep=strategy.sweep_results || [];
+      if (sweep.length) {
+        const group=node('section',undefined,'info-group');
+        group.append(node('h3','Parameter sweep'),node('p',`${sweep.length} candidates tested. The table shows the five highest scores.`,'summary-line'));
+        const table=node('table',undefined,'compact-table');
+        const head=node('tr');
+        ['Score','Status','Vehicle','Settings'].forEach(value=>head.append(node('th',value)));
+        const thead=node('thead'); thead.append(head); table.append(thead);
+        const body=node('tbody');
+        for (const candidate of sweep.slice(0,5)) {
+          const row=node('tr');
+          const settings=Object.entries(candidate.params || {}).map(([key,value])=>`${human(key)}: ${display(value)}`).join(', ');
+          row.append(node('td',pct(candidate.score)),node('td',pct(candidate.status_accuracy)),node('td',pct(candidate.vehicle_accuracy)),node('td',settings));
+          body.append(row);
+        }
+        table.append(body);
+        const scroll=node('div',undefined,'scroll'); scroll.append(table); group.append(scroll); groups.push(group);
+      }
+      details.replaceChildren(...groups);
+    }
+    function renderRunDetails() {
+      const dataset=report.dataset || {};
+      const environment=report.environment || {};
+      const packages=environment.packages || {};
+      const thresholdEntries=Object.entries(report.thresholds || {}).map(([metric,rule])=>{
+        const operation=rule.min !== undefined ? 'Minimum' : 'Maximum';
+        const value=rule.min !== undefined ? rule.min : rule.max;
+        const shown=metric.includes('rate') || metric.includes('accuracy') || metric.includes('f1') ? pct(value) : display(value);
+        return [human(metric),`${operation} ${shown}`];
+      });
+      const groups=[
+        infoGroup('Dataset',[
+          ['Type',datasetLabel(dataset)],
+          ['File',fileName(dataset.path)],
+          ['Evaluation split',dataset.evaluation_split],
+          ['Evaluation cases',dataset.evaluation_case_count],
+          ['Training cases',dataset.train_case_count],
+          ['Development cases',dataset.dev_case_count],
+          ['Fingerprint',dataset.fingerprint,'code']
+        ]),
+        infoGroup('Execution',[
+          ['Created',friendlyDate(report.created_at)],
+          ['Git commit',environment.git_commit,'code'],
+          ['Clean worktree',environment.git_dirty === undefined ? 'Unknown' : yesNo(!environment.git_dirty)],
+          ['Python',environment.python],
+          ['Platform',environment.platform]
+        ]),
+        infoGroup('Evaluation settings',[
+          ['ETA tolerance',report.eta_tolerance_minutes === null || report.eta_tolerance_minutes === undefined ? 'Not set' : `${report.eta_tolerance_minutes} minutes`],
+          ['Price date',report.pricing_effective_date === 'REPLACE-WITH-RATE-DATE' ? 'Not configured' : report.pricing_effective_date],
+          ...thresholdEntries
+        ]),
+        infoGroup('Software packages',Object.entries(packages).map(([name,version])=>[name,version || 'Not installed']))
+      ];
+      el('runDetails').replaceChildren(...groups);
     }
     function renderChart() {
       const chart=el('chart');

@@ -133,6 +133,18 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
         raise ValueError("Experiment config requires dataset")
     all_cases = load_jsonl(dataset_path, reviewed_only=True)
     dataset_hash = fingerprint(all_cases)
+    dataset_sources = sorted(
+        {
+            str(case.provenance.get("source") or "unknown")
+            for case in all_cases
+        }
+    )
+    if dataset_sources == ["synthetic"]:
+        dataset_kind = "synthetic"
+    elif dataset_sources == ["azure_table"]:
+        dataset_kind = "reviewed-production"
+    else:
+        dataset_kind = "reviewed"
     evaluation_split = str(config.get("evaluation_split") or "test")
     train_cases = [case for case in all_cases if case.split == "train"]
     dev_cases = [case for case in all_cases if case.split == "dev"]
@@ -246,6 +258,8 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
         "dataset": {
             "path": str(Path(dataset_path)),
             "fingerprint": dataset_hash,
+            "kind": dataset_kind,
+            "sources": dataset_sources,
             "evaluation_split": evaluation_split,
             "evaluation_case_count": len(evaluation_cases),
             "train_case_count": len(train_cases),

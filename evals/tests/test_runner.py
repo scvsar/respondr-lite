@@ -23,6 +23,8 @@ def test_example_matrix_writes_private_reports(tmp_path):
     result = json.loads(json_path.read_text(encoding="utf-8"))
     assert len(result["experiments"]) == 2
     assert result["dataset"]["evaluation_case_count"] == 6
+    assert result["dataset"]["kind"] == "synthetic"
+    assert result["dataset"]["sources"] == ["synthetic"]
     assert result["environment"]["git_commit"]
     assert len(result["experiments"][0]["case_results"]) == 6
     first_case = result["experiments"][0]["case_results"][0]
@@ -31,4 +33,5 @@ def test_example_matrix_writes_private_reports(tmp_path):
     assert "expected_eta_iso" in first_case
     assert "actual_eta_iso" in first_case
     assert "raw responder" in markdown_path.read_text(encoding="utf-8")
+    assert "Dataset type: `synthetic`" in markdown_path.read_text(encoding="utf-8")
     assert "Rolling in 45" not in json_path.read_text(encoding="utf-8")

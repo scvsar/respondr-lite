@@ -95,6 +95,7 @@ def create_app(
                     {
                         "file": path.name,
                         "created_at": report.get("created_at"),
+                        "dataset_kind": dataset.get("kind"),
                         "dataset_fingerprint": dataset.get("fingerprint"),
                         "evaluation_split": dataset.get("evaluation_split"),
                         "evaluation_case_count": dataset.get(
