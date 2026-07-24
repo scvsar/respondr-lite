@@ -1,0 +1,242 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "kind": "aggregate-production",
+    "message_count": 408,
+    "profile_date": "2026-07-24",
+    "contains_raw_messages": false
+  },
+  "teams": {
+    "4X4": {
+      "message_count": 6,
+      "median_words": 6,
+      "p90_words": 32,
+      "status_counts": {
+        "Responding": 2,
+        "Informational": 4
+      },
+      "vehicle_counts": {
+        "POV": 1,
+        "SAR Rig": 1,
+        "SAR-34": 1,
+        "Unknown": 3
+      },
+      "semantic_focus": [
+        "four-wheel-drive access",
+        "driver coordination",
+        "vehicle readiness",
+        "staging"
+      ],
+      "confidence": "low"
+    },
+    "ASAR": {
+      "message_count": 53,
+      "median_words": 5,
+      "p90_words": 27,
+      "status_counts": {
+        "Responding": 34,
+        "Informational": 10,
+        "Not Responding": 5,
+        "Available": 3,
+        "Cancelled": 1
+      },
+      "vehicle_counts": {
+        "POV": 33,
+        "SAR-20": 6,
+        "SAR-6": 1,
+        "Unknown": 13
+      },
+      "semantic_focus": [
+        "ground response",
+        "hasty team",
+        "trailhead",
+        "staging"
+      ],
+      "confidence": "medium"
+    },
+    "ESAR": {
+      "message_count": 18,
+      "median_words": 15,
+      "p90_words": 29,
+      "status_counts": {
+        "Informational": 7,
+        "Responding": 5,
+        "Not Responding": 3,
+        "Cancelled": 2,
+        "Available": 1
+      },
+      "vehicle_counts": {
+        "POV": 4,
+        "SAR-6": 2,
+        "Unknown": 12
+      },
+      "semantic_focus": [
+        "ground response",
+        "team coordination",
+        "staging",
+        "assignment status"
+      ],
+      "confidence": "low"
+    },
+    "IMT": {
+      "message_count": 89,
+      "median_words": 6,
+      "p90_words": 32,
+      "status_counts": {
+        "Responding": 52,
+        "Informational": 18,
+        "Not Responding": 12,
+        "Available": 7
+      },
+      "vehicle_counts": {
+        "POV": 49,
+        "SAR-6": 5,
+        "SAR-10": 3,
+        "SAR-74": 2,
+        "SAR-1": 2,
+        "SAR-60": 1,
+        "Unknown": 27
+      },
+      "semantic_focus": [
+        "incident command",
+        "operations",
+        "planning",
+        "logistics",
+        "assignments",
+        "ICP"
+      ],
+      "confidence": "high"
+    },
+    "K9": {
+      "message_count": 46,
+      "median_words": 6,
+      "p90_words": 33,
+      "status_counts": {
+        "Responding": 26,
+        "Informational": 13,
+        "Not Responding": 5,
+        "Available": 2
+      },
+      "vehicle_counts": {
+        "POV": 23,
+        "SAR-1": 3,
+        "SAR-6": 2,
+        "SAR-10": 2,
+        "Unknown": 16
+      },
+      "semantic_focus": [
+        "K9 handler",
+        "scent article",
+        "trailing team",
+        "field support",
+        "K9 staging"
+      ],
+      "confidence": "medium"
+    },
+    "MSAR": {
+      "message_count": 46,
+      "median_words": 6,
+      "p90_words": 19,
+      "status_counts": {
+        "Responding": 39,
+        "Not Responding": 4,
+        "Available": 2,
+        "Informational": 1
+      },
+      "vehicle_counts": {
+        "POV": 25,
+        "SAR-50": 9,
+        "SAR-51": 5,
+        "SAR-6": 1,
+        "SAR-10": 1,
+        "Unknown": 5
+      },
+      "semantic_focus": [
+        "ground response",
+        "station response",
+        "vehicle assignment",
+        "staging"
+      ],
+      "confidence": "medium"
+    },
+    "OSU": {
+      "message_count": 29,
+      "median_words": 7,
+      "p90_words": 34,
+      "status_counts": {
+        "Responding": 13,
+        "Informational": 11,
+        "Available": 3,
+        "Not Responding": 2
+      },
+      "vehicle_counts": {
+        "POV": 13,
+        "SAR-6": 2,
+        "SAR-78": 2,
+        "Unknown": 12
+      },
+      "semantic_focus": [
+        "operations support",
+        "logistics",
+        "radio support",
+        "staging",
+        "assignment support"
+      ],
+      "confidence": "medium"
+    },
+    "SSAR": {
+      "message_count": 101,
+      "median_words": 8,
+      "p90_words": 19,
+      "status_counts": {
+        "Responding": 71,
+        "Informational": 16,
+        "Not Responding": 9,
+        "Cancelled": 3,
+        "Available": 1,
+        "Unknown": 1
+      },
+      "vehicle_counts": {
+        "POV": 51,
+        "SAR-61": 16,
+        "SAR-60": 8,
+        "SAR-6": 3,
+        "SAR-1": 1,
+        "SAR-10": 1,
+        "Unknown": 21
+      },
+      "semantic_focus": [
+        "ground response",
+        "hasty team",
+        "station response",
+        "trailhead",
+        "vehicle status"
+      ],
+      "confidence": "high"
+    },
+    "Tracker": {
+      "message_count": 20,
+      "median_words": 6,
+      "p90_words": 19,
+      "status_counts": {
+        "Responding": 13,
+        "Informational": 3,
+        "Not Responding": 2,
+        "Available": 2
+      },
+      "vehicle_counts": {
+        "POV": 13,
+        "SAR-60": 1,
+        "Unknown": 6
+      },
+      "semantic_focus": [
+        "tracking team",
+        "last known point",
+        "track assignment",
+        "field support",
+        "staging"
+      ],
+      "confidence": "low"
+    }
+  }
+}

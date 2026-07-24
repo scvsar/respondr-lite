@@ -32,6 +32,21 @@ import os
 import re
 from dotenv import load_dotenv
 
+try:
+    from .synthetic_messages import (
+        TEAM_GROUP_IDS,
+        HeuristicMessageGenerator,
+        MessageRequest,
+        safe_profile_summary,
+    )
+except ImportError:
+    from synthetic_messages import (  # type: ignore
+        TEAM_GROUP_IDS,
+        HeuristicMessageGenerator,
+        MessageRequest,
+        safe_profile_summary,
+    )
+
 # OpenAI / Azure OpenAI clients
 try:
     from openai import OpenAI, AzureOpenAI
@@ -57,20 +72,7 @@ logger = logging.getLogger("mission-simulator")
 # -----------------------------------------------------------
 # Configuration: Real SAR Team Group IDs (as provided)
 # -----------------------------------------------------------
-REAL_GROUP_IDS: Dict[str, str] = {
-    "97608845": "4X4",
-    "6846970": "ASAR",
-    "61402638": "ASAR",
-    "19723040": "SSAR",
-    "96018206": "IMT",
-    "1596896": "K9",
-    "92390332": "ASAR",
-    "99606944": "OSU",
-    "14533239": "MSAR",
-    "106549466": "ESAR",
-    "16649586": "OSU",
-    "19801892": "Tracker",
-}
+REAL_GROUP_IDS: Dict[str, str] = TEAM_GROUP_IDS
 
 AZURE_FUNCTION_ENDPOINT = os.getenv("AZURE_FUNCTION_ENDPOINT", "https://respondrliteapp-d5614dea.azurewebsites.net")
 WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY")
@@ -402,24 +404,31 @@ class LLMPlanner:
 
         start_iso = start_time_utc.replace(microsecond=0).isoformat().replace("+00:00", "Z")
         group_map = json.dumps(REAL_GROUP_IDS, indent=0)
+        team_profiles = json.dumps(safe_profile_summary(), separators=(",", ":"))
         system = (
             "You are a SAR communications planner. Produce ONLY a JSON object that simulates a realistic "
-            "mission response thread for a single incident. Use terse, authentic SAR tone."
+            "mission response thread for a single incident. Use terse, authentic SAR tone. "
+            "Match each message to the sender's home team profile. "
+            "Do not use a real name, phone number, address, coordinate, or URL."
         )
         user = f"""
 Plan a mission response:
 - Mission group thread id: {mission_group_id}
 - Start time (UTC): {start_iso}
-- Location: {location.name} ({location.coordinates[0]:.4f},{location.coordinates[1]:.4f}) — {location.trail_description}
+- Location: {location.name} ({location.coordinates[0]:.4f},{location.coordinates[1]:.4f}) - {location.trail_description}
 - Typical scenarios: {", ".join(location.typical_scenarios)}
 - Supported SAR groups/ids: {group_map}
+- Safe aggregate team profiles: {team_profiles}
 
 Constraints:
 - Team size N with {min_team} ≤ N ≤ {max_team}
 - Window W minutes with {min_window_min} ≤ W ≤ {max_window_min}
 - At least 3 distinct home_group_id values across the team
 - Front-load initial responses (<15 min), 5–15% cancellations, 20–35% follow-ups/status later
-- Each message < 20 words, no real phone numbers
+- Match each message to the sender's home team profile
+- Each message < 35 words
+- Use synthetic responder names
+- Do not use real personal or location data
 
 Output format (STRICT):
 {{
@@ -1259,9 +1268,10 @@ class MissionSimulator:
 
     def _fallback_plan(self, location: MissionLocation, start: datetime, mission_group_id: str) -> Dict[str, Any]:
         """
-        Deterministic template-based fallback: build cast + timeline locally.
+        Build a privacy-safe, team-aware cast and timeline locally.
         """
         team_size = random.randint(self.min_team, self.max_team)
+        message_generator = HeuristicMessageGenerator(seed=random.getrandbits(32))
         # Generate a name pool
         first_names = [
             "Mike", "Sarah", "David", "Jessica", "Chris", "Amanda", "Ryan", "Lisa",
@@ -1281,12 +1291,14 @@ class MissionSimulator:
 
         team = []
         for _ in range(team_size):
+            home_group_id = rand_group_id()
+            home_team = REAL_GROUP_IDS[home_group_id]
             team.append({
                 "name": mkname(),
                 "experience_level": random.choices(["rookie", "experienced", "veteran"], weights=[0.3, 0.5, 0.2])[0],
                 "personality": random.choice(["precise", "casual", "talkative", "quiet"]),
-                "vehicle_preference": random.choice(["POV", f"SAR-{random.randint(1,99)}", "SAR Rig"]),
-                "home_group_id": rand_group_id(),
+                "vehicle_preference": message_generator.sample_vehicle(home_team),
+                "home_group_id": home_group_id,
             })
 
         window_minutes = random.randint(self.min_window_min, self.max_window_min)
@@ -1299,40 +1311,60 @@ class MissionSimulator:
         for i in range(initial_count):
             sender_idx = i if i < team_size else random.randrange(team_size)
             offset = clamp(random.expovariate(1/300.0), 0, total)  # many in first ~5 min
-            text = random.choice([
-                "Responding POV ETA 20 min",
-                "En route SAR-{}".format(random.randint(1, 99)),
-                "At TH in 30",
-                "Rolling, ETA {}".format(random.choice(["1745", "18:05", "25 min"])),
-                "Leaving now, bringing med kit",
-            ])
+            sender = team[sender_idx]
+            home_team = REAL_GROUP_IDS[sender["home_group_id"]]
+            status = message_generator.sample_response_status(home_team)
+            request = MessageRequest(
+                request_id=f"initial-{i}",
+                team=home_team,
+                status=status,
+                vehicle=(
+                    sender["vehicle_preference"]
+                    if status == "Responding"
+                    else "Unknown"
+                ),
+                eta_mode=(
+                    message_generator.sample_eta_mode(home_team)
+                    if status == "Responding"
+                    else "none"
+                ),
+                eta_minutes=random.choice([10, 15, 20, 25, 30, 40, 45]),
+                message_type="initial_response",
+            )
+            text = message_generator.generate(request).text
             msgs.append({"sender_index": sender_idx, "type": "initial_response", "text": text, "offset_sec": offset})
 
         # follow-ups/status
         follow_count = int(team_size * random.uniform(0.2, 0.35))
-        for _ in range(follow_count):
+        for index in range(follow_count):
             sender_idx = random.randrange(team_size)
             offset = clamp(random.uniform(total * 0.25, total), 0, total)
-            text = random.choice([
-                "Park at TH or overflow?",
-                "Traffic heavy, 10 late",
-                "At TH, heading up",
-                "Need extra water?",
-                "Radio check from TH",
-            ])
-            msgs.append({"sender_index": sender_idx, "type": random.choice(["followup", "status"]), "text": text, "offset_sec": offset})
+            sender = team[sender_idx]
+            home_team = REAL_GROUP_IDS[sender["home_group_id"]]
+            message_type = random.choice(["followup", "status"])
+            request = MessageRequest(
+                request_id=f"followup-{index}",
+                team=home_team,
+                status="Informational",
+                message_type=message_type,
+            )
+            text = message_generator.generate(request).text
+            msgs.append({"sender_index": sender_idx, "type": message_type, "text": text, "offset_sec": offset})
 
         # cancellations
         cancel_count = max(1, int(initial_count * random.uniform(0.05, 0.12)))
-        for _ in range(cancel_count):
+        for index in range(cancel_count):
             sender_idx = random.randrange(team_size)
             offset = clamp(random.uniform(total * 0.2, total * 0.8), 0, total)
-            text = random.choice([
-                "Backing out, work call",
-                "Vehicle issue, canceling",
-                "Family conflict, can't make it",
-                "Sick, standing down",
-            ])
+            sender = team[sender_idx]
+            home_team = REAL_GROUP_IDS[sender["home_group_id"]]
+            request = MessageRequest(
+                request_id=f"cancel-{index}",
+                team=home_team,
+                status="Cancelled",
+                message_type="cancellation",
+            )
+            text = message_generator.generate(request).text
             msgs.append({"sender_index": sender_idx, "type": "cancellation", "text": text, "offset_sec": offset})
 
         msgs.sort(key=lambda m: m["offset_sec"])

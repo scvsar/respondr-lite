@@ -291,6 +291,7 @@ missions/
 evals/local/
 evals/cache/
 evals/results/
+evals/generator-results/
 
 __azurite_db_blob__.json
 __azurite_db_blob_extent__.json
