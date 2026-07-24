@@ -78,6 +78,9 @@ jobs:
           cd backend
           pip install -r requirements.txt
 
+      - name: Install evaluation dependencies
+        run: pip install -e "evals[test]"
+
       - name: Run backend tests
         env:
           WEBHOOK_API_KEY: test-key
@@ -88,6 +91,9 @@ jobs:
         run: |
           cd backend
           python run_tests.py
+
+      - name: Run evaluation tests
+        run: python -m pytest evals/tests -q
 
       - name: Install frontend dependencies
         run: |

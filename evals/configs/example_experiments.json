@@ -1,0 +1,33 @@
+{
+  "dataset": "../data/synthetic_seed.jsonl",
+  "evaluation_split": "test",
+  "eta_tolerance_minutes": 5,
+  "output_dir": "../results",
+  "cache": "../cache/example-predictions.jsonl",
+  "pricing": "../configs/pricing.example.json",
+  "thresholds": {
+    "status_macro_f1": {
+      "min": 0.5
+    },
+    "vehicle_accuracy": {
+      "min": 0.5
+    },
+    "eta_accuracy": {
+      "min": 0.5
+    },
+    "schema_failure_rate": {
+      "max": 0.0
+    }
+  },
+  "experiments": [
+    {
+      "name": "heuristic-v1",
+      "type": "heuristic"
+    },
+    {
+      "name": "tfidf-logreg-v1",
+      "type": "classical",
+      "tune": true
+    }
+  ]
+}

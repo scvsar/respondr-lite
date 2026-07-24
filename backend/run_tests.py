@@ -13,6 +13,7 @@ def main():
         "tests/test_storage_working.py",
         "tests/test_queue_idempotency.py",
         "tests/test_cleanup_duplicate_responders.py",
+        "tests/test_llm_eval_injection.py",
         "tests/test_main.py",
         "tests/test_retention.py"
     ]

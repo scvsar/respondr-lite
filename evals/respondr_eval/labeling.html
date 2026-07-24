@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Respondr Ground Truth Labeler</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b1014; --panel:#131b22; --line:#293743; --text:#e8eef3; --muted:#93a4b1; --accent:#f2aa2a; --good:#2fc878; --bad:#ef6a6a; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+    header { position:sticky; top:0; z-index:2; display:flex; gap:1rem; align-items:center; justify-content:space-between; padding:1rem 1.5rem; background:#0e151a; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:1.1rem; }
+    main { max-width:1180px; margin:0 auto; padding:1.25rem; display:grid; gap:1rem; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1rem; }
+    .toolbar,.actions,.fields,.compare { display:flex; gap:.75rem; flex-wrap:wrap; align-items:center; }
+    .compare > section { flex:1 1 320px; }
+    label { display:grid; gap:.35rem; color:var(--muted); font-size:.85rem; }
+    input,select,textarea,button { font:inherit; }
+    input,select,textarea { color:var(--text); background:#0d1419; border:1px solid #354652; border-radius:7px; padding:.65rem; }
+    textarea { width:100%; min-height:84px; resize:vertical; }
+    button { color:var(--text); background:#1d2a33; border:1px solid #3a4b57; border-radius:7px; padding:.65rem .9rem; cursor:pointer; }
+    button.primary { color:#111; background:var(--good); border-color:var(--good); font-weight:700; }
+    button.warn { color:#111; background:var(--accent); border-color:var(--accent); }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .message { white-space:pre-wrap; font-size:1.18rem; line-height:1.55; }
+    .context { white-space:pre-wrap; color:#bcc9d2; font-size:.9rem; }
+    .muted { color:var(--muted); }
+    .pill { display:inline-block; padding:.2rem .5rem; border:1px solid var(--line); border-radius:999px; font-size:.8rem; }
+    .fields label { flex:1 1 220px; }
+    .fields input,.fields select { width:100%; }
+    .result { display:grid; grid-template-columns:7rem 1fr; gap:.35rem; font-size:.9rem; }
+    .result dt { color:var(--muted); }
+    .result dd { margin:0; overflow-wrap:anywhere; }
+    #error { color:var(--bad); min-height:1.2em; }
+    @media (max-width:650px) { header { align-items:flex-start; flex-direction:column; } main { padding:.75rem; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Respondr ground truth review</h1>
+      <div id="progress" class="muted">Loading…</div>
+    </div>
+    <div class="toolbar">
+      <label>Queue
+        <select id="state">
+          <option value="proposed">Needs review</option>
+          <option value="reviewed">Reviewed</option>
+          <option value="skipped">Skipped</option>
+          <option value="all">All</option>
+        </select>
+      </label>
+      <label>Reviewer <input id="reviewer" autocomplete="name" placeholder="initials"></label>
+    </div>
+  </header>
+  <main>
+    <div id="error"></div>
+    <section class="card">
+      <div class="toolbar">
+        <span id="caseId" class="pill"></span>
+        <span id="time" class="muted"></span>
+        <span id="proposal" class="muted"></span>
+      </div>
+      <p id="message" class="message"></p>
+    </section>
+    <section class="card">
+      <strong>Prior messages from this responder</strong>
+      <p id="context" class="context">None</p>
+    </section>
+    <div class="compare">
+      <section class="card">
+        <strong>Production result</strong>
+        <dl id="production" class="result"></dl>
+      </section>
+      <section class="card">
+        <strong>Heuristic proposal</strong>
+        <dl id="heuristic" class="result"></dl>
+      </section>
+    </div>
+    <section class="card">
+      <strong>Ground truth</strong>
+      <div class="fields">
+        <label>Status
+          <select id="status">
+            <option>Responding</option><option>Available</option><option>Informational</option>
+            <option>Cancelled</option><option>Not Responding</option><option>Unknown</option>
+          </select>
+        </label>
+        <label>Vehicle <input id="vehicle" placeholder="POV, SAR-78, SAR Rig, or Unknown"></label>
+        <label>ETA UTC <input id="eta" placeholder="ISO-8601 or Unknown"></label>
+      </div>
+      <label>Notes <textarea id="notes" placeholder="Explain ambiguity or accepted alternatives."></textarea></label>
+    </section>
+    <section class="actions">
+      <button id="previous">Previous</button>
+      <button id="approve" class="primary">Approve (A)</button>
+      <button id="correct" class="warn">Save correction (C)</button>
+      <button id="skip">Skip (S)</button>
+      <button id="next">Next</button>
+      <button id="split" title="Assign reviewed cases to mission-grouped train, dev, and test splits">Assign splits</button>
+    </section>
+  </main>
+  <script>
+    const el = id => document.getElementById(id);
+    let current = null, offset = 0, total = 0;
+    const savedReviewer = localStorage.getItem('respondr-reviewer') || '';
+    el('reviewer').value = savedReviewer;
+    el('reviewer').addEventListener('change', () => localStorage.setItem('respondr-reviewer', el('reviewer').value));
+    function result(target, value) {
+      target.replaceChildren();
+      for (const key of ['status','vehicle','eta_iso','confidence']) {
+        if (value && value[key] !== undefined) {
+          const dt=document.createElement('dt'); dt.textContent=key;
+          const dd=document.createElement('dd'); dd.textContent=String(value[key]);
+          target.append(dt,dd);
+        }
+      }
+    }
+    function render(payload) {
+      current=payload.case; total=payload.total; offset=payload.offset;
+      el('progress').textContent = current ? `${offset+1} of ${total} in this queue` : 'Queue is empty';
+      for (const id of ['approve','correct','skip','previous','next']) el(id).disabled=!current;
+      if (!current) { el('message').textContent='No cases in this queue.'; return; }
+      el('caseId').textContent=current.case_id;
+      el('time').textContent=current.input.base_time;
+      el('proposal').textContent=`Proposal: ${current.annotation.proposal_source || 'manual'}`;
+      el('message').textContent=current.input.text;
+      const prior=current.input.previous_messages || [];
+      el('context').textContent=prior.length ? prior.map(x=>`${x.timestamp} — ${x.text}\n${x.status}; ${x.vehicle}; ${x.eta}`).join('\n\n') : 'None';
+      result(el('production'), current.observations.production);
+      result(el('heuristic'), current.observations.heuristic);
+      el('status').value=current.reference.status;
+      el('vehicle').value=current.reference.vehicle;
+      el('eta').value=current.reference.eta_iso;
+      el('notes').value=current.annotation.notes || '';
+    }
+    async function load(newOffset=0) {
+      el('error').textContent='';
+      const response=await fetch(`/api/cases?state=${encodeURIComponent(el('state').value)}&offset=${newOffset}`);
+      render(await response.json());
+      const summary=await (await fetch('/api/summary')).json();
+      el('progress').textContent += ` · ${summary.reviewed}/${summary.total} reviewed`;
+    }
+    async function save(state) {
+      if (!current) return;
+      el('error').textContent='';
+      const body={
+        reference:{status:el('status').value,vehicle:el('vehicle').value,eta_iso:el('eta').value},
+        state, notes:el('notes').value, reviewer:el('reviewer').value
+      };
+      const response=await fetch(`/api/cases/${encodeURIComponent(current.case_id)}`,{
+        method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)
+      });
+      if (!response.ok) { const detail=await response.json(); el('error').textContent=detail.detail || 'Save failed'; return; }
+      await load(Math.min(offset,total-2));
+    }
+    el('state').addEventListener('change',()=>load(0));
+    el('previous').addEventListener('click',()=>load(Math.max(0,offset-1)));
+    el('next').addEventListener('click',()=>load(Math.min(total-1,offset+1)));
+    el('approve').addEventListener('click',()=>save('approved'));
+    el('correct').addEventListener('click',()=>save('corrected'));
+    el('skip').addEventListener('click',()=>save('skipped'));
+    el('split').addEventListener('click',async()=>{await fetch('/api/split',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});await load(offset);});
+    document.addEventListener('keydown',event=>{
+      if (['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)) return;
+      if (event.key.toLowerCase()==='a') save('approved');
+      if (event.key.toLowerCase()==='c') save('corrected');
+      if (event.key.toLowerCase()==='s') save('skipped');
+      if (event.key==='ArrowRight') load(Math.min(total-1,offset+1));
+      if (event.key==='ArrowLeft') load(Math.max(0,offset-1));
+    });
+    load();
+  </script>
+</body>
+</html>

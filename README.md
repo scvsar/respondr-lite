@@ -52,6 +52,17 @@ cd deployment
 cd ..
 ```
 
+### Extraction evaluation
+
+Use the evaluation package to compare heuristics, classical ML, prompts, and language models:
+
+```powershell
+py -3.11 -m pip install -e "evals[test,llm,labeling]"
+respondr-eval run evals\configs\example_experiments.json
+```
+
+See [evals/README.md](evals/README.md) for production sampling, ground-truth review, live-model experiments, metrics, and cost controls.
+
 ## Key Features
 
 - **Cost-Optimized**: Scale-to-zero architecture with consumption-based billing

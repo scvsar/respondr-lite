@@ -65,6 +65,9 @@ jobs:
         run: |
           cd backend
           pip install -r requirements.txt
+
+      - name: Install evaluation dependencies
+        run: pip install -e "evals[test]"
       
       # Run backend tests
       - name: Run backend tests
@@ -77,6 +80,9 @@ jobs:
         run: |
           cd backend
           python run_tests.py
+
+      - name: Run evaluation tests
+        run: python -m pytest evals/tests -q
       
       # Install frontend dependencies
       - name: Install frontend dependencies

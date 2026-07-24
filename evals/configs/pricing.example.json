@@ -1,0 +1,13 @@
+{
+  "effective_date": "REPLACE-WITH-RATE-DATE",
+  "models": {
+    "gpt-5-nano": {
+      "input_usd_per_million": null,
+      "output_usd_per_million": null
+    },
+    "gpt-5-mini": {
+      "input_usd_per_million": null,
+      "output_usd_per_million": null
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evaluation Benchmarking"
+  short_description: "Run fair, cost-aware extraction experiments"
+  default_prompt: "Use $evaluation-benchmarking to compare extraction strategies against the held-out Respondr dataset."

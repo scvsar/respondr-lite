@@ -287,6 +287,11 @@ github-actions-setup-20250827-163919.txt
 last_mission.txt
 missions/
 
+# Local evaluation data can contain private responder messages.
+evals/local/
+evals/cache/
+evals/results/
+
 __azurite_db_blob__.json
 __azurite_db_blob_extent__.json
 __azurite_db_queue__.json

@@ -1,0 +1,5 @@
+{
+  "name": "example-v1",
+  "system_prompt": "Extract the SAR response as JSON. Do not invent missing facts.",
+  "user_prompt": "Current time: {{base_time}}\nPrevious ETA: {{previous_eta_iso}}\nMessage: {{text}}"
+}

@@ -13,6 +13,17 @@
 
 $ErrorActionPreference = "Stop"
 
+# Prefer the repository virtual environment when it is available.
+$rootVenvActivation = if ($IsWindows -or $env:OS -eq "Windows_NT") {
+    Join-Path $PSScriptRoot ".venv\Scripts\Activate.ps1"
+}
+else {
+    Join-Path $PSScriptRoot ".venv/bin/Activate.ps1"
+}
+if (Test-Path $rootVenvActivation) {
+    . $rootVenvActivation
+}
+
 # Set console encoding to UTF-8 to properly display Unicode characters like checkmarks
 # Use simple ASCII characters instead of Unicode for better compatibility
 $script:checkMark = "√"
@@ -195,6 +206,17 @@ function Run-Tests {
                 }
             }
         }
+        elseif ($Name -eq "Evaluation" -and (Test-Path "pyproject.toml")) {
+            python -c "import sklearn, fastapi, pytest" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "Installing evaluation dependencies..." -ForegroundColor Cyan
+                pip install -e ".[test]" | Out-Host
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "Failed to install evaluation dependencies" -ForegroundColor Red
+                    return $false
+                }
+            }
+        }
         
         # Special handling for npm tests to prevent hanging and fix Unicode display issues
         if ($Command -like "*npm test*") {
@@ -247,6 +269,9 @@ function Run-Tests {
 # Run backend tests
 $backendSuccess = Run-Tests -Name "Backend" -Command "python run_tests.py" -WorkingDirectory ".\backend"
 
+# Run extraction evaluation tests
+$evaluationSuccess = Run-Tests -Name "Evaluation" -Command "python -m pytest tests -q" -WorkingDirectory ".\evals"
+
 # Run frontend tests
 $frontendSuccess = Run-Tests -Name "Frontend" -Command "npm test -- --watchAll=false --ci" -WorkingDirectory ".\frontend"
 
@@ -268,7 +293,14 @@ else {
     Write-Host "Frontend Tests: FAILED" -ForegroundColor Red
 }
 
-if ($backendSuccess -and $frontendSuccess) {
+if ($evaluationSuccess) {
+    Write-Host "Evaluation Tests: PASSED" -ForegroundColor Green
+}
+else {
+    Write-Host "Evaluation Tests: FAILED" -ForegroundColor Red
+}
+
+if ($backendSuccess -and $evaluationSuccess -and $frontendSuccess) {
     Write-Host "`nAll tests passed successfully!" -ForegroundColor Green
     exit 0
 }

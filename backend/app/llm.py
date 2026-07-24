@@ -696,16 +696,18 @@ def extract_details_from_text(
     reasoning_effort_override: Optional[str] = None,
     max_tokens_override: Optional[int] = None,
     other_responders: Optional[List[Dict[str, Any]]] = None,
+    llm_client=None,
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
     # Allow tests to inject main.client
-    active_client = None
-    try:
-        import main as _main
-        active_client = getattr(_main, "client", None)
-    except ImportError:
-        active_client = client
+    active_client = llm_client
+    if active_client is None:
+        try:
+            import main as _main
+            active_client = getattr(_main, "client", None)
+        except ImportError:
+            active_client = client
 
     llm_data = _call_llm_only(
         text,
