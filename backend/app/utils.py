@@ -73,16 +73,26 @@ def coerce_datetime(s: Optional[str]) -> datetime:
             return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def compute_eta_fields(eta_str: Optional[str], eta_ts: Optional[datetime], base_time: datetime) -> Dict[str, Any]:
+def compute_eta_fields(
+    eta_str: Optional[str],
+    eta_ts: Optional[datetime],
+    base_time: datetime,
+    reference_time: Optional[datetime] = None,
+) -> Dict[str, Any]:
     """Minimal ETA computation for admin edit endpoints.
     - If eta_ts provided: use directly.
     - Else if eta_str == HH:MM: apply to base_time date, roll to next day if <= base_time.
+    - If reference_time is set: calculate the interval from that replay time.
     - Else Unknown.
     """
+    comparison_time = reference_time or now_tz()
+
     if eta_ts:
         eta_local = eta_ts.astimezone(APP_TZ)
         eta_dt_utc = eta_ts.astimezone(timezone.utc)
-        minutes_until = int((eta_local - now_tz()).total_seconds() / 60)
+        minutes_until = int(
+            (eta_local - comparison_time.astimezone(APP_TZ)).total_seconds() / 60
+        )
         return {
             "eta": eta_local.strftime("%H:%M"),
             "eta_timestamp": (eta_local.strftime("%Y-%m-%d %H:%M:%S") if is_testing else eta_local.isoformat()),
@@ -99,7 +109,9 @@ def compute_eta_fields(eta_str: Optional[str], eta_ts: Optional[datetime], base_
         if eta_local <= base_time:
             eta_local += timedelta(days=1)
         eta_dt_utc = eta_local.astimezone(timezone.utc)
-        minutes_until = int((eta_local - now_tz()).total_seconds() / 60)
+        minutes_until = int(
+            (eta_local - comparison_time.astimezone(APP_TZ)).total_seconds() / 60
+        )
         return {
             "eta": eta_local.strftime("%H:%M"),
             "eta_timestamp": (eta_local.strftime("%Y-%m-%d %H:%M:%S") if is_testing else eta_local.isoformat()),

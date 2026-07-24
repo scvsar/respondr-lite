@@ -187,6 +187,7 @@ def sample_production(
             input={
                 "text": text,
                 "base_time": base_time,
+                "timezone": "America/Los_Angeles",
                 "previous_eta_iso": previous_eta,
                 "previous_messages": [
                     {
@@ -217,7 +218,18 @@ def sample_production(
                 "responder_hash": _hash(sender, salt),
                 "retrieved_at": retrieved_at,
             },
-            observations={"production": production.to_dict()},
+            observations={
+                "production": {
+                    **production.to_dict(),
+                    "status_source": entity.get("status_source") or "Unknown",
+                    "status_confidence": entity.get("status_confidence"),
+                    "parse_source": entity.get("parse_source") or "Unknown",
+                    "model_status": entity.get("model_status") or "Unknown",
+                    "model_vehicle": entity.get("model_vehicle") or "Unknown",
+                    "rules_applied": entity.get("rules_applied") or "",
+                    "processed_at_utc": entity.get("processed_at_utc") or "Unknown",
+                }
+            },
         )
         suggested = heuristic.predict(case)
         case.observations["heuristic"] = {

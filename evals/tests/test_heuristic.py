@@ -40,6 +40,18 @@ def test_clock_time_uses_input_offset_and_rolls_forward():
     assert prediction.eta_iso == "2026-07-21T01:45:00Z"
 
 
+def test_utc_storage_timestamp_is_converted_to_mission_timezone_for_clock_eta():
+    evaluation_case = case(
+        "Responding POV ETA 1000",
+        "2026-05-19T14:55:17Z",
+    )
+    evaluation_case.input["timezone"] = "America/Los_Angeles"
+
+    prediction = HeuristicStrategy().predict(evaluation_case)
+
+    assert prediction.eta_iso == "2026-05-19T17:00:00Z"
+
+
 def test_question_is_informational():
     prediction = HeuristicStrategy().predict(case("Where is staging?"))
     assert prediction.status == "Informational"

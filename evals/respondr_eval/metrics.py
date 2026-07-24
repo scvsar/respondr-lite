@@ -133,6 +133,11 @@ def evaluate_predictions(
                 "error": prediction.error,
                 "expected_status": expected.status,
                 "actual_status": prediction.status if not failed else "Error",
+                "expected_vehicle": expected.vehicle,
+                "actual_vehicle": prediction.vehicle if not failed else "Error",
+                "expected_eta_iso": expected.eta_iso,
+                "actual_eta_iso": prediction.eta_iso if not failed else "Error",
+                "confidence": prediction.confidence,
                 "status_error_weight": status_error_weight,
             }
         )

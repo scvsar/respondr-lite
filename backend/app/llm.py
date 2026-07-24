@@ -534,7 +534,7 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
     if eta_iso and eta_iso != "Unknown":
         try:
             dt = datetime.fromisoformat(eta_iso.replace("Z", "+00:00"))
-            fields = compute_eta_fields(None, dt, base_dt)
+            fields = compute_eta_fields(None, dt, base_dt, reference_time=base_dt)
         except Exception:
             fields = {"eta": "Unknown", "eta_timestamp": None, "eta_timestamp_utc": None, "minutes_until_arrival": None}
     else:
@@ -548,20 +548,22 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
         for k in ("eta", "eta_hhmm", "eta_text"):
             v = llm_data.get(k)
             if isinstance(v, str) and re.fullmatch(r"\d{1,2}:\d{2}", v.strip()):
-                fields = compute_eta_fields(v.strip(), None, base_dt)
+                fields = compute_eta_fields(
+                    v.strip(), None, base_dt, reference_time=base_dt
+                )
                 source = "Deterministic"
                 break
 
     if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp") and eta_intent and not _has_non_eta_time_context((text or "").lower()):
         det = extract_eta_from_text_local(text, base_dt)
         if det:
-            fields = compute_eta_fields(None, det, base_dt)
+            fields = compute_eta_fields(None, det, base_dt, reference_time=base_dt)
             source = "Deterministic"
 
     if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp") and eta_intent:
         dur = extract_duration_eta(text, base_dt)
         if dur:
-            fields = compute_eta_fields(None, dur, base_dt)
+            fields = compute_eta_fields(None, dur, base_dt, reference_time=base_dt)
             source = "Deterministic"
 
     if not fields.get("eta_timestamp_utc") and not fields.get("eta_timestamp"):
@@ -569,7 +571,9 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
         if prev_eta_iso and prev_eta_iso != "Unknown" and status == "Responding":
             try:
                 prev_dt = datetime.fromisoformat(prev_eta_iso.replace("Z", "+00:00"))
-                fields = compute_eta_fields(None, prev_dt, base_dt)
+                fields = compute_eta_fields(
+                    None, prev_dt, base_dt, reference_time=base_dt
+                )
                 source = "Deterministic"
             except Exception:
                 pass
@@ -580,7 +584,9 @@ def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, p
         if isinstance(mins, int) and mins <= -5 and re.search(r"(?i)\b(am|pm)\b", text or ""):
             det = extract_eta_from_text_local(text, base_dt)
             if det:
-                fields = compute_eta_fields(None, det, base_dt)
+                fields = compute_eta_fields(
+                    None, det, base_dt, reference_time=base_dt
+                )
                 source = "Deterministic"
     except Exception:
         pass
@@ -697,8 +703,10 @@ def extract_details_from_text(
     max_tokens_override: Optional[int] = None,
     other_responders: Optional[List[Dict[str, Any]]] = None,
     llm_client=None,
+    rule_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
+    current_text = rule_text if rule_text is not None else text
 
     # Allow tests to inject main.client
     active_client = llm_client
@@ -739,6 +747,9 @@ def extract_details_from_text(
             "eta_timestamp_utc": None,
             "minutes_until_arrival": None,
             "parse_source": "LLM",
+            "model_status": "Unknown",
+            "model_vehicle": "Unknown",
+            "rules_applied": [],
         }
 
     vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or "Unknown"))
@@ -753,13 +764,13 @@ def extract_details_from_text(
         confidence = 0.0
 
     # Force status to Not Responding on stand-down code phrases
-    if _looks_like_code_1022(text) or _is_standdown(text):
+    if _looks_like_code_1022(current_text) or _is_standdown(current_text):
         status = "Not Responding"
         rules_applied.append("standdown")
         vehicle = "Unknown"  # prevent POV/SAR-* in stand-down acks
 
     # ICS role heuristic: treat as Informational if no ETA intent
-    if _contains_ics_role(text) and not _has_eta_intent(text):
+    if _contains_ics_role(current_text) and not _has_eta_intent(current_text):
         status = "Informational"
         rules_applied.append("ics")
         if vehicle.startswith("SAR-"):
@@ -768,7 +779,9 @@ def extract_details_from_text(
     if status != orig_status and rules_applied:
         status_source = "Rule"
 
-    eta_fields, eta_source = _derive_eta_fields(text, llm_data, anchor, prev_eta_iso, status)
+    eta_fields, eta_source = _derive_eta_fields(
+        current_text, llm_data, anchor, prev_eta_iso, status
+    )
 
     # If Not Responding/Cancelled, ensure ETA is cleared regardless of LLM
     if status in ("Not Responding", "Cancelled"):
@@ -808,12 +821,15 @@ def extract_details_from_text(
         try:
             # Create correction prompt with enhanced reasoning
             sys_correction, user_correction = _create_correction_prompt(
-                text, eta_fields.get("eta", "Unknown"), eta_minutes, other_responders
+                current_text,
+                eta_fields.get("eta", "Unknown"),
+                eta_minutes,
+                other_responders,
             )
             
             # Call LLM again with high reasoning and correction context
             corrected_data = _call_llm_only(
-                text, anchor, prev_eta_iso, active_client, debug=debug,
+                current_text, anchor, prev_eta_iso, active_client, debug=debug,
                 sys_prompt_override=sys_correction,
                 user_prompt_override=user_correction,
                 verbosity_override="medium",  # Enhanced verbosity for correction
@@ -830,7 +846,12 @@ def extract_details_from_text(
                 if corrected_eta_iso and corrected_eta_iso != "Unknown":
                     try:
                         corrected_dt = datetime.fromisoformat(corrected_eta_iso.replace("Z", "+00:00"))
-                        corrected_fields = compute_eta_fields(None, corrected_dt, anchor)
+                        corrected_fields = compute_eta_fields(
+                            None,
+                            corrected_dt,
+                            anchor,
+                            reference_time=anchor,
+                        )
                         corrected_minutes = corrected_fields.get("minutes_until_arrival")
                         
                         # Only apply correction if it's actually better
@@ -879,7 +900,11 @@ def extract_details_from_text(
         "parse_source": eta_source,
         "parse_evidence": evidence,
         "correction_applied": correction_applied,
-        # "rules_applied": rules_applied,  # optional, very helpful in /api/parse-debug
+        "model_status": orig_status,
+        "model_vehicle": _normalize_vehicle_name(
+            str(llm_data.get("vehicle") or "Unknown")
+        ),
+        "rules_applied": rules_applied,
     }
     # Attach LLM debug info on request (flattened)
     if debug and isinstance(llm_data, dict):

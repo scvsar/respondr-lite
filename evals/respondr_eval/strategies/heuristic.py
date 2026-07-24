@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from ..schema import EvalCase
 from .base import Prediction, Strategy
@@ -82,9 +83,13 @@ def _vehicle(text: str, status: str) -> tuple[str, str]:
 
 
 def _base_time(case: EvalCase) -> datetime:
-    return datetime.fromisoformat(
+    parsed = datetime.fromisoformat(
         str(case.input["base_time"]).replace("Z", "+00:00")
     )
+    timezone_name = case.input.get("timezone")
+    if timezone_name:
+        parsed = parsed.astimezone(ZoneInfo(str(timezone_name)))
+    return parsed
 
 
 def _eta(text: str, base: datetime, status: str, previous_eta: str | None) -> tuple[str, str]:

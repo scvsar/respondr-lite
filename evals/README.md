@@ -32,6 +32,16 @@ respondr-eval label
 
 The server binds to `127.0.0.1`. Do not bind it to a network interface. Approve, correct, or skip each proposal. Then select **Assign splits**.
 
+Select **Results** in the interface to inspect benchmark reports. The results view reads private reports from `evals\results`. It shows:
+
+- The strategy leaderboard and acceptance-target status.
+- Quality, cost, latency, and reliability metrics.
+- Status confusion matrices.
+- Paired strategy comparisons.
+- Pseudonymous case-level results for all strategies.
+
+The results view does not show responder message text.
+
 The local dataset is `evals\local\prod-ground-truth.jsonl`. Git ignores this directory because the file contains responder messages.
 
 ## Validate and split a dataset
@@ -56,6 +66,8 @@ The example compares:
 - A development-set hyperparameter sweep.
 
 Reports go to `evals\results`. Predictions go to `evals\cache`. Git ignores both directories.
+
+Keep the labeler running after the benchmark completes. Refresh the **Results** view, and select the new run.
 
 ## Run live model experiments
 
@@ -109,6 +121,7 @@ The report includes:
 - Cost per 1,000 messages.
 - Bootstrap confidence intervals.
 - Paired wins, ties, losses, and exact-match deltas.
+- Pseudonymous case-level expected and actual values.
 
 Set all acceptance targets before the run. The runner selects the least expensive strategy that meets every target.
 
@@ -117,7 +130,7 @@ Set all acceptance targets before the run. The runner selects the least expensiv
 Each JSONL record contains:
 
 - `case_id`: Stable evaluation identity.
-- `input`: Message, timezone-aware base time, and prior-message context.
+- `input`: Message, timezone-aware base time, mission timezone, and prior-message context.
 - `reference`: Reviewed status, vehicle, and UTC ETA.
 - `annotation`: Review state, reviewer, notes, and proposal source.
 - `provenance`: Source identity and mission grouping.

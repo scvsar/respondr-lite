@@ -160,6 +160,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     continue
                 if m.get("created_at", 0) < cutoff_timestamp:
                     continue
+                if m.get("created_at", 0) >= message.created_at:
+                    continue
                     
                 # Build history entry
                 hist_entry = {
@@ -257,6 +259,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     continue
                 if m.get("created_at", 0) < cutoff_time:
                     continue
+                if m.get("created_at", 0) >= message.created_at:
+                    continue
                     
                 # Skip current user's own messages to avoid self-comparison
                 if str(m.get("name", "")).strip().lower() == name_l:
@@ -307,6 +311,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             reasoning_effort_override=reasoning_override,
             max_tokens_override=max_tokens_override,
             other_responders=other_responders,
+            rule_text=message.text,
         )
         
         # Create message object
@@ -330,6 +335,13 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             "raw_status": parsed["raw_status"],
             "status_source": parsed["status_source"],
             "status_confidence": parsed["status_confidence"],
+            "model_status": parsed.get("model_status", "Unknown"),
+            "model_vehicle": parsed.get("model_vehicle", "Unknown"),
+            "rules_applied": ",".join(parsed.get("rules_applied") or []),
+            "parse_source": parsed.get("parse_source", "Unknown"),
+            "parse_evidence": parsed.get("parse_evidence", ""),
+            "correction_applied": bool(parsed.get("correction_applied", False)),
+            "processed_at_utc": datetime.now(timezone.utc).isoformat(),
             "team": team,
             "group_id": group_id,
             "created_at": message.created_at,

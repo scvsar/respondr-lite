@@ -10,6 +10,7 @@ import time
 import types
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ..schema import EvalCase
 from .base import Prediction, Strategy
@@ -178,13 +179,17 @@ class ProductionLLMStrategy(Strategy):
     def predict(self, case: EvalCase) -> Prediction:
         llm = self._production_module()
         proxy = _ClientProxy(self._resolve_client(), self.deployment)
+        base_time = llm.datetime.fromisoformat(
+            str(case.input["base_time"]).replace("Z", "+00:00")
+        )
+        timezone_name = case.input.get("timezone")
+        if timezone_name:
+            base_time = base_time.astimezone(ZoneInfo(str(timezone_name)))
         started = time.perf_counter()
         try:
             result = llm.extract_details_from_text(
                 _enriched_text(case),
-                base_time=llm.datetime.fromisoformat(
-                    str(case.input["base_time"]).replace("Z", "+00:00")
-                ),
+                base_time=base_time,
                 prev_eta_iso=case.input.get("previous_eta_iso"),
                 sys_prompt_override=_render_prompt(self.system_prompt, case),
                 user_prompt_override=_render_prompt(self.user_prompt, case),
@@ -192,6 +197,7 @@ class ProductionLLMStrategy(Strategy):
                 reasoning_effort_override=self.reasoning_effort,
                 max_tokens_override=self.max_tokens,
                 llm_client=proxy,
+                rule_text=str(case.input["text"]),
             )
             error = result.get("_llm_error")
             return Prediction(

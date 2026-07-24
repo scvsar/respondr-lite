@@ -9,6 +9,9 @@
     * { box-sizing:border-box; }
     body { margin:0; font-family:Inter,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
     header { position:sticky; top:0; z-index:2; display:flex; gap:1rem; align-items:center; justify-content:space-between; padding:1rem 1.5rem; background:#0e151a; border-bottom:1px solid var(--line); }
+    nav { display:flex; gap:.35rem; }
+    nav a { color:var(--muted); text-decoration:none; padding:.45rem .7rem; border-radius:7px; }
+    nav a.active { color:var(--text); background:#1d2a33; }
     h1 { margin:0; font-size:1.1rem; }
     main { max-width:1180px; margin:0 auto; padding:1.25rem; display:grid; gap:1rem; }
     .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1rem; }
@@ -40,6 +43,7 @@
     <div>
       <h1>Respondr ground truth review</h1>
       <div id="progress" class="muted">Loading…</div>
+      <nav><a class="active" href="/">Review</a><a href="/results">Results</a></nav>
     </div>
     <div class="toolbar">
       <label>Queue
@@ -69,7 +73,7 @@
     </section>
     <div class="compare">
       <section class="card">
-        <strong>Production result</strong>
+        <strong>Stored production record</strong>
         <dl id="production" class="result"></dl>
       </section>
       <section class="card">
@@ -108,7 +112,7 @@
     el('reviewer').addEventListener('change', () => localStorage.setItem('respondr-reviewer', el('reviewer').value));
     function result(target, value) {
       target.replaceChildren();
-      for (const key of ['status','vehicle','eta_iso','confidence']) {
+      for (const key of ['status','vehicle','eta_iso','confidence','status_source','status_confidence','model_status','model_vehicle','rules_applied','parse_source','processed_at_utc']) {
         if (value && value[key] !== undefined) {
           const dt=document.createElement('dt'); dt.textContent=key;
           const dd=document.createElement('dd'); dd.textContent=String(value[key]);

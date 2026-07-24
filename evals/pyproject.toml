@@ -39,6 +39,9 @@ respondr-eval = "respondr_eval.cli:main"
 where = ["."]
 include = ["respondr_eval*"]
 
+[tool.setuptools.package-data]
+respondr_eval = ["*.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

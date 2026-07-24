@@ -201,6 +201,7 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
                 "metrics": metrics,
                 "meets_target": passed,
                 "target_failures": failures,
+                "case_results": rows,
             }
         )
 

@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Respondr Benchmark Results</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg:#0b1014; --panel:#131b22; --line:#293743; --text:#e8eef3;
+      --muted:#93a4b1; --accent:#f2aa2a; --good:#2fc878; --bad:#ef6a6a;
+      --blue:#55a8ff;
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Inter,Segoe UI,sans-serif; background:var(--bg); color:var(--text); }
+    header { position:sticky; top:0; z-index:3; display:flex; gap:1rem; align-items:center; justify-content:space-between; padding:1rem 1.5rem; background:#0e151a; border-bottom:1px solid var(--line); }
+    h1,h2,h3,p { margin-top:0; }
+    h1 { margin-bottom:.25rem; font-size:1.1rem; }
+    h2 { margin-bottom:.9rem; font-size:1rem; }
+    h3 { margin-bottom:.7rem; font-size:.9rem; }
+    nav { display:flex; gap:.35rem; margin-top:.35rem; }
+    nav a { color:var(--muted); text-decoration:none; padding:.45rem .7rem; border-radius:7px; }
+    nav a.active { color:var(--text); background:#1d2a33; }
+    main { max-width:1500px; margin:0 auto; padding:1.25rem; display:grid; gap:1rem; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:1rem; min-width:0; }
+    .toolbar,.filters { display:flex; gap:.75rem; flex-wrap:wrap; align-items:end; }
+    .toolbar { justify-content:flex-end; }
+    label { display:grid; gap:.35rem; color:var(--muted); font-size:.82rem; }
+    select,input { min-width:170px; color:var(--text); background:#0d1419; border:1px solid #354652; border-radius:7px; padding:.62rem; font:inherit; }
+    .muted { color:var(--muted); }
+    .overview { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:.75rem; }
+    .stat { background:#10181e; border:1px solid var(--line); border-radius:10px; padding:.9rem; }
+    .stat span { display:block; color:var(--muted); font-size:.78rem; margin-bottom:.35rem; }
+    .stat strong { display:block; font-size:1.25rem; overflow-wrap:anywhere; }
+    .grid-2 { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(320px,.75fr); gap:1rem; }
+    .scroll { overflow:auto; }
+    table { width:100%; border-collapse:collapse; font-size:.86rem; }
+    th,td { padding:.65rem .55rem; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; white-space:nowrap; }
+    th { color:var(--muted); font-weight:600; position:sticky; top:0; background:var(--panel); }
+    tbody tr[data-name] { cursor:pointer; }
+    tbody tr[data-name]:hover, tbody tr.selected { background:#19252d; }
+    .pass,.good { color:var(--good); }
+    .fail,.bad { color:var(--bad); }
+    .pill { display:inline-block; padding:.18rem .48rem; border:1px solid var(--line); border-radius:999px; font-size:.74rem; }
+    .pill.pass { border-color:#245c41; background:#123222; }
+    .pill.fail { border-color:#6a3434; background:#331919; }
+    #chart { width:100%; height:250px; display:block; background:#0f171c; border-radius:8px; }
+    .matrix th,.matrix td { text-align:center; min-width:68px; }
+    .matrix th:first-child,.matrix td:first-child { text-align:left; }
+    .heat-0 { color:var(--muted); }
+    .heat-1 { background:#17304a; }
+    .heat-2 { background:#1e4c73; }
+    .heat-3 { background:#276895; }
+    .case-value { display:grid; gap:.18rem; min-width:145px; white-space:normal; }
+    .case-value small { color:var(--muted); }
+    .case-value.bad { border-left:3px solid var(--bad); padding-left:.45rem; }
+    .case-value.good { border-left:3px solid var(--good); padding-left:.45rem; }
+    details { border-top:1px solid var(--line); padding-top:.7rem; margin-top:.7rem; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; color:#bfd0dc; font-size:.76rem; max-height:260px; overflow:auto; }
+    #error { color:var(--bad); min-height:1.1rem; }
+    @media (max-width:900px) {
+      .overview { grid-template-columns:repeat(2,minmax(140px,1fr)); }
+      .grid-2 { grid-template-columns:1fr; }
+      header { align-items:flex-start; flex-direction:column; }
+      .toolbar { justify-content:flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Respondr benchmark results</h1>
+      <div id="subtitle" class="muted">Loading private local reports…</div>
+      <nav><a href="/">Review</a><a class="active" href="/results">Results</a></nav>
+    </div>
+    <div class="toolbar">
+      <label>Benchmark run
+        <select id="run"></select>
+      </label>
+      <label>Inspect strategy
+        <select id="strategy"></select>
+      </label>
+    </div>
+  </header>
+  <main>
+    <div id="error"></div>
+    <section id="overview" class="overview"></section>
+    <section class="card">
+      <h2>Strategy leaderboard</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Strategy</th><th>Target</th><th>Status F1</th><th>Vehicle</th><th>ETA</th><th>Exact</th><th>p95</th><th>Cost/1k</th></tr></thead>
+          <tbody id="leaderboard"></tbody>
+        </table>
+      </div>
+    </section>
+    <div class="grid-2">
+      <section class="card">
+        <h2>Quality and cost</h2>
+        <svg id="chart" role="img" aria-label="Exact match quality versus cost per one thousand messages"></svg>
+      </section>
+      <section class="card">
+        <h2>Selected strategy</h2>
+        <div id="target"></div>
+        <details open><summary>Configuration and fingerprints</summary><pre id="configuration"></pre></details>
+      </section>
+    </div>
+    <div class="grid-2">
+      <section class="card">
+        <h2>Status confusion matrix</h2>
+        <div id="confusion" class="scroll"></div>
+      </section>
+      <section class="card">
+        <h2>Paired comparisons</h2>
+        <div id="paired" class="scroll"></div>
+      </section>
+    </div>
+    <section class="card">
+      <h2>Case-level comparison</h2>
+      <div class="filters">
+        <label>Expected status <select id="statusFilter"><option value="">All statuses</option></select></label>
+        <label><span>Failure filter</span><select id="failureFilter"><option value="">All cases</option><option value="exact">Any mismatch</option><option value="status">Status mismatch</option><option value="vehicle">Vehicle mismatch</option><option value="eta">ETA mismatch</option><option value="error">Execution error</option></select></label>
+      </div>
+      <p class="muted">Reports use pseudonymous case IDs and do not contain responder message text.</p>
+      <div class="scroll">
+        <table>
+          <thead id="caseHead"></thead>
+          <tbody id="cases"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Run metadata</h2>
+      <pre id="metadata"></pre>
+    </section>
+  </main>
+  <script>
+    const el = id => document.getElementById(id);
+    const svgNS = 'http://www.w3.org/2000/svg';
+    let report = null;
+    let selected = null;
+    const pct = value => value === null || value === undefined ? 'n/a' : `${(Number(value)*100).toFixed(1)}%`;
+    const num = (value,digits=2) => value === null || value === undefined ? 'n/a' : Number(value).toFixed(digits);
+    const short = value => value ? String(value).slice(0,12) : 'n/a';
+    function node(tag,text,className) {
+      const value=document.createElement(tag);
+      if (text !== undefined) value.textContent=text;
+      if (className) value.className=className;
+      return value;
+    }
+    function stat(label,value) {
+      const box=node('div',undefined,'stat');
+      box.append(node('span',label),node('strong',value));
+      return box;
+    }
+    async function loadRuns() {
+      const response=await fetch('/api/results');
+      if (!response.ok) throw new Error('Could not list benchmark reports.');
+      const {runs}=await response.json();
+      el('run').replaceChildren();
+      if (!runs.length) {
+        el('subtitle').textContent='No benchmark reports are available.';
+        el('error').textContent='Run respondr-eval run <config> to create a report.';
+        return;
+      }
+      for (const run of runs) {
+        const option=node('option',`${run.created_at || run.file} · ${run.evaluation_split || 'unknown'} · ${run.evaluation_case_count} cases`);
+        option.value=run.file;
+        el('run').append(option);
+      }
+      await loadReport(runs[0].file);
+    }
+    async function loadReport(file) {
+      el('error').textContent='';
+      const response=await fetch(`/api/results/${encodeURIComponent(file)}`);
+      if (!response.ok) throw new Error('Could not load the selected report.');
+      report=await response.json();
+      selected=(report.experiments || [])[0]?.name || null;
+      render();
+    }
+    function render() {
+      const dataset=report.dataset || {};
+      el('subtitle').textContent=`${report.created_at || 'Unknown time'} · ${dataset.evaluation_split || 'unknown'} split · ${dataset.evaluation_case_count || 0} reviewed cases`;
+      el('overview').replaceChildren(
+        stat('Selected strategy',report.least_expensive_meeting_target || 'No strategy passed'),
+        stat('Reviewed cases',String(dataset.evaluation_case_count || 0)),
+        stat('Evaluation split',dataset.evaluation_split || 'Unknown'),
+        stat('ETA tolerance',`${report.eta_tolerance_minutes ?? 'n/a'} min`),
+        stat('Dataset fingerprint',short(dataset.fingerprint))
+      );
+      el('strategy').replaceChildren();
+      for (const experiment of report.experiments || []) {
+        const option=node('option',experiment.name);
+        option.value=experiment.name;
+        option.selected=experiment.name===selected;
+        el('strategy').append(option);
+      }
+      renderLeaderboard();
+      renderSelected();
+      renderChart();
+      renderPaired();
+      renderCaseFilters();
+      renderCases();
+      el('metadata').textContent=JSON.stringify({
+        schema_version:report.schema_version,
+        created_at:report.created_at,
+        experiment_config_fingerprint:report.experiment_config_fingerprint,
+        dataset:report.dataset,
+        environment:report.environment,
+        thresholds:report.thresholds,
+        eta_tolerance_minutes:report.eta_tolerance_minutes,
+        pricing_effective_date:report.pricing_effective_date
+      },null,2);
+    }
+    function renderLeaderboard() {
+      el('leaderboard').replaceChildren();
+      for (const experiment of report.experiments || []) {
+        const m=experiment.metrics || {};
+        const row=node('tr');
+        row.dataset.name=experiment.name;
+        if (experiment.name===selected) row.className='selected';
+        row.append(
+          node('td',experiment.name),
+          node('td',experiment.meets_target ? 'PASS' : 'FAIL',experiment.meets_target ? 'pass' : 'fail'),
+          node('td',pct(m.status_macro_f1)),
+          node('td',pct(m.vehicle_accuracy)),
+          node('td',pct(m.eta_accuracy)),
+          node('td',pct(m.exact_match_accuracy)),
+          node('td',`${num(m.latency_p95_ms,1)} ms`),
+          node('td',m.cost_per_1000_messages_usd === null || m.cost_per_1000_messages_usd === undefined ? 'unpriced' : `$${num(m.cost_per_1000_messages_usd,4)}`)
+        );
+        row.addEventListener('click',()=>selectStrategy(experiment.name));
+        el('leaderboard').append(row);
+      }
+    }
+    function selectStrategy(name) {
+      selected=name;
+      el('strategy').value=name;
+      renderLeaderboard();
+      renderSelected();
+      renderCases();
+    }
+    function renderSelected() {
+      const experiment=(report.experiments || []).find(item=>item.name===selected);
+      if (!experiment) return;
+      const failures=experiment.target_failures || [];
+      el('target').replaceChildren(
+        node('p',experiment.meets_target ? 'Meets every fixed acceptance target.' : 'Does not meet all fixed acceptance targets.',experiment.meets_target ? 'good' : 'bad')
+      );
+      if (failures.length) {
+        const list=node('ul');
+        failures.forEach(value=>list.append(node('li',value)));
+        el('target').append(list);
+      }
+      el('configuration').textContent=JSON.stringify(experiment.strategy || {},null,2);
+      renderConfusion(experiment.metrics?.status_confusion || {});
+    }
+    function renderChart() {
+      const chart=el('chart');
+      chart.replaceChildren();
+      chart.setAttribute('viewBox','0 0 680 250');
+      const experiments=report.experiments || [];
+      const costs=experiments.map(x=>x.metrics?.cost_per_1000_messages_usd).filter(x=>x!==null && x!==undefined);
+      const maxCost=Math.max(...costs,0.0001);
+      const line=(x1,y1,x2,y2)=>{
+        const item=document.createElementNS(svgNS,'line');
+        for (const [key,value] of Object.entries({x1,y1,x2,y2,stroke:'#40515d','stroke-width':'1'})) item.setAttribute(key,value);
+        chart.append(item);
+      };
+      line(55,20,55,210); line(55,210,655,210);
+      for (const experiment of experiments) {
+        const cost=experiment.metrics?.cost_per_1000_messages_usd;
+        const quality=Number(experiment.metrics?.exact_match_accuracy || 0);
+        const x=cost===null || cost===undefined ? 630 : 70+(Number(cost)/maxCost)*540;
+        const y=200-quality*170;
+        const circle=document.createElementNS(svgNS,'circle');
+        circle.setAttribute('cx',x); circle.setAttribute('cy',y); circle.setAttribute('r','7');
+        circle.setAttribute('fill',experiment.meets_target ? '#2fc878' : '#ef6a6a');
+        chart.append(circle);
+        const label=document.createElementNS(svgNS,'text');
+        label.setAttribute('x',Math.min(x+10,590)); label.setAttribute('y',y+4);
+        label.setAttribute('fill','#dbe7ee'); label.setAttribute('font-size','12');
+        label.textContent=experiment.name;
+        chart.append(label);
+      }
+      const xLabel=document.createElementNS(svgNS,'text');
+      xLabel.setAttribute('x','300'); xLabel.setAttribute('y','238'); xLabel.setAttribute('fill','#93a4b1'); xLabel.textContent='Cost per 1,000 messages';
+      chart.append(xLabel);
+      const yLabel=document.createElementNS(svgNS,'text');
+      yLabel.setAttribute('x','8'); yLabel.setAttribute('y','18'); yLabel.setAttribute('fill','#93a4b1'); yLabel.textContent='Exact match';
+      chart.append(yLabel);
+    }
+    function renderConfusion(confusion) {
+      const labels=[...new Set([...Object.keys(confusion),...Object.values(confusion).flatMap(Object.keys)])];
+      const table=node('table',undefined,'matrix');
+      const head=node('tr'); head.append(node('th','Expected ↓ / Actual →'));
+      labels.forEach(label=>head.append(node('th',label)));
+      const thead=node('thead');
+      thead.append(head);
+      table.append(thead);
+      const body=node('tbody');
+      const max=Math.max(1,...Object.values(confusion).flatMap(row=>Object.values(row)));
+      for (const expected of labels) {
+        const row=node('tr'); row.append(node('th',expected));
+        for (const actual of labels) {
+          const value=Number(confusion[expected]?.[actual] || 0);
+          const heat=value===0 ? 0 : Math.min(3,Math.ceil(value/max*3));
+          row.append(node('td',String(value),`heat-${heat}`));
+        }
+        body.append(row);
+      }
+      table.append(body);
+      el('confusion').replaceChildren(table);
+    }
+    function renderPaired() {
+      const pairs=report.paired_comparisons || [];
+      if (!pairs.length) { el('paired').textContent='No paired comparisons in this run.'; return; }
+      const table=node('table');
+      const head=node('tr');
+      ['Candidate','Baseline','Exact Δ','Wins','Ties','Losses'].forEach(x=>head.append(node('th',x)));
+      const thead=node('thead'); thead.append(head); table.append(thead);
+      const body=node('tbody');
+      for (const pair of pairs) {
+        const value=pair.comparison || {};
+        const row=node('tr');
+        row.append(node('td',pair.candidate),node('td',pair.baseline),node('td',pct(value.exact_match_delta)),node('td',String(value.wins || 0)),node('td',String(value.ties || 0)),node('td',String(value.losses || 0)));
+        body.append(row);
+      }
+      table.append(body); el('paired').replaceChildren(table);
+    }
+    function renderCaseFilters() {
+      const statuses=new Set();
+      for (const experiment of report.experiments || []) for (const row of experiment.case_results || []) statuses.add(row.expected_status);
+      const current=el('statusFilter').value;
+      el('statusFilter').replaceChildren(node('option','All statuses'));
+      el('statusFilter').firstChild.value='';
+      [...statuses].sort().forEach(value=>{const option=node('option',value);option.value=value;el('statusFilter').append(option)});
+      el('statusFilter').value=current;
+    }
+    function renderCases() {
+      const experiments=report.experiments || [];
+      const focus=experiments.find(x=>x.name===selected);
+      const focusRows=new Map((focus?.case_results || []).map(row=>[row.case_id,row]));
+      const byExperiment=new Map(experiments.map(exp=>[exp.name,new Map((exp.case_results || []).map(row=>[row.case_id,row]))]));
+      let caseIds=[...focusRows.keys()];
+      const expectedStatus=el('statusFilter').value;
+      const failure=el('failureFilter').value;
+      caseIds=caseIds.filter(id=>{
+        const row=focusRows.get(id);
+        if (expectedStatus && row.expected_status!==expectedStatus) return false;
+        if (failure==='exact' && row.exact_match) return false;
+        if (failure==='status' && row.status_correct) return false;
+        if (failure==='vehicle' && row.vehicle_correct) return false;
+        if (failure==='eta' && row.eta_correct) return false;
+        if (failure==='error' && !row.error) return false;
+        return true;
+      });
+      const head=node('tr'); head.append(node('th','Case'),node('th','Ground truth'));
+      experiments.forEach(exp=>head.append(node('th',exp.name)));
+      el('caseHead').replaceChildren(head);
+      el('cases').replaceChildren();
+      for (const id of caseIds) {
+        const expected=focusRows.get(id);
+        const row=node('tr');
+        row.append(node('td',id));
+        row.append(caseCell(expected.expected_status,expected.expected_vehicle,expected.expected_eta_iso,true));
+        for (const experiment of experiments) {
+          const result=byExperiment.get(experiment.name).get(id);
+          if (!result) { row.append(node('td','No result','muted')); continue; }
+          const cell=caseCell(result.actual_status,result.actual_vehicle,result.actual_eta_iso,result.exact_match);
+          if (result.error) cell.append(node('small',result.error,'bad'));
+          else if (!result.exact_match) {
+            const issues=[];
+            if (!result.status_correct) issues.push('status');
+            if (!result.vehicle_correct) issues.push('vehicle');
+            if (!result.eta_correct) issues.push(`ETA${result.eta_error_minutes === null ? '' : ` ${num(result.eta_error_minutes,1)} min`}`);
+            cell.append(node('small',issues.join(' · '),'bad'));
+          }
+          row.append(cell);
+        }
+        el('cases').append(row);
+      }
+      if (!caseIds.length) {
+        const row=node('tr'); const cell=node('td','No cases match these filters.','muted');
+        cell.colSpan=experiments.length+2; row.append(cell); el('cases').append(row);
+      }
+    }
+    function caseCell(status,vehicle,eta,correct) {
+      const cell=node('td');
+      const value=node('div',undefined,`case-value ${correct ? 'good' : 'bad'}`);
+      value.append(node('strong',status || 'Unknown'),node('span',vehicle || 'Unknown'),node('small',eta || 'Unknown'));
+      cell.append(value); return cell;
+    }
+    el('run').addEventListener('change',()=>loadReport(el('run').value).catch(showError));
+    el('strategy').addEventListener('change',()=>selectStrategy(el('strategy').value));
+    el('statusFilter').addEventListener('change',renderCases);
+    el('failureFilter').addEventListener('change',renderCases);
+    function showError(error) { el('error').textContent=error.message || String(error); }
+    loadRuns().catch(showError);
+  </script>
+</body>
+</html>

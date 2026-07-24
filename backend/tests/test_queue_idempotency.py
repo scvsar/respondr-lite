@@ -124,6 +124,61 @@ async def test_duplicate_webhook_delivery_runs_extraction_once_and_stores_one_ro
 
 
 @pytest.mark.asyncio
+async def test_webhook_excludes_future_history_and_scopes_rules_to_current_text():
+    current_time = 1784844000
+    current_text = "Responding in POV with ETA 15 minutes."
+    history = [
+        {
+            "id": "past",
+            "group_id": "synthetic-group",
+            "name": "Synthetic Responder",
+            "text": "Synthetic prior decline.",
+            "created_at": current_time - 60,
+            "raw_status": "Not Responding",
+            "arrival_status": "Not Responding",
+            "vehicle": "Unknown",
+            "eta": "Unknown",
+            "timestamp": "2026-07-23 14:59:00",
+        },
+        {
+            "id": "future",
+            "group_id": "synthetic-group",
+            "name": "Synthetic Responder",
+            "text": "Synthetic future message.",
+            "created_at": current_time + 60,
+            "raw_status": "Not Responding",
+            "arrival_status": "Not Responding",
+            "vehicle": "Unknown",
+            "eta": "Unknown",
+            "timestamp": "2026-07-23 15:01:00",
+        },
+    ]
+    message = WebhookMessage(
+        id="source-message-2",
+        group_id="synthetic-group",
+        name="Synthetic Responder",
+        text=current_text,
+        created_at=current_time,
+    )
+
+    with (
+        patch("app.routers.webhook.get_messages", return_value=history),
+        patch("app.routers.webhook.add_message", return_value=True),
+        patch(
+            "app.routers.webhook.extract_details_from_text",
+            return_value=_parsed_response(),
+        ) as extract,
+    ):
+        result = await webhook_handler(message, request=None, debug=False)
+
+    assert result == {"status": "ok"}
+    enriched = extract.call_args.args[0]
+    assert "Synthetic prior decline." in enriched
+    assert "Synthetic future message." not in enriched
+    assert extract.call_args.kwargs["rule_text"] == current_text
+
+
+@pytest.mark.asyncio
 async def test_slow_queue_processing_renews_visibility_and_deletes_latest_receipt():
     payload = {
         "id": "source-message-1",

@@ -55,3 +55,42 @@ def test_labeling_api_returns_and_updates_cases(tmp_path):
 
     assert response.status_code == 200
     assert response.json()["summary"]["reviewed"] == 1
+
+
+def test_results_api_lists_and_returns_private_reports(tmp_path):
+    path = _proposed_dataset(tmp_path)
+    results = tmp_path / "results"
+    results.mkdir()
+    report = {
+        "schema_version": "1.0",
+        "created_at": "2026-07-23T23:57:59Z",
+        "dataset": {
+            "fingerprint": "synthetic-fingerprint",
+            "evaluation_split": "dev",
+            "evaluation_case_count": 3,
+        },
+        "experiments": [
+            {
+                "name": "heuristic-v1",
+                "meets_target": True,
+                "metrics": {"exact_match_accuracy": 1.0},
+                "case_results": [],
+            }
+        ],
+        "paired_comparisons": [],
+        "least_expensive_meeting_target": "heuristic-v1",
+    }
+    report_path = results / "run-20260723T235759Z.json"
+    report_path.write_text(__import__("json").dumps(report), encoding="utf-8")
+    client = TestClient(create_app(path, results_dir=results))
+
+    page = client.get("/results")
+    listing = client.get("/api/results")
+    detail = client.get(f"/api/results/{report_path.name}")
+    traversal = client.get("/api/results/not-a-run.json")
+
+    assert page.status_code == 200
+    assert "benchmark results" in page.text
+    assert listing.json()["runs"][0]["file"] == report_path.name
+    assert detail.json()["least_expensive_meeting_target"] == "heuristic-v1"
+    assert traversal.status_code == 404

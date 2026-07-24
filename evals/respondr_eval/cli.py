@@ -48,6 +48,10 @@ def _parser() -> argparse.ArgumentParser:
     label.add_argument("--dataset", default=_default_local_dataset())
     label.add_argument("--port", type=int, default=8765)
     label.add_argument("--no-browser", action="store_true")
+    label.add_argument(
+        "--results-dir",
+        default=str(Path(__file__).resolve().parents[1] / "results"),
+    )
 
     evaluate = commands.add_parser("run", help="Run an experiment matrix.")
     evaluate.add_argument("config")
@@ -81,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
             args.dataset,
             port=args.port,
             open_browser=not args.no_browser,
+            results_dir=args.results_dir,
         )
         return 0
     if args.command == "run":
