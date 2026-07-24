@@ -22,6 +22,7 @@ from simulator.synthetic_messages import (
     HeuristicMessageGenerator,
     MessageRequest,
     NgramMessageGenerator,
+    RetrievalSlotMessageGenerator,
     TEAM_GROUP_IDS,
     has_eta_mode,
 )
@@ -29,8 +30,8 @@ from simulator.synthetic_messages import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CORPUS = ROOT / "evals" / "local" / "prod-ground-truth.jsonl"
-DEFAULT_CONFIG = Path(__file__).with_name("generator_benchmark_config.json")
-DEFAULT_OUTPUT = ROOT / "evals" / "generator-results"
+DEFAULT_CONFIG = Path(__file__).with_name("generator_benchmark_config_v2.json")
+DEFAULT_OUTPUT = ROOT / "evals" / "generator-results" / "v2"
 
 STATUS_CUES = {
     "Responding": re.compile(
@@ -268,6 +269,183 @@ def _fit_classifiers(
     return vectorizer, team_model, status_model, calibration
 
 
+def _corrupt_text(text: str, rng: random.Random) -> str:
+    words = re.findall(r"\b[\w'-]+\b", text)
+    if len(words) < 3:
+        return " ".join([*words, "the", "of"])
+    corrupted = list(words)
+    rng.shuffle(corrupted)
+    if corrupted == words:
+        corrupted = corrupted[1:] + corrupted[:1]
+    if len(corrupted) >= 5:
+        insert_at = rng.randrange(1, len(corrupted))
+        corrupted.insert(insert_at, rng.choice(("the", "in", "of", "at")))
+    return " ".join(corrupted)
+
+
+def _fit_fluency_classifier(
+    train: list[CorpusMessage],
+    test: list[CorpusMessage],
+    config: dict[str, Any],
+) -> tuple[Any, Any, dict[str, float]]:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+
+    options = config.get("fluency_classifier") or {
+        "ngram_min": 1,
+        "ngram_max": 2,
+        "min_df": 2,
+        "max_features": 12000,
+        "max_iter": 2000,
+        "accept_probability": 0.5,
+    }
+    rng = random.Random(config["seed"])
+    real_train = [message.text for message in train]
+    corrupt_train = [
+        _corrupt_text(message.text, rng)
+        for message in train
+    ]
+    vectorizer = TfidfVectorizer(
+        analyzer="word",
+        ngram_range=(options["ngram_min"], options["ngram_max"]),
+        min_df=options["min_df"],
+        max_features=options["max_features"],
+        sublinear_tf=True,
+    )
+    matrix = vectorizer.fit_transform([*real_train, *corrupt_train])
+    labels = [1] * len(real_train) + [0] * len(corrupt_train)
+    model = LogisticRegression(
+        max_iter=options["max_iter"],
+        class_weight="balanced",
+        random_state=config["seed"],
+    ).fit(matrix, labels)
+    threshold = float(options["accept_probability"])
+    real_probabilities = model.predict_proba(
+        vectorizer.transform([message.text for message in test])
+    )[:, 1]
+    corrupt_test = [
+        _corrupt_text(message.text, rng)
+        for message in test
+    ]
+    corrupt_probabilities = model.predict_proba(
+        vectorizer.transform(corrupt_test)
+    )[:, 1]
+    calibration = {
+        "real_holdout_fluency_accept_rate": float(
+            (real_probabilities >= threshold).mean()
+        ),
+        "corrupt_holdout_reject_rate": float(
+            (corrupt_probabilities < threshold).mean()
+        ),
+        "fluency_accept_probability": threshold,
+    }
+    return vectorizer, model, calibration
+
+
+def _status_labels(text: str) -> set[str]:
+    labels: set[str] = set()
+    if re.search(
+        r"\b(cancel(?:led|ing)?|standing down|10-22)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        labels.add("Cancelled")
+    if re.search(
+        r"\b(cannot|can't|unable|unavailable|not responding)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        labels.add("Not Responding")
+    if re.search(r"\b(available|standing by)\b", text, re.IGNORECASE):
+        labels.add("Available")
+    without_negative = re.sub(
+        r"\b(?:not responding|cannot respond|can't respond|unable to respond)\b",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if re.search(
+        r"\b(responding|en route|heading|leaving|on my way)\b",
+        without_negative,
+        re.IGNORECASE,
+    ):
+        labels.add("Responding")
+    return labels
+
+
+def _vehicle_values(text: str) -> list[str]:
+    values: list[str] = []
+    for match in re.finditer(
+        r"\bpov\b|\b(?:car|personal vehicle)\b|"
+        r"\bsar\s+rig\b|\bsar[- ]?0*(\d{1,3})\b",
+        text,
+        re.IGNORECASE,
+    ):
+        value = match.group(0).lower()
+        if match.group(1):
+            value = f"sar-{int(match.group(1))}"
+        elif "rig" in value:
+            value = "sar rig"
+        elif value in {"car", "personal vehicle", "pov"}:
+            value = "pov"
+        values.append(value)
+    return values
+
+
+def _eta_values(text: str) -> list[str]:
+    values: list[str] = []
+    occupied: list[tuple[int, int]] = []
+    patterns = (
+        re.compile(r"\b\d{1,3}\s*(?:min|minute|minutes)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]\.?m\.?)?\b",
+            re.IGNORECASE,
+        ),
+        re.compile(r"(?<![-\d])(?:[01]\d|2[0-3])[0-5]\d(?!\d)"),
+    )
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            if any(
+                start < match.end() and match.start() < end
+                for start, end in occupied
+            ):
+                continue
+            occupied.append(match.span())
+            values.append(match.group(0).lower())
+    return values
+
+
+def message_semantically_valid(text: str, request: MessageRequest) -> bool:
+    labels = _status_labels(text)
+    if request.status in {
+        "Responding",
+        "Available",
+        "Not Responding",
+        "Cancelled",
+    }:
+        if labels != {request.status}:
+            return False
+    elif labels:
+        return False
+    vehicles = _vehicle_values(text)
+    eta_values = _eta_values(text)
+    if request.status != "Responding":
+        return not vehicles and not eta_values
+    if len(vehicles) > 1 or not _vehicle_matches(text, request.vehicle):
+        return False
+    if request.vehicle == "Unknown" and vehicles:
+        return False
+    if request.vehicle != "Unknown" and len(vehicles) != 1:
+        return False
+    if len(eta_values) > 1 or not has_eta_mode(text, request):
+        return False
+    if request.eta_mode == "none" and eta_values:
+        return False
+    if request.eta_mode != "none" and len(eta_values) != 1:
+        return False
+    return True
+
+
 def _team_similarity(
     train: list[CorpusMessage],
     requests: list[MessageRequest],
@@ -368,6 +546,8 @@ def score_method(
     vectorizer: Any,
     team_model: Any,
     status_model: Any,
+    fluency_vectorizer: Any,
+    fluency_model: Any,
     config: dict[str, Any],
 ) -> dict[str, Any]:
     from sklearn.metrics import accuracy_score
@@ -389,6 +569,14 @@ def score_method(
     ]
     texts = [result.text for result in ordered]
     generated_matrix = vectorizer.transform(texts)
+    fluency_probabilities = fluency_model.predict_proba(
+        fluency_vectorizer.transform(texts)
+    )[:, 1]
+    fluency_threshold = float(
+        (config.get("fluency_classifier") or {}).get(
+            "accept_probability", 0.5
+        )
+    )
     failures = sum(bool(result.error) or not result.text for result in ordered)
     unique = len({_normalize(text) for text in texts if text})
     exact_copy_rate, fivegram_overlap_rate = _copy_metrics(
@@ -397,6 +585,17 @@ def score_method(
     metrics = {
         "failure_rate": failures / len(ordered),
         "control_accuracy": control_accuracy(requests, ordered),
+        "semantic_validity": (
+            sum(
+                message_semantically_valid(result.text, request)
+                for request, result in zip(requests, ordered)
+            )
+            / len(ordered)
+        ),
+        "fluency_accept_rate": float(
+            (fluency_probabilities >= fluency_threshold).mean()
+        ),
+        "mean_fluency_probability": float(fluency_probabilities.mean()),
         "team_accuracy": float(
             accuracy_score(
                 [request.team for request in requests],
@@ -428,6 +627,13 @@ def score_method(
             )
             / len(ordered)
         ),
+        "fallback_rate": (
+            sum(
+                result.metadata.get("fallback") == "heuristic"
+                for result in ordered
+            )
+            / len(ordered)
+        ),
     }
     weights = config["score_weights"]
     composite = sum(metrics[key] * weight for key, weight in weights.items())
@@ -438,15 +644,34 @@ def score_method(
     passes = (
         metrics["failure_rate"] <= targets["failure_rate_max"]
         and metrics["repair_rate"] <= targets["repair_rate_max"]
+        and metrics["fallback_rate"]
+        <= targets.get("fallback_rate_max", 1.0)
         and metrics["exact_copy_rate"] <= targets["exact_copy_rate_max"]
         and metrics["control_accuracy"] >= targets["control_accuracy_min"]
+        and metrics["semantic_validity"]
+        >= targets.get("semantic_validity_min", 0.0)
+        and metrics["fluency_accept_rate"]
+        >= targets.get("fluency_accept_rate_min", 0.0)
         and metrics["unique_rate"] >= targets["unique_rate_min"]
         and metrics["composite_score"] >= targets["composite_score_min"]
     )
-    samples: dict[str, list[str]] = defaultdict(list)
+    samples: dict[str, list[dict[str, str]]] = defaultdict(list)
     for request, result in zip(requests, ordered):
         if result.text and len(samples[request.team]) < 2:
-            samples[request.team].append(result.text)
+            source = name
+            if result.metadata.get("repaired_with") == "heuristic":
+                source = "heuristic safety repair"
+            elif result.metadata.get("fallback") == "heuristic":
+                source = "heuristic fallback"
+            samples[request.team].append(
+                {
+                    "text": result.text,
+                    "source": source,
+                    "requested_status": request.status,
+                    "requested_vehicle": request.vehicle,
+                    "requested_eta_mode": request.eta_mode,
+                }
+            )
     return {
         "name": name,
         "passes_target": passes,
@@ -497,18 +722,48 @@ def run_benchmark(
     vectorizer, team_model, status_model, calibration = _fit_classifiers(
         train, test, config
     )
+    (
+        fluency_vectorizer,
+        fluency_model,
+        fluency_calibration,
+    ) = _fit_fluency_classifier(train, test, config)
+    calibration.update(fluency_calibration)
     generated: list[tuple[str, list[GeneratedMessage]]] = []
-    heuristic = HeuristicMessageGenerator(seed=config["seed"])
-    generated.append(("heuristic", heuristic.generate_batch(requests)))
-    ml = NgramMessageGenerator(seed=config["seed"])
-    ml.fit(train)
-    generated.append(("ml", ml.generate_batch(requests)))
-    if include_ai:
-        if ai_generator is None:
-            raise ValueError("ai_generator is required when include_ai is true")
-        generated.append(
-            ("ai", _generate_ai(ai_generator, requests, ai_batch_size))
-        )
+    method_names = config.get("methods") or ["heuristic", "ml", "ai"]
+    retrieval_metadata: dict[str, Any] | None = None
+    for method_name in method_names:
+        if method_name == "heuristic":
+            heuristic = HeuristicMessageGenerator(seed=config["seed"])
+            generated.append(
+                ("heuristic", heuristic.generate_batch(requests))
+            )
+        elif method_name in {"ml", "ml-bigram"}:
+            ml = NgramMessageGenerator(seed=config["seed"])
+            ml.fit(train)
+            generated.append(
+                (
+                    "ml-bigram" if method_name == "ml-bigram" else "ml",
+                    ml.generate_batch(requests),
+                )
+            )
+        elif method_name == "ml-retrieval":
+            retrieval = RetrievalSlotMessageGenerator(seed=config["seed"])
+            retrieval.fit(train)
+            generated.append(
+                ("ml-retrieval", retrieval.generate_batch(requests))
+            )
+            retrieval_metadata = {
+                "training_messages": retrieval.training_count,
+                "accepted_templates": retrieval.template_count,
+            }
+        elif method_name == "ai" and include_ai:
+            if ai_generator is None:
+                raise ValueError(
+                    "ai_generator is required when include_ai is true"
+                )
+            generated.append(
+                ("ai", _generate_ai(ai_generator, requests, ai_batch_size))
+            )
     methods = [
         score_method(
             name,
@@ -519,10 +774,16 @@ def run_benchmark(
             vectorizer,
             team_model,
             status_model,
+            fluency_vectorizer,
+            fluency_model,
             config,
         )
         for name, results in generated
     ]
+    if retrieval_metadata:
+        next(
+            method for method in methods if method["name"] == "ml-retrieval"
+        )["training"] = retrieval_metadata
     return {
         "schema_version": "1.0",
         "benchmark_id": config["benchmark_id"],
@@ -534,6 +795,7 @@ def run_benchmark(
             "The benchmark settings were developed with aggregate knowledge of this corpus.",
             "Use future production messages for a sealed test.",
             "The classifier metrics measure similarity to private message patterns.",
+            "The fluency classifier is a proxy and can accept malformed text.",
             "Human review must measure semantic plausibility before simulator release.",
         ],
         "corpus": {
@@ -555,6 +817,9 @@ def run_benchmark(
         "calibration": calibration,
         "targets": config["targets"],
         "score_weights": config["score_weights"],
+        "requires_human_review": bool(
+            config.get("requires_human_review", False)
+        ),
         "methods": methods,
     }
 
@@ -563,6 +828,8 @@ def render_html(report: dict[str, Any]) -> str:
     metric_labels = [
         ("composite_score", "Composite"),
         ("control_accuracy", "Control"),
+        ("semantic_validity", "Semantic validity"),
+        ("fluency_accept_rate", "Fluency"),
         ("team_accuracy", "Team"),
         ("status_accuracy", "Status"),
         ("team_similarity", "Similarity"),
@@ -572,13 +839,14 @@ def render_html(report: dict[str, Any]) -> str:
         ("fivegram_overlap_rate", "5-gram overlap"),
         ("failure_rate", "Failure"),
         ("repair_rate", "Safety repair"),
+        ("fallback_rate", "Fallback"),
     ]
     headers = "".join(f"<th>{html.escape(label)}</th>" for _, label in metric_labels)
     headers += "<th>Amortized latency</th><th>Input tokens</th><th>Output tokens</th>"
     rows = []
     for method in report["methods"]:
         cells = "".join(
-            f"<td>{method['metrics'][key] * 100:.1f}%</td>"
+            f"<td>{method['metrics'].get(key, 0.0) * 100:.1f}%</td>"
             for key, _ in metric_labels
         )
         cells += (
@@ -595,7 +863,22 @@ def render_html(report: dict[str, Any]) -> str:
     for method in report["methods"]:
         team_cards = []
         for team, samples in method["samples"].items():
-            items = "".join(f"<li>{html.escape(sample)}</li>" for sample in samples)
+            items = ""
+            for sample in samples:
+                if isinstance(sample, str):
+                    text = sample
+                    detail = ""
+                else:
+                    text = sample["text"]
+                    detail = (
+                        f"{sample['source']} | {sample['requested_status']} | "
+                        f"{sample['requested_vehicle']} | "
+                        f"ETA {sample['requested_eta_mode']}"
+                    )
+                items += (
+                    f"<li>{html.escape(text)}"
+                    f"<div class=\"sample-detail\">{html.escape(detail)}</div></li>"
+                )
             team_cards.append(
                 f"<section><h4>{html.escape(team)}</h4><ul>{items}</ul></section>"
             )
@@ -607,6 +890,11 @@ def render_html(report: dict[str, Any]) -> str:
         f"<li>{html.escape(item)}</li>" for item in report["limitations"]
     )
     split = report["split"]
+    human_review_notice = (
+        '<p class="muted">Human review is required before method selection.</p>'
+        if report.get("requires_human_review")
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -628,11 +916,13 @@ th:first-child {{ text-align: left; }} .pill {{ color: #ffd27b; }}
 details {{ margin-top: 14px; }} summary {{ cursor: pointer; font-weight: 700; }}
 .sample-grid {{ display: grid; grid-template-columns: repeat(auto-fit,minmax(250px,1fr)); gap: 10px; margin-top: 14px; }}
 .sample-grid section {{ padding: 12px; }} h4 {{ margin: 0 0 8px; }} li {{ margin: 6px 0; }}
+.sample-detail {{ color: #9aabb7; font-size: 0.78rem; margin-top: 3px; }}
 </style>
 </head>
 <body><main>
 <h1>SAR message generator benchmark</h1>
 <p class="muted">Development benchmark. Generated {html.escape(report["generated_at"])}.</p>
+{human_review_notice}
 <div class="cards">
 <div class="card"><div class="muted">Production messages</div><div class="value">{report["corpus"]["message_count"]}</div></div>
 <div class="card"><div class="muted">Missions</div><div class="value">{report["corpus"]["mission_count"]}</div></div>
@@ -642,7 +932,7 @@ details {{ margin-top: 14px; }} summary {{ cursor: pointer; font-weight: 700; }}
 <h2>Method comparison</h2>
 <div class="table-wrap"><table><thead><tr><th>Method</th><th>Target</th>{headers}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table></div>
-<p class="muted">The team classifier scored {report["calibration"]["real_holdout_team_accuracy"] * 100:.1f}% on real held-out messages. The status classifier scored {report["calibration"]["real_holdout_status_accuracy"] * 100:.1f}%.</p>
+<p class="muted">The team classifier scored {report["calibration"]["real_holdout_team_accuracy"] * 100:.1f}% on real held-out messages. The status classifier scored {report["calibration"]["real_holdout_status_accuracy"] * 100:.1f}%. The fluency check accepted {report["calibration"].get("real_holdout_fluency_accept_rate", 0.0) * 100:.1f}% of real held-out messages and rejected {report["calibration"].get("corrupt_holdout_reject_rate", 0.0) * 100:.1f}% of corrupted messages.</p>
 <h2>Synthetic samples</h2>
 {''.join(sample_sections)}
 <h2>Limits</h2><ul>{limits}</ul>

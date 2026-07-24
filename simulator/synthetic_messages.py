@@ -719,6 +719,199 @@ class NgramMessageGenerator:
         return [self.generate(request) for request in requests]
 
 
+RETRIEVAL_SAFE_WORDS = SAFE_WORDS | {
+    "4x4",
+    "after",
+    "am",
+    "asar",
+    "as",
+    "assigned",
+    "before",
+    "by",
+    "check",
+    "crew",
+    "esar",
+    "get",
+    "getting",
+    "go",
+    "going",
+    "got",
+    "hour",
+    "hours",
+    "i",
+    "imt",
+    "into",
+    "k9",
+    "left",
+    "meet",
+    "msar",
+    "next",
+    "osu",
+    "over",
+    "ready",
+    "responded",
+    "rolling",
+    "should",
+    "ssar",
+    "start",
+    "started",
+    "there",
+    "they",
+    "tracker",
+    "up",
+    "we",
+    "will",
+    "yes",
+}
+RETRIEVAL_VEHICLE_PATTERN = re.compile(
+    r"\b(?:my\s+)?(?:pov|personal vehicle|car|sar\s+rig|sar[- ]?\d{1,3})\b",
+    re.IGNORECASE,
+)
+RETRIEVAL_ETA_PATTERNS = (
+    re.compile(r"\b\d{1,3}\s*(?:min|minute|minutes)\b", re.IGNORECASE),
+    re.compile(
+        r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[ap]\.?m\.?)?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(?<![-\d])(?:[01]\d|2[0-3])[0-5]\d(?!\d)"),
+)
+
+
+def _retrieval_template(text: str) -> str | None:
+    if contains_pii(text) or _word_count_for_template(text) > 25:
+        return None
+    value = sanitize_generated_text(text, max_words=25)
+    value = RETRIEVAL_VEHICLE_PATTERN.sub("{vehicle}", value)
+    for pattern in RETRIEVAL_ETA_PATTERNS:
+        value = pattern.sub("{eta}", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    if "{vehicle}" not in value and "{eta}" not in value:
+        return None
+    without_slots = value.replace("{vehicle}", "").replace("{eta}", "")
+    if re.search(r"\d", without_slots.replace("10-22", "")):
+        return None
+    words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", without_slots)
+    if any(word.lower() not in RETRIEVAL_SAFE_WORDS for word in words):
+        return None
+    return value
+
+
+def _word_count_for_template(text: str) -> int:
+    return len(re.findall(r"\b[\w'-]+\b", text or ""))
+
+
+class RetrievalSlotMessageGenerator:
+    """Generate messages from safe retrieved structures and controlled slots."""
+
+    name = "retrieval-slot-v1"
+
+    def __init__(
+        self,
+        seed: int = 20260724,
+        profiles: dict[str, Any] | None = None,
+    ):
+        self.rng = random.Random(seed)
+        self.fallback = HeuristicMessageGenerator(seed=seed + 1, profiles=profiles)
+        self.templates: dict[
+            tuple[str, str, bool, bool], Counter[str]
+        ] = defaultdict(Counter)
+        self.training_text: set[str] = set()
+        self.training_count = 0
+        self.template_count = 0
+
+    def fit(self, messages: Iterable[CorpusMessage]) -> None:
+        for message in messages:
+            self.training_count += 1
+            self.training_text.add(
+                " ".join(re.findall(r"[a-z0-9]+", message.text.lower()))
+            )
+            template = _retrieval_template(message.text)
+            if not template:
+                continue
+            key = (
+                message.team,
+                message.status,
+                "{vehicle}" in template,
+                "{eta}" in template,
+            )
+            self.templates[key][template] += 1
+            self.template_count += 1
+
+    def _fallback_result(
+        self,
+        request: MessageRequest,
+        started: float,
+        reason: str,
+    ) -> GeneratedMessage:
+        result = self.fallback.generate(request)
+        result.strategy = self.name
+        result.latency_ms = (time.perf_counter() - started) * 1000
+        result.metadata = {
+            "fallback": "heuristic",
+            "fallback_reason": reason,
+        }
+        return result
+
+    def generate(self, request: MessageRequest) -> GeneratedMessage:
+        started = time.perf_counter()
+        needs_vehicle = (
+            request.status == "Responding" and request.vehicle != "Unknown"
+        )
+        needs_eta = (
+            request.status == "Responding" and request.eta_mode != "none"
+        )
+        candidates = self.templates.get(
+            (request.team, request.status, needs_vehicle, needs_eta),
+            Counter(),
+        )
+        if not candidates:
+            return self._fallback_result(
+                request, started, "no_compatible_template"
+            )
+        ordered = self.rng.choices(
+            list(candidates),
+            weights=list(candidates.values()),
+            k=max(3, len(candidates)),
+        )
+        for template in ordered:
+            text = template.replace("{vehicle}", request.vehicle)
+            text = text.replace("{eta}", _format_eta(request, self.rng))
+            text = sanitize_generated_text(text)
+            normalized = " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+            if normalized in self.training_text:
+                continue
+            if not _has_status_cue(text, request.status):
+                continue
+            if request.status == "Responding" and not _has_vehicle(
+                text, request.vehicle
+            ):
+                continue
+            if request.status == "Responding" and not has_eta_mode(
+                text, request
+            ):
+                continue
+            return GeneratedMessage(
+                request_id=request.request_id,
+                team=request.team,
+                status=request.status,
+                text=text,
+                strategy=self.name,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                metadata={
+                    "fallback": None,
+                    "template_candidates": len(candidates),
+                },
+            )
+        return self._fallback_result(
+            request, started, "exact_copy_or_control_failure"
+        )
+
+    def generate_batch(
+        self, requests: list[MessageRequest]
+    ) -> list[GeneratedMessage]:
+        return [self.generate(request) for request in requests]
+
+
 class AIMessageGenerator:
     """Generate synthetic messages from aggregate team profiles."""
 

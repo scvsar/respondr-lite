@@ -12,6 +12,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
 from simulator.generator_benchmark import (  # noqa: E402
     control_accuracy,
     load_private_corpus,
+    message_semantically_valid,
     render_html,
     split_by_mission,
 )
@@ -21,6 +22,7 @@ from simulator.synthetic_messages import (  # noqa: E402
     HeuristicMessageGenerator,
     MessageRequest,
     NgramMessageGenerator,
+    RetrievalSlotMessageGenerator,
 )
 
 
@@ -93,6 +95,48 @@ def test_bigram_model_does_not_learn_personal_tokens():
     assert "Taylor" not in result.text
     assert "47.123" not in result.text
     assert "POV" in result.text
+
+
+def test_retrieval_model_preserves_structure_and_replaces_slots():
+    generator = RetrievalSlotMessageGenerator(seed=23)
+    generator.fit(
+        [
+            CorpusMessage(
+                team="K9",
+                status="Responding",
+                vehicle="POV",
+                text="Responding POV ETA 20 minutes",
+                mission_hash="mission-a",
+            ),
+            CorpusMessage(
+                team="K9",
+                status="Responding",
+                vehicle="SAR-6",
+                text="Heading to staging in SAR-6, ETA 30 min",
+                mission_hash="mission-b",
+            ),
+            CorpusMessage(
+                team="K9",
+                status="Responding",
+                vehicle="POV",
+                text="Taylor responding POV ETA 25 min",
+                mission_hash="mission-c",
+            ),
+        ]
+    )
+
+    result = generator.generate(
+        request(vehicle="SAR-10", eta_minutes=25)
+    )
+
+    assert result.metadata["fallback"] is None
+    assert "SAR-10" in result.text
+    assert "25 min" in result.text
+    assert "Taylor" not in result.text
+    assert result.text not in {
+        "Responding POV ETA 20 minutes",
+        "Heading to staging in SAR-6, ETA 30 min",
+    }
 
 
 class FakeCompletions:
@@ -183,6 +227,31 @@ def test_mission_split_has_no_mission_overlap():
     assert len(test) == 2
 
 
+def test_semantic_validator_rejects_conflicting_controls():
+    valid_request = request(
+        vehicle="SAR-10",
+        eta_mode="relative",
+        eta_minutes=25,
+    )
+
+    assert message_semantically_valid(
+        "Responding SAR-10 ETA 25 min",
+        valid_request,
+    )
+    assert not message_semantically_valid(
+        "Cannot respond. Responding SAR-10 ETA 25 min",
+        valid_request,
+    )
+    assert not message_semantically_valid(
+        "Responding SAR-6 SAR-10 ETA 25 min",
+        valid_request,
+    )
+    assert not message_semantically_valid(
+        "Responding SAR-10 ETA 2047 ETA 25 min",
+        valid_request,
+    )
+
+
 def test_html_report_contains_only_supplied_safe_content():
     report = {
         "generated_at": "2026-07-24T00:00:00Z",
@@ -213,7 +282,17 @@ def test_html_report_contains_only_supplied_safe_content():
                     "input_tokens": 0,
                     "output_tokens": 0,
                 },
-                "samples": {"ASAR": ["Ground responder en route"]},
+                "samples": {
+                    "ASAR": [
+                        {
+                            "text": "Ground responder en route",
+                            "source": "ml-retrieval",
+                            "requested_status": "Responding",
+                            "requested_vehicle": "POV",
+                            "requested_eta_mode": "none",
+                        }
+                    ]
+                },
             }
         ],
     }
@@ -222,4 +301,5 @@ def test_html_report_contains_only_supplied_safe_content():
 
     assert "SAR message generator benchmark" in page
     assert "Ground responder en route" in page
+    assert "ml-retrieval | Responding | POV | ETA none" in page
     assert "inline JSON" not in page

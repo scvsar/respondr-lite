@@ -26,7 +26,7 @@ Treat results for these teams as low confidence.
 
 ## Generator methods
 
-The simulator has three message generator methods.
+The simulator has four message generator methods.
 
 The heuristic method uses team templates and aggregate vehicle rates.
 The mission fallback path uses this method.
@@ -35,6 +35,12 @@ The classical ML method uses a conditional word-bigram model.
 It learns only approved SAR words and safe time tokens.
 It cannot learn a responder name or a location token.
 The benchmark trains this model in memory from the private local corpus.
+
+The retrieval ML method learns safe message structures from the private corpus.
+It replaces vehicle and ETA values with controlled slots.
+It rejects structures that contain unapproved words or personal data.
+It also rejects an output that exactly matches a training message.
+It uses the heuristic method when no compatible safe structure exists.
 
 The AI method sends aggregate team profiles and controlled requests to Azure OpenAI.
 It does not send production message text.
@@ -49,6 +55,8 @@ It must match each message to the sender team.
 The generator benchmark is separate from the extraction benchmark.
 It compares message generation quality and operating cost signals.
 
+Version 2 is the default generator benchmark.
+It keeps the version 1 configuration unchanged.
 The fixed benchmark uses a mission-held-out split.
 No mission can occur in both the training data and the test data.
 The current split has 323 training messages and 85 test messages.
@@ -71,8 +79,8 @@ $env:AZURE_OPENAI_DEPLOYMENT = "<deployment>"
 
 The command writes these local reports:
 
-- `evals\generator-results\message-generator-benchmark.html`
-- `evals\generator-results\message-generator-benchmark.json`
+- `evals\generator-results\v2\message-generator-benchmark.html`
+- `evals\generator-results\v2\message-generator-benchmark.json`
 
 Git ignores the report directory.
 The reports contain aggregate metrics and synthetic samples only.
@@ -84,6 +92,8 @@ The benchmark fixes its weights and targets in `generator_benchmark_config.json`
 It measures these properties:
 
 - Requested status, vehicle, and ETA control
+- Message semantic validity
+- Fluency acceptance
 - Team classifier accuracy
 - Status classifier accuracy
 - Team text similarity
@@ -93,6 +103,7 @@ It measures these properties:
 - Five-word sequence overlap
 - Failure rate
 - Safety repair rate
+- Heuristic fallback rate
 - Model tokens
 - Mean amortized generation latency
 
@@ -102,6 +113,10 @@ Use dated provider prices with the token counts for a cost calculation.
 The private corpus team classifier has low held-out accuracy.
 This result shows that many team messages use similar language.
 Do not use team classifier accuracy as the only quality measure.
+
+The fluency classifier is an automated proxy.
+It does not replace human review.
+The report identifies heuristic fallback and safety repair samples.
 
 ## Benchmark limits
 
