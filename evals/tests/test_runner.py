@@ -1,10 +1,83 @@
 import json
 from pathlib import Path
+from threading import Lock
 
-from respondr_eval.runner import run
+from respondr_eval.cache import PredictionCache
+from respondr_eval.dataset import load_jsonl
+from respondr_eval.runner import _dataset_kind, _experiment_predictions, run
+from respondr_eval.strategies.base import Prediction
 
 
 ROOT = Path(__file__).parents[1]
+
+
+class FakeLiveStrategy:
+    kind = "production_llm"
+    name = "fake-live"
+
+    def __init__(self):
+        self.calls = 0
+        self.lock = Lock()
+
+    def describe(self):
+        return {"kind": self.kind, "name": self.name}
+
+    def predict(self, case):
+        with self.lock:
+            self.calls += 1
+        return Prediction(
+            status=case.reference.status,
+            vehicle=case.reference.vehicle,
+            eta_iso=case.reference.eta_iso,
+        )
+
+
+def test_live_predictions_use_bounded_concurrency_and_keep_order(tmp_path):
+    cases = load_jsonl(ROOT / "data" / "synthetic_seed.jsonl", reviewed_only=True)[:4]
+    strategy = FakeLiveStrategy()
+    cache = PredictionCache(tmp_path / "cache.jsonl")
+    measured, predictions, max_concurrency = _experiment_predictions(
+        strategy,
+        cases,
+        {"name": "fake-live", "type": "production_llm", "max_concurrency": 4},
+        repetitions=2,
+        dataset_fingerprint="synthetic-test",
+        cache=cache,
+    )
+
+    assert max_concurrency == 4
+    assert [case.case_id for case in measured] == [
+        *(f"{case.case_id}#r1" for case in cases),
+        *(f"{case.case_id}#r2" for case in cases),
+    ]
+    assert [prediction.status for prediction in predictions] == [
+        *(case.reference.status for case in cases),
+        *(case.reference.status for case in cases),
+    ]
+    assert len((tmp_path / "cache.jsonl").read_text(encoding="utf-8").splitlines()) == 8
+    assert strategy.calls == 8
+
+    cached_strategy = FakeLiveStrategy()
+    _, cached_predictions, cached_concurrency = _experiment_predictions(
+        cached_strategy,
+        cases,
+        {"name": "fake-live", "type": "production_llm", "max_concurrency": 2},
+        repetitions=2,
+        dataset_fingerprint="synthetic-test",
+        cache=cache,
+    )
+
+    assert cached_concurrency == 2
+    assert cached_strategy.calls == 0
+    assert all(prediction.metadata["cache_hit"] for prediction in cached_predictions)
+
+
+def test_assumed_production_labels_are_not_reported_as_reviewed():
+    cases = load_jsonl(ROOT / "data" / "synthetic_seed.jsonl", reviewed_only=True)
+    for case in cases:
+        case.annotation["reviewer"] = "assumed-proposal"
+
+    assert _dataset_kind(cases, ["azure_table"]) == "assumed-production"
 
 
 def test_example_matrix_writes_private_reports(tmp_path):

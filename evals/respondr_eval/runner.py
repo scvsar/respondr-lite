@@ -7,6 +7,7 @@ import hashlib
 import platform
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from importlib import metadata
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -34,6 +35,19 @@ def _resolve(base: Path, value: str | None) -> str | None:
         return None
     path = Path(value)
     return str(path if path.is_absolute() else (base / path).resolve())
+
+
+def _dataset_kind(cases: list[EvalCase], sources: list[str]) -> str:
+    if cases and all(
+        case.annotation.get("reviewer") == "assumed-proposal"
+        for case in cases
+    ):
+        return "assumed-production"
+    if sources == ["synthetic"]:
+        return "synthetic"
+    if sources == ["azure_table"]:
+        return "reviewed-production"
+    return "reviewed"
 
 
 def _environment(repository_root: Path) -> dict[str, Any]:
@@ -104,11 +118,16 @@ def _prediction(
     dataset_fingerprint: str,
     cache: PredictionCache,
 ) -> Prediction:
+    prediction_experiment = {
+        key: value
+        for key, value in experiment.items()
+        if key not in {"max_concurrency"}
+    }
     cache_payload = {
         "dataset": dataset_fingerprint,
         "case_id": case.case_id,
         "input": case.input,
-        "experiment": experiment,
+        "experiment": prediction_experiment,
         "strategy": strategy.describe(),
         "repetition": repetition,
     }
@@ -122,6 +141,52 @@ def _prediction(
     prediction = strategy.predict(case).validated()
     cache.put(key, prediction)
     return prediction
+
+
+def _experiment_predictions(
+    strategy: Strategy,
+    cases: list[EvalCase],
+    experiment: dict[str, Any],
+    repetitions: int,
+    dataset_fingerprint: str,
+    cache: PredictionCache,
+) -> tuple[list[EvalCase], list[Prediction], int]:
+    jobs = [
+        (case, repetition)
+        for repetition in range(repetitions)
+        for case in cases
+    ]
+    measured_cases = [
+        replace(case, case_id=f"{case.case_id}#r{repetition + 1}")
+        for case, repetition in jobs
+    ]
+    configured_concurrency = max(
+        1, min(16, int(experiment.get("max_concurrency", 1)))
+    )
+    max_concurrency = (
+        configured_concurrency if strategy.kind == "production_llm" else 1
+    )
+
+    def predict(job: tuple[EvalCase, int]) -> Prediction:
+        case, repetition = job
+        return _prediction(
+            strategy,
+            case,
+            experiment,
+            repetition,
+            dataset_fingerprint,
+            cache,
+        )
+
+    if max_concurrency == 1:
+        predictions = [predict(job) for job in jobs]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=max_concurrency,
+            thread_name_prefix="respondr-eval",
+        ) as executor:
+            predictions = list(executor.map(predict, jobs))
+    return measured_cases, predictions, max_concurrency
 
 
 def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Path]:
@@ -139,12 +204,7 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
             for case in all_cases
         }
     )
-    if dataset_sources == ["synthetic"]:
-        dataset_kind = "synthetic"
-    elif dataset_sources == ["azure_table"]:
-        dataset_kind = "reviewed-production"
-    else:
-        dataset_kind = "reviewed"
+    dataset_kind = _dataset_kind(all_cases, dataset_sources)
     evaluation_split = str(config.get("evaluation_split") or "test")
     train_cases = [case for case in all_cases if case.split == "train"]
     dev_cases = [case for case in all_cases if case.split == "dev"]
@@ -169,23 +229,14 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
         strategy = _strategy(experiment, base, allow_live_llm)
         strategy.fit(train_cases, dev_cases)
         repetitions = max(1, int(experiment.get("repetitions", 1)))
-        measured_cases: list[EvalCase] = []
-        predictions: list[Prediction] = []
-        for repetition in range(repetitions):
-            for case in evaluation_cases:
-                measured_cases.append(
-                    replace(case, case_id=f"{case.case_id}#r{repetition + 1}")
-                )
-                predictions.append(
-                    _prediction(
-                        strategy,
-                        case,
-                        experiment,
-                        repetition,
-                        dataset_hash,
-                        cache,
-                    )
-                )
+        measured_cases, predictions, max_concurrency = _experiment_predictions(
+            strategy,
+            evaluation_cases,
+            experiment,
+            repetitions,
+            dataset_hash,
+            cache,
+        )
 
         model_id = str(experiment.get("model_id") or "")
         input_tokens = sum(item.input_tokens for item in predictions)
@@ -209,7 +260,10 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
         experiment_results.append(
             {
                 "name": strategy.name,
-                "strategy": strategy.describe(),
+                "strategy": {
+                    **strategy.describe(),
+                    "max_concurrency": max_concurrency,
+                },
                 "metrics": metrics,
                 "meets_target": passed,
                 "target_failures": failures,

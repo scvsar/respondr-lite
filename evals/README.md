@@ -83,6 +83,7 @@ Add a `production_llm` experiment:
   "reasoning_effort": "low",
   "verbosity": "low",
   "max_tokens": 512,
+  "max_concurrency": 4,
   "repetitions": 3
 }
 ```
@@ -94,6 +95,8 @@ respondr-eval run path\to\experiment.json --allow-live-llm
 ```
 
 The adapter calls the production extraction pipeline. The adapter can replace only the Azure deployment and approved experiment settings. It records all retries and token use.
+
+`max_concurrency` controls parallel live calls. The runner accepts values from 1 through 16. Start with a low value.
 
 Prompt files can use these tokens:
 
