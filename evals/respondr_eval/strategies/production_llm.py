@@ -8,6 +8,7 @@ import hashlib
 import sys
 import time
 import types
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -78,9 +79,15 @@ def _load_prompt_variant(path: str | None) -> tuple[str | None, str | None, str]
 def _render_prompt(template: str | None, case: EvalCase) -> str | None:
     if template is None:
         return None
+    base_time = str(case.input["base_time"])
+    timezone_name = str(case.input.get("timezone") or "UTC")
+    base_datetime = datetime.fromisoformat(base_time.replace("Z", "+00:00"))
+    base_time_local = base_datetime.astimezone(ZoneInfo(timezone_name)).isoformat()
     values = {
         "text": str(case.input["text"]),
-        "base_time": str(case.input["base_time"]),
+        "base_time": base_time,
+        "base_time_local": base_time_local,
+        "timezone": timezone_name,
         "previous_eta_iso": str(case.input.get("previous_eta_iso") or "Unknown"),
     }
     rendered = template

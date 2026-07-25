@@ -117,6 +117,8 @@ Prompt files can use these tokens:
 
 - `{{text}}`
 - `{{base_time}}`
+- `{{base_time_local}}`
+- `{{timezone}}`
 - `{{previous_eta_iso}}`
 
 Copy `configs\pricing.example.json` to an ignored local file. Add the current Azure prices and effective date. Do not compare dollar cost without a dated price.
