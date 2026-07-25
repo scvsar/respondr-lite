@@ -57,6 +57,9 @@ It compares message generation quality and operating cost signals.
 
 Version 2 is the default generator benchmark.
 It keeps the version 1 configuration unchanged.
+Version 3 compares the current AI prompt with the responder context prompt.
+It scores the raw AI text before a safety repair.
+It also reports paired improvements, regressions, and repair changes.
 The fixed benchmark uses a mission-held-out split.
 No mission can occur in both the training data and the test data.
 The current split has 323 training messages and 85 test messages.
@@ -82,6 +85,18 @@ The command writes these local reports:
 - `evals\generator-results\v2\message-generator-benchmark.html`
 - `evals\generator-results\v2\message-generator-benchmark.json`
 
+Run the version 3 prompt comparison:
+
+```powershell
+.\.venv\Scripts\python.exe -m simulator.generator_benchmark `
+  --config simulator\generator_benchmark_config_v3.json `
+  --output evals\generator-results\v3 `
+  --include-ai `
+  --model-id "<model>"
+```
+
+The command writes the version 3 reports to `evals\generator-results\v3`.
+
 Git ignores the report directory.
 The reports contain aggregate metrics and synthetic samples only.
 They do not contain production messages.
@@ -94,6 +109,7 @@ It measures these properties:
 - Requested status, vehicle, and ETA control
 - Message semantic validity
 - Fluency acceptance
+- Raw control, semantic validity, and fluency before a safety repair
 - Team classifier accuracy
 - Status classifier accuracy
 - Team text similarity

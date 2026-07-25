@@ -916,6 +916,12 @@ class AIMessageGenerator:
     """Generate synthetic messages from aggregate team profiles."""
 
     name = "ai-profile-v1"
+    CURRENT_PROMPT_VERSION = "current-v1"
+    CONTEXT_PROMPT_VERSION = "responder-context-v2"
+    PROMPT_VERSIONS = {
+        CURRENT_PROMPT_VERSION,
+        CONTEXT_PROMPT_VERSION,
+    }
 
     def __init__(
         self,
@@ -926,11 +932,14 @@ class AIMessageGenerator:
         reasoning_effort: str = "minimal",
         verbosity: str = "low",
         max_tokens: int = 4096,
+        prompt_version: str = CURRENT_PROMPT_VERSION,
     ):
         if client is None:
             raise ValueError("client is required")
         if not deployment:
             raise ValueError("deployment is required")
+        if prompt_version not in self.PROMPT_VERSIONS:
+            raise ValueError(f"Unsupported prompt version: {prompt_version}")
         self.client = client
         self.deployment = deployment
         self.model_id = model_id
@@ -938,7 +947,115 @@ class AIMessageGenerator:
         self.reasoning_effort = reasoning_effort
         self.verbosity = verbosity
         self.max_tokens = max_tokens
+        self.prompt_version = prompt_version
         self.fallback = HeuristicMessageGenerator(seed=20260724, profiles=profiles)
+
+    def _system_prompt(self) -> str:
+        if self.prompt_version == self.CURRENT_PROMPT_VERSION:
+            return (
+                "Generate synthetic Search and Rescue chat messages. "
+                "Use short, informal, operational text. "
+                "Follow each requested team, status, vehicle, ETA mode, and message type. "
+                "Use American English and ASCII punctuation only. "
+                "Use no more than 20 words in each message. "
+                "Unknown vehicle means that you must not mention a vehicle. "
+                "ETA mode none means that you must not mention an ETA or time. "
+                "Relative ETA must use the supplied minutes. "
+                "Clock ETA must contain a time with a colon. "
+                "Military ETA must contain a four-digit time. "
+                "Informational and Unknown messages must not imply a response. "
+                "Do not use a real name, phone number, address, coordinate, or URL. "
+                "Do not add facts outside the request. Return JSON only."
+            )
+        return (
+            "You write synthetic Search and Rescue chat replies. "
+            "Write each message as the responder who sends it. "
+            "Use terse, informal, first-person responder language. "
+            "Do not write as a dispatcher, coordinator, or narrator. "
+            "Do not give an instruction or command. "
+            "Use the team profile only for role vocabulary and message length. "
+            "Do not treat profile topics as facts. "
+            "Do not invent an assignment, destination, staging state, resource, "
+            "scene condition, team count, scent status, or operational action. "
+            "Do not include the team name unless it is natural and useful. "
+            "For Responding, state that the responder is responding or en route. "
+            "For Available, state availability without saying that response started. "
+            "For Not Responding, state that the responder cannot respond. "
+            "For Cancelled, state that an earlier response is withdrawn. "
+            "For Informational or Unknown, do not claim response or availability. "
+            "Mention only the requested vehicle. "
+            "Do not mention a vehicle when the requested vehicle is Unknown. "
+            "Use the supplied minutes for a relative ETA. "
+            "Use a time with a colon for a clock ETA. "
+            "Use a four-digit time for a military ETA. "
+            "Do not mention an ETA or time when ETA mode is none. "
+            "Do not explain missing data with phrases such as vehicle unknown or no ETA. "
+            "Do not copy an input field name or control instruction into a message. "
+            "Never output the words Unknown, none, relative, military, or message type. "
+            "Use American English and ASCII punctuation only. "
+            "Use 3 to 16 words when the request permits it. "
+            "Do not use a real name, phone number, address, coordinate, or URL. "
+            "Examples: Responding POV, ETA 20 min. Available if needed. "
+            "Cannot respond. I need to cancel my response. Copy the update. "
+            "Return one message for each request. Return JSON only."
+        )
+
+    @staticmethod
+    def _status_requirement(status: str) -> str:
+        return {
+            "Responding": (
+                "Start with Responding or En route. Do not say available, "
+                "cannot respond, not responding, or cancelled."
+            ),
+            "Available": (
+                "Start with Available. Do not use responding or en route."
+            ),
+            "Not Responding": (
+                "Start with Cannot respond. Do not use responding or en route."
+            ),
+            "Cancelled": (
+                "Start with Cancel my response. Do not use responding or en route."
+            ),
+            "Informational": (
+                "Use only a neutral acknowledgment such as Acknowledged or Copy that."
+            ),
+            "Unknown": (
+                "Use only a neutral acknowledgment such as Acknowledged or Copy that."
+            ),
+        }[status]
+
+    def _request_payload(self, item: MessageRequest) -> dict[str, Any]:
+        if self.prompt_version == self.CURRENT_PROMPT_VERSION:
+            return {
+                "request_id": item.request_id,
+                "team": item.team,
+                "status": item.status,
+                "vehicle": item.vehicle,
+                "eta_mode": item.eta_mode,
+                **(
+                    {"eta_minutes": item.eta_minutes}
+                    if item.eta_mode == "relative"
+                    else {}
+                ),
+                "message_type": item.message_type,
+            }
+        eta_requirement = {
+            "none": "Do not include an ETA or another time.",
+            "relative": f"Include exactly one ETA as {item.eta_minutes} min.",
+            "clock": "Include exactly one plausible ETA in HH:MM format.",
+            "military": "Include exactly one plausible four-digit ETA.",
+        }[item.eta_mode]
+        return {
+            "request_id": item.request_id,
+            "team_context": item.team,
+            "required_response_meaning": self._status_requirement(item.status),
+            "vehicle_requirement": (
+                f"Include exactly one vehicle value: {item.vehicle}."
+                if item.vehicle != "Unknown"
+                else "Do not include a vehicle."
+            ),
+            "eta_requirement": eta_requirement,
+        }
 
     def _profile_summary(self, teams: set[str]) -> dict[str, Any]:
         return {
@@ -965,37 +1082,11 @@ class AIMessageGenerator:
         if not requests:
             return []
         started = time.perf_counter()
-        system = (
-            "Generate synthetic Search and Rescue chat messages. "
-            "Use short, informal, operational text. "
-            "Follow each requested team, status, vehicle, ETA mode, and message type. "
-            "Use American English and ASCII punctuation only. "
-            "Use no more than 20 words in each message. "
-            "Unknown vehicle means that you must not mention a vehicle. "
-            "ETA mode none means that you must not mention an ETA or time. "
-            "Relative ETA must use the supplied minutes. "
-            "Clock ETA must contain a time with a colon. "
-            "Military ETA must contain a four-digit time. "
-            "Informational and Unknown messages must not imply a response. "
-            "Do not use a real name, phone number, address, coordinate, or URL. "
-            "Do not add facts outside the request. Return JSON only."
-        )
+        system = self._system_prompt()
         payload = {
             "team_profiles": self._profile_summary({item.team for item in requests}),
             "requests": [
-                {
-                    "request_id": item.request_id,
-                    "team": item.team,
-                    "status": item.status,
-                    "vehicle": item.vehicle,
-                    "eta_mode": item.eta_mode,
-                    **(
-                        {"eta_minutes": item.eta_minutes}
-                        if item.eta_mode == "relative"
-                        else {}
-                    ),
-                    "message_type": item.message_type,
-                }
+                self._request_payload(item)
                 for item in requests
             ],
             "output": {
@@ -1043,6 +1134,13 @@ class AIMessageGenerator:
                 text = _strip_absence_markers(
                     sanitize_generated_text(raw_text)
                 )
+                safe_raw_text = (
+                    sanitize_generated_text(raw_text)
+                    if raw_text
+                    and not contains_pii(raw_text)
+                    and all(ord(character) < 128 for character in raw_text)
+                    else ""
+                )
                 error = None
                 repair_reason = None
                 if not text:
@@ -1082,6 +1180,8 @@ class AIMessageGenerator:
                             "reasoning_effort": self.reasoning_effort,
                             "verbosity": self.verbosity,
                             "max_tokens": self.max_tokens,
+                            "prompt_version": self.prompt_version,
+                            "raw_text_before_repair": safe_raw_text,
                             "repaired_with": (
                                 "heuristic" if repair_reason else None
                             ),
@@ -1104,6 +1204,8 @@ class AIMessageGenerator:
                     metadata={
                         "deployment": self.deployment,
                         "model_id": self.model_id,
+                        "prompt_version": self.prompt_version,
+                        "raw_text_before_repair": "",
                     },
                 )
                 for request in requests

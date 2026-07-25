@@ -568,9 +568,30 @@ def score_method(
         for request in requests
     ]
     texts = [result.text for result in ordered]
+    raw_texts = [
+        str(
+            result.metadata["raw_text_before_repair"]
+            if "raw_text_before_repair" in result.metadata
+            else result.text
+        )
+        for result in ordered
+    ]
     generated_matrix = vectorizer.transform(texts)
     fluency_probabilities = fluency_model.predict_proba(
         fluency_vectorizer.transform(texts)
+    )[:, 1]
+    raw_results = [
+        GeneratedMessage(
+            request_id=result.request_id,
+            team=result.team,
+            status=result.status,
+            text=raw_text,
+            strategy=result.strategy,
+        )
+        for result, raw_text in zip(ordered, raw_texts)
+    ]
+    raw_fluency_probabilities = fluency_model.predict_proba(
+        fluency_vectorizer.transform(raw_texts)
     )[:, 1]
     fluency_threshold = float(
         (config.get("fluency_classifier") or {}).get(
@@ -585,6 +606,7 @@ def score_method(
     metrics = {
         "failure_rate": failures / len(ordered),
         "control_accuracy": control_accuracy(requests, ordered),
+        "raw_control_accuracy": control_accuracy(requests, raw_results),
         "semantic_validity": (
             sum(
                 message_semantically_valid(result.text, request)
@@ -592,8 +614,18 @@ def score_method(
             )
             / len(ordered)
         ),
+        "raw_semantic_validity": (
+            sum(
+                message_semantically_valid(raw_text, request)
+                for request, raw_text in zip(requests, raw_texts)
+            )
+            / len(ordered)
+        ),
         "fluency_accept_rate": float(
             (fluency_probabilities >= fluency_threshold).mean()
+        ),
+        "raw_fluency_accept_rate": float(
+            (raw_fluency_probabilities >= fluency_threshold).mean()
         ),
         "mean_fluency_probability": float(fluency_probabilities.mean()),
         "team_accuracy": float(
@@ -637,7 +669,11 @@ def score_method(
     }
     weights = config["score_weights"]
     composite = sum(metrics[key] * weight for key, weight in weights.items())
-    if metrics["exact_copy_rate"] > config["targets"]["exact_copy_rate_max"]:
+    if (
+        config.get("zero_composite_on_exact_copy", True)
+        and metrics["exact_copy_rate"]
+        > config["targets"]["exact_copy_rate_max"]
+    ):
         composite = 0.0
     metrics["composite_score"] = composite
     targets = config["targets"]
@@ -653,6 +689,12 @@ def score_method(
         and metrics["fluency_accept_rate"]
         >= targets.get("fluency_accept_rate_min", 0.0)
         and metrics["unique_rate"] >= targets["unique_rate_min"]
+        and metrics["raw_control_accuracy"]
+        >= targets.get("raw_control_accuracy_min", 0.0)
+        and metrics["raw_semantic_validity"]
+        >= targets.get("raw_semantic_validity_min", 0.0)
+        and metrics["raw_fluency_accept_rate"]
+        >= targets.get("raw_fluency_accept_rate_min", 0.0)
         and metrics["composite_score"] >= targets["composite_score_min"]
     )
     samples: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -666,6 +708,12 @@ def score_method(
             samples[request.team].append(
                 {
                     "text": result.text,
+                    "raw_text": str(
+                        result.metadata.get("raw_text_before_repair") or ""
+                    ),
+                    "repair_reason": str(
+                        result.metadata.get("repair_reason") or ""
+                    ),
                     "source": source,
                     "requested_status": request.status,
                     "requested_vehicle": request.vehicle,
@@ -709,6 +757,7 @@ def run_benchmark(
     config_path: str | Path = DEFAULT_CONFIG,
     include_ai: bool = False,
     ai_generator: AIMessageGenerator | None = None,
+    ai_generators: dict[str, AIMessageGenerator] | None = None,
     ai_batch_size: int = 10,
 ) -> dict[str, Any]:
     config = json.loads(Path(config_path).read_text(encoding="utf-8"))
@@ -729,6 +778,7 @@ def run_benchmark(
     ) = _fit_fluency_classifier(train, test, config)
     calibration.update(fluency_calibration)
     generated: list[tuple[str, list[GeneratedMessage]]] = []
+    generated_by_name: dict[str, list[GeneratedMessage]] = {}
     method_names = config.get("methods") or ["heuristic", "ml", "ai"]
     retrieval_metadata: dict[str, Any] | None = None
     for method_name in method_names:
@@ -756,14 +806,21 @@ def run_benchmark(
                 "training_messages": retrieval.training_count,
                 "accepted_templates": retrieval.template_count,
             }
-        elif method_name == "ai" and include_ai:
-            if ai_generator is None:
+        elif method_name in {
+            "ai",
+            "ai-current",
+            "ai-context-v2",
+        } and include_ai:
+            selected = (ai_generators or {}).get(method_name)
+            if selected is None and method_name == "ai":
+                selected = ai_generator
+            if selected is None:
                 raise ValueError(
-                    "ai_generator is required when include_ai is true"
+                    f"An AI generator is required for {method_name}"
                 )
-            generated.append(
-                ("ai", _generate_ai(ai_generator, requests, ai_batch_size))
-            )
+            results = _generate_ai(selected, requests, ai_batch_size)
+            generated.append((method_name, results))
+            generated_by_name[method_name] = results
     methods = [
         score_method(
             name,
@@ -784,7 +841,7 @@ def run_benchmark(
         next(
             method for method in methods if method["name"] == "ml-retrieval"
         )["training"] = retrieval_metadata
-    return {
+    report = {
         "schema_version": "1.0",
         "benchmark_id": config["benchmark_id"],
         "generated_at": datetime.now(timezone.utc).isoformat().replace(
@@ -822,6 +879,71 @@ def run_benchmark(
         ),
         "methods": methods,
     }
+    if {
+        "ai-current",
+        "ai-context-v2",
+    }.issubset(generated_by_name):
+        report["paired_prompt_comparison"] = paired_prompt_comparison(
+            requests,
+            generated_by_name["ai-current"],
+            generated_by_name["ai-context-v2"],
+        )
+    return report
+
+
+def paired_prompt_comparison(
+    requests: list[MessageRequest],
+    current: list[GeneratedMessage],
+    candidate: list[GeneratedMessage],
+) -> dict[str, int]:
+    """Compare prompt results for the same requests before safety repair."""
+    current_by_id = {result.request_id: result for result in current}
+    candidate_by_id = {result.request_id: result for result in candidate}
+    counts = Counter()
+    for request in requests:
+        current_result = current_by_id[request.request_id]
+        candidate_result = candidate_by_id[request.request_id]
+        current_raw = str(
+            current_result.metadata["raw_text_before_repair"]
+            if "raw_text_before_repair" in current_result.metadata
+            else current_result.text
+        )
+        candidate_raw = str(
+            candidate_result.metadata["raw_text_before_repair"]
+            if "raw_text_before_repair" in candidate_result.metadata
+            else candidate_result.text
+        )
+        current_valid = message_semantically_valid(current_raw, request)
+        candidate_valid = message_semantically_valid(candidate_raw, request)
+        if current_valid and candidate_valid:
+            counts["both_valid"] += 1
+        elif current_valid:
+            counts["candidate_regressions"] += 1
+        elif candidate_valid:
+            counts["candidate_improvements"] += 1
+        else:
+            counts["both_invalid"] += 1
+        current_repaired = bool(
+            current_result.metadata.get("repaired_with")
+        )
+        candidate_repaired = bool(
+            candidate_result.metadata.get("repaired_with")
+        )
+        if current_repaired and not candidate_repaired:
+            counts["repairs_avoided"] += 1
+        elif not current_repaired and candidate_repaired:
+            counts["new_repairs"] += 1
+    return {
+        key: int(counts[key])
+        for key in (
+            "both_valid",
+            "candidate_improvements",
+            "candidate_regressions",
+            "both_invalid",
+            "repairs_avoided",
+            "new_repairs",
+        )
+    }
 
 
 def render_html(report: dict[str, Any]) -> str:
@@ -830,6 +952,9 @@ def render_html(report: dict[str, Any]) -> str:
         ("control_accuracy", "Control"),
         ("semantic_validity", "Semantic validity"),
         ("fluency_accept_rate", "Fluency"),
+        ("raw_control_accuracy", "Raw control"),
+        ("raw_semantic_validity", "Raw semantic"),
+        ("raw_fluency_accept_rate", "Raw fluency"),
         ("team_accuracy", "Team"),
         ("status_accuracy", "Status"),
         ("team_similarity", "Similarity"),
@@ -875,6 +1000,11 @@ def render_html(report: dict[str, Any]) -> str:
                         f"{sample['requested_vehicle']} | "
                         f"ETA {sample['requested_eta_mode']}"
                     )
+                    raw_text = sample.get("raw_text") or ""
+                    if raw_text and raw_text != text:
+                        detail += f" | raw: {raw_text}"
+                    if sample.get("repair_reason"):
+                        detail += f" | repair: {sample['repair_reason']}"
                 items += (
                     f"<li>{html.escape(text)}"
                     f"<div class=\"sample-detail\">{html.escape(detail)}</div></li>"
@@ -895,6 +1025,19 @@ def render_html(report: dict[str, Any]) -> str:
         if report.get("requires_human_review")
         else ""
     )
+    paired = report.get("paired_prompt_comparison")
+    paired_section = ""
+    if paired:
+        paired_section = f"""
+<h2>Paired prompt comparison</h2>
+<div class="cards">
+<div class="card"><div class="muted">Candidate improvements</div><div class="value">{paired["candidate_improvements"]}</div></div>
+<div class="card"><div class="muted">Candidate regressions</div><div class="value">{paired["candidate_regressions"]}</div></div>
+<div class="card"><div class="muted">Both valid</div><div class="value">{paired["both_valid"]}</div></div>
+<div class="card"><div class="muted">Both invalid</div><div class="value">{paired["both_invalid"]}</div></div>
+<div class="card"><div class="muted">Repairs avoided</div><div class="value">{paired["repairs_avoided"]}</div></div>
+<div class="card"><div class="muted">New repairs</div><div class="value">{paired["new_repairs"]}</div></div>
+</div>"""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -932,6 +1075,7 @@ details {{ margin-top: 14px; }} summary {{ cursor: pointer; font-weight: 700; }}
 <h2>Method comparison</h2>
 <div class="table-wrap"><table><thead><tr><th>Method</th><th>Target</th>{headers}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table></div>
+{paired_section}
 <p class="muted">The team classifier scored {report["calibration"]["real_holdout_team_accuracy"] * 100:.1f}% on real held-out messages. The status classifier scored {report["calibration"]["real_holdout_status_accuracy"] * 100:.1f}%. The fluency check accepted {report["calibration"].get("real_holdout_fluency_accept_rate", 0.0) * 100:.1f}% of real held-out messages and rejected {report["calibration"].get("corrupt_holdout_reject_rate", 0.0) * 100:.1f}% of corrupted messages.</p>
 <h2>Synthetic samples</h2>
 {''.join(sample_sections)}
@@ -952,7 +1096,10 @@ def write_report(report: dict[str, Any], output_dir: str | Path) -> tuple[Path, 
     return json_path, html_path
 
 
-def _ai_from_environment(args: argparse.Namespace) -> AIMessageGenerator:
+def _ai_from_environment(
+    args: argparse.Namespace,
+    prompt_version: str = AIMessageGenerator.CURRENT_PROMPT_VERSION,
+) -> AIMessageGenerator:
     import os
 
     try:
@@ -984,6 +1131,7 @@ def _ai_from_environment(args: argparse.Namespace) -> AIMessageGenerator:
         reasoning_effort=args.reasoning_effort,
         verbosity=args.verbosity,
         max_tokens=args.max_tokens,
+        prompt_version=prompt_version,
     )
 
 
@@ -1009,12 +1157,30 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    ai_generator = _ai_from_environment(args) if args.include_ai else None
+    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    ai_generator = None
+    ai_generators = None
+    if args.include_ai:
+        methods = set(config.get("methods") or [])
+        ai_generators = {}
+        if "ai" in methods:
+            ai_generator = _ai_from_environment(args)
+        if "ai-current" in methods:
+            ai_generators["ai-current"] = _ai_from_environment(
+                args,
+                AIMessageGenerator.CURRENT_PROMPT_VERSION,
+            )
+        if "ai-context-v2" in methods:
+            ai_generators["ai-context-v2"] = _ai_from_environment(
+                args,
+                AIMessageGenerator.CONTEXT_PROMPT_VERSION,
+            )
     report = run_benchmark(
         corpus_path=args.corpus,
         config_path=args.config,
         include_ai=args.include_ai,
         ai_generator=ai_generator,
+        ai_generators=ai_generators,
         ai_batch_size=args.ai_batch_size,
     )
     json_path, html_path = write_report(report, args.output)

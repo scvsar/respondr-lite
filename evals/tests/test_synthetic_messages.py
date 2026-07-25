@@ -13,12 +13,14 @@ from simulator.generator_benchmark import (  # noqa: E402
     control_accuracy,
     load_private_corpus,
     message_semantically_valid,
+    paired_prompt_comparison,
     render_html,
     split_by_mission,
 )
 from simulator.synthetic_messages import (  # noqa: E402
     AIMessageGenerator,
     CorpusMessage,
+    GeneratedMessage,
     HeuristicMessageGenerator,
     MessageRequest,
     NgramMessageGenerator,
@@ -140,7 +142,11 @@ def test_retrieval_model_preserves_structure_and_replaces_slots():
 
 
 class FakeCompletions:
+    def __init__(self):
+        self.last_kwargs = None
+
     def create(self, **kwargs):
+        self.last_kwargs = kwargs
         payload = json.loads(kwargs["messages"][1]["content"])
         messages = []
         for index, item in enumerate(payload["requests"]):
@@ -181,6 +187,112 @@ def test_ai_generator_replaces_personal_data_with_safe_fallback():
     assert "360-555-1212" not in results[1].text
     assert results[1].metadata["repaired_with"] == "heuristic"
     assert results[1].metadata["repair_reason"] == "pii_detected"
+    assert results[1].metadata["raw_text_before_repair"] == ""
+
+
+def test_ai_prompt_versions_preserve_control_and_add_responder_context():
+    completions = FakeCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    current = AIMessageGenerator(
+        client=client,
+        deployment="test-deployment",
+        model_id="test-model",
+    )
+    current.generate_batch([request()])
+    current_prompt = completions.last_kwargs["messages"][0]["content"]
+
+    candidate = AIMessageGenerator(
+        client=client,
+        deployment="test-deployment",
+        model_id="test-model",
+        prompt_version=AIMessageGenerator.CONTEXT_PROMPT_VERSION,
+    )
+    candidate.generate_batch([request()])
+    candidate_prompt = completions.last_kwargs["messages"][0]["content"]
+
+    assert current_prompt.startswith(
+        "Generate synthetic Search and Rescue chat messages."
+    )
+    assert "Write each message as the responder" in candidate_prompt
+    assert "Do not invent an assignment" in candidate_prompt
+    assert current_prompt != candidate_prompt
+
+
+class InvalidStatusCompletions:
+    def create(self, **kwargs):
+        payload = json.loads(kwargs["messages"][1]["content"])
+        messages = [
+            {
+                "request_id": item["request_id"],
+                "text": "Available for field support",
+            }
+            for item in payload["requests"]
+        ]
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content=json.dumps({"messages": messages})
+                    )
+                )
+            ],
+            usage=SimpleNamespace(prompt_tokens=10, completion_tokens=5),
+        )
+
+
+def test_ai_generator_retains_safe_raw_text_before_repair():
+    client = SimpleNamespace(
+        chat=SimpleNamespace(completions=InvalidStatusCompletions())
+    )
+    generator = AIMessageGenerator(
+        client=client,
+        deployment="test-deployment",
+        model_id="test-model",
+    )
+
+    result = generator.generate_batch([request()])[0]
+
+    assert result.metadata["repair_reason"] == "status_control"
+    assert (
+        result.metadata["raw_text_before_repair"]
+        == "Available for field support"
+    )
+    assert result.text != result.metadata["raw_text_before_repair"]
+
+
+def test_paired_prompt_comparison_counts_raw_improvements_and_repairs():
+    item = request()
+    current = GeneratedMessage(
+        item.request_id,
+        item.team,
+        item.status,
+        "K9 responding POV ETA 20 min",
+        "ai-current",
+        metadata={
+            "raw_text_before_repair": "",
+            "repaired_with": "heuristic",
+        },
+    )
+    candidate = GeneratedMessage(
+        item.request_id,
+        item.team,
+        item.status,
+        "Responding POV ETA 20 min",
+        "ai-context-v2",
+        metadata={
+            "raw_text_before_repair": "Responding POV ETA 20 min",
+        },
+    )
+
+    comparison = paired_prompt_comparison(
+        [item],
+        [current],
+        [candidate],
+    )
+
+    assert comparison["candidate_improvements"] == 1
+    assert comparison["candidate_regressions"] == 0
+    assert comparison["repairs_avoided"] == 1
 
 
 def test_private_corpus_loader_maps_groups_without_exporting_text(tmp_path):

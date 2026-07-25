@@ -1,0 +1,54 @@
+{
+  "schema_version": "3.0",
+  "benchmark_id": "sar-message-generator-prompt-comparison-v3",
+  "seed": 20260724,
+  "split_seed": 6690,
+  "test_mission_fraction": 0.2,
+  "zero_composite_on_exact_copy": false,
+  "methods": [
+    "heuristic",
+    "ml-retrieval",
+    "ai-current",
+    "ai-context-v2"
+  ],
+  "score_weights": {
+    "raw_control_accuracy": 0.2,
+    "raw_semantic_validity": 0.25,
+    "raw_fluency_accept_rate": 0.25,
+    "status_accuracy": 0.1,
+    "team_similarity": 0.05,
+    "length_fit": 0.05,
+    "unique_rate": 0.1
+  },
+  "targets": {
+    "failure_rate_max": 0.01,
+    "repair_rate_max": 0.05,
+    "fallback_rate_max": 0.1,
+    "exact_copy_rate_max": 0.0,
+    "control_accuracy_min": 0.95,
+    "semantic_validity_min": 0.95,
+    "fluency_accept_rate_min": 0.9,
+    "raw_control_accuracy_min": 0.95,
+    "raw_semantic_validity_min": 0.95,
+    "raw_fluency_accept_rate_min": 0.9,
+    "unique_rate_min": 0.8,
+    "composite_score_min": 0.75
+  },
+  "classifier": {
+    "analyzer": "char_wb",
+    "ngram_min": 3,
+    "ngram_max": 5,
+    "min_df": 2,
+    "max_features": 12000,
+    "max_iter": 2000
+  },
+  "fluency_classifier": {
+    "ngram_min": 1,
+    "ngram_max": 2,
+    "min_df": 2,
+    "max_features": 12000,
+    "max_iter": 2000,
+    "accept_probability": 0.5
+  },
+  "requires_human_review": true
+}
