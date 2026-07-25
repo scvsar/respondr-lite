@@ -97,6 +97,19 @@ Run the version 3 prompt comparison:
 
 The command writes the version 3 reports to `evals\generator-results\v3`.
 
+Run the PPE model comparison:
+
+```powershell
+.\.venv\Scripts\python.exe -m simulator.generator_benchmark `
+  --config simulator\generator_benchmark_config_v4.json `
+  --output evals\generator-results\v4 `
+  --include-ai `
+  --model-deployment ai-gpt-5.4-nano=gpt-5.4-nano `
+  --model-deployment ai-gpt-5.6-luna=gpt-5.6-luna
+```
+
+The command uses `responder-context-v2` for both model deployments.
+
 Git ignores the report directory.
 The reports contain aggregate metrics and synthetic samples only.
 They do not contain production messages.

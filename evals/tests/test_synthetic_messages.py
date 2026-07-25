@@ -393,6 +393,7 @@ def test_html_report_contains_only_supplied_safe_content():
                     "mean_latency_ms": 0.01,
                     "input_tokens": 0,
                     "output_tokens": 0,
+                    "estimated_cost_usd": 0.00123,
                 },
                 "samples": {
                     "ASAR": [
@@ -407,6 +408,15 @@ def test_html_report_contains_only_supplied_safe_content():
                 },
             }
         ],
+        "paired_comparison": {
+            "both_valid": 1,
+            "candidate_improvements": 1,
+            "candidate_regressions": 0,
+            "both_invalid": 0,
+            "repairs_avoided": 1,
+            "new_repairs": 0,
+        },
+        "paired_comparison_label": "Model comparison",
     }
 
     page = render_html(report)
@@ -414,4 +424,6 @@ def test_html_report_contains_only_supplied_safe_content():
     assert "SAR message generator benchmark" in page
     assert "Ground responder en route" in page
     assert "ml-retrieval | Responding | POV | ETA none" in page
+    assert "Model comparison" in page
+    assert "$0.00123" in page
     assert "inline JSON" not in page

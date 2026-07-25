@@ -806,11 +806,9 @@ def run_benchmark(
                 "training_messages": retrieval.training_count,
                 "accepted_templates": retrieval.template_count,
             }
-        elif method_name in {
-            "ai",
-            "ai-current",
-            "ai-context-v2",
-        } and include_ai:
+        elif (
+            method_name == "ai" or method_name.startswith("ai-")
+        ) and include_ai:
             selected = (ai_generators or {}).get(method_name)
             if selected is None and method_name == "ai":
                 selected = ai_generator
@@ -841,6 +839,17 @@ def run_benchmark(
         next(
             method for method in methods if method["name"] == "ml-retrieval"
         )["training"] = retrieval_metadata
+    pricing = config.get("model_prices") or {}
+    for method in methods:
+        price = pricing.get(method["name"])
+        if not price:
+            continue
+        method["metrics"]["estimated_cost_usd"] = (
+            method["metrics"]["input_tokens"]
+            * float(price["input_per_million"])
+            + method["metrics"]["output_tokens"]
+            * float(price["output_per_million"])
+        ) / 1_000_000
     report = {
         "schema_version": "1.0",
         "benchmark_id": config["benchmark_id"],
@@ -860,6 +869,9 @@ def run_benchmark(
             "mission_count": len({message.mission_hash for message in corpus}),
             "team_counts": _team_counts(corpus),
             "contains_raw_messages": False,
+            "sha256": hashlib.sha256(
+                Path(corpus_path).read_bytes()
+            ).hexdigest(),
         },
         "split": {
             "method": "mission-held-out",
@@ -874,12 +886,32 @@ def run_benchmark(
         "calibration": calibration,
         "targets": config["targets"],
         "score_weights": config["score_weights"],
+        "pricing": config.get("pricing"),
         "requires_human_review": bool(
             config.get("requires_human_review", False)
         ),
         "methods": methods,
     }
-    if {
+    comparison = config.get("paired_comparison") or {}
+    baseline_name = comparison.get("baseline")
+    candidate_name = comparison.get("candidate")
+    if (
+        baseline_name in generated_by_name
+        and candidate_name in generated_by_name
+    ):
+        report["paired_comparison"] = paired_prompt_comparison(
+            requests,
+            generated_by_name[baseline_name],
+            generated_by_name[candidate_name],
+        )
+        report["paired_comparison_label"] = str(
+            comparison.get("label") or "Paired method comparison"
+        )
+        report["paired_comparison_methods"] = {
+            "baseline": baseline_name,
+            "candidate": candidate_name,
+        }
+    elif {
         "ai-current",
         "ai-context-v2",
     }.issubset(generated_by_name):
@@ -968,6 +1000,12 @@ def render_html(report: dict[str, Any]) -> str:
     ]
     headers = "".join(f"<th>{html.escape(label)}</th>" for _, label in metric_labels)
     headers += "<th>Amortized latency</th><th>Input tokens</th><th>Output tokens</th>"
+    show_cost = any(
+        "estimated_cost_usd" in method["metrics"]
+        for method in report["methods"]
+    )
+    if show_cost:
+        headers += "<th>Estimated cost</th>"
     rows = []
     for method in report["methods"]:
         cells = "".join(
@@ -976,9 +1014,13 @@ def render_html(report: dict[str, Any]) -> str:
         )
         cells += (
             f"<td>{method['metrics']['mean_latency_ms']:.1f} ms</td>"
-            f"<td>{method['metrics']['input_tokens']}</td>"
-            f"<td>{method['metrics']['output_tokens']}</td>"
+            f"<td>{method['metrics']['input_tokens']:.0f}</td>"
+            f"<td>{method['metrics']['output_tokens']:.0f}</td>"
         )
+        if show_cost:
+            cells += (
+                f"<td>${method['metrics'].get('estimated_cost_usd', 0.0):.5f}</td>"
+            )
         outcome = "Pass" if method["passes_target"] else "Below target"
         rows.append(
             f"<tr><th>{html.escape(method['name'])}</th>"
@@ -1020,16 +1062,24 @@ def render_html(report: dict[str, Any]) -> str:
         f"<li>{html.escape(item)}</li>" for item in report["limitations"]
     )
     split = report["split"]
+    trial_card = (
+        f'<div class="card"><div class="muted">Live trials</div>'
+        f'<div class="value">{int(report["trial_count"])}</div></div>'
+        if report.get("trial_count")
+        else ""
+    )
     human_review_notice = (
         '<p class="muted">Human review is required before method selection.</p>'
         if report.get("requires_human_review")
         else ""
     )
-    paired = report.get("paired_prompt_comparison")
+    paired = report.get("paired_comparison") or report.get(
+        "paired_prompt_comparison"
+    )
     paired_section = ""
     if paired:
         paired_section = f"""
-<h2>Paired prompt comparison</h2>
+<h2>{html.escape(report.get("paired_comparison_label", "Paired prompt comparison"))}</h2>
 <div class="cards">
 <div class="card"><div class="muted">Candidate improvements</div><div class="value">{paired["candidate_improvements"]}</div></div>
 <div class="card"><div class="muted">Candidate regressions</div><div class="value">{paired["candidate_regressions"]}</div></div>
@@ -1038,6 +1088,13 @@ def render_html(report: dict[str, Any]) -> str:
 <div class="card"><div class="muted">Repairs avoided</div><div class="value">{paired["repairs_avoided"]}</div></div>
 <div class="card"><div class="muted">New repairs</div><div class="value">{paired["new_repairs"]}</div></div>
 </div>"""
+    pricing = report.get("pricing") or {}
+    pricing_note = (
+        f'<p class="muted">Cost uses {html.escape(str(pricing["deployment_type"]))} '
+        f'retail USD prices dated {html.escape(str(pricing["price_date"]))}.</p>'
+        if pricing and show_cost
+        else ""
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1071,10 +1128,12 @@ details {{ margin-top: 14px; }} summary {{ cursor: pointer; font-weight: 700; }}
 <div class="card"><div class="muted">Missions</div><div class="value">{report["corpus"]["mission_count"]}</div></div>
 <div class="card"><div class="muted">Training messages</div><div class="value">{split["train_messages"]}</div></div>
 <div class="card"><div class="muted">Test requests</div><div class="value">{split["test_messages"]}</div></div>
+{trial_card}
 </div>
 <h2>Method comparison</h2>
 <div class="table-wrap"><table><thead><tr><th>Method</th><th>Target</th>{headers}</tr></thead>
 <tbody>{''.join(rows)}</tbody></table></div>
+{pricing_note}
 {paired_section}
 <p class="muted">The team classifier scored {report["calibration"]["real_holdout_team_accuracy"] * 100:.1f}% on real held-out messages. The status classifier scored {report["calibration"]["real_holdout_status_accuracy"] * 100:.1f}%. The fluency check accepted {report["calibration"].get("real_holdout_fluency_accept_rate", 0.0) * 100:.1f}% of real held-out messages and rejected {report["calibration"].get("corrupt_holdout_reject_rate", 0.0) * 100:.1f}% of corrupted messages.</p>
 <h2>Synthetic samples</h2>
@@ -1099,6 +1158,8 @@ def write_report(report: dict[str, Any], output_dir: str | Path) -> tuple[Path, 
 def _ai_from_environment(
     args: argparse.Namespace,
     prompt_version: str = AIMessageGenerator.CURRENT_PROMPT_VERSION,
+    deployment_override: str | None = None,
+    model_id_override: str | None = None,
 ) -> AIMessageGenerator:
     import os
 
@@ -1111,7 +1172,7 @@ def _ai_from_environment(
     api_version = args.azure_api_version or os.getenv(
         "AZURE_OPENAI_API_VERSION", "2024-12-01-preview"
     )
-    deployment = args.azure_deployment or os.getenv(
+    deployment = deployment_override or args.azure_deployment or os.getenv(
         "AZURE_OPENAI_DEPLOYMENT_NAME",
         os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
     )
@@ -1127,7 +1188,7 @@ def _ai_from_environment(
     return AIMessageGenerator(
         client=client,
         deployment=deployment,
-        model_id=args.model_id or deployment,
+        model_id=model_id_override or args.model_id or deployment,
         reasoning_effort=args.reasoning_effort,
         verbosity=args.verbosity,
         max_tokens=args.max_tokens,
@@ -1152,6 +1213,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbosity", default="low")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--ai-batch-size", type=int, default=10)
+    parser.add_argument(
+        "--model-deployment",
+        action="append",
+        default=[],
+        metavar="METHOD=DEPLOYMENT",
+    )
     return parser
 
 
@@ -1162,6 +1229,14 @@ def main() -> int:
     ai_generators = None
     if args.include_ai:
         methods = set(config.get("methods") or [])
+        deployment_map = {}
+        for value in args.model_deployment:
+            method_name, separator, deployment_name = value.partition("=")
+            if not separator or not method_name or not deployment_name:
+                raise ValueError(
+                    "--model-deployment must use METHOD=DEPLOYMENT"
+                )
+            deployment_map[method_name] = deployment_name
         ai_generators = {}
         if "ai" in methods:
             ai_generator = _ai_from_environment(args)
@@ -1174,6 +1249,30 @@ def main() -> int:
             ai_generators["ai-context-v2"] = _ai_from_environment(
                 args,
                 AIMessageGenerator.CONTEXT_PROMPT_VERSION,
+            )
+        generic_methods = sorted(
+            method
+            for method in methods
+            if method.startswith("ai-")
+            and method not in {"ai-current", "ai-context-v2"}
+        )
+        prompt_version = str(
+            config.get(
+                "ai_prompt_version",
+                AIMessageGenerator.CONTEXT_PROMPT_VERSION,
+            )
+        )
+        for method in generic_methods:
+            deployment = deployment_map.get(method)
+            if not deployment:
+                raise ValueError(
+                    f"--model-deployment is required for {method}"
+                )
+            ai_generators[method] = _ai_from_environment(
+                args,
+                prompt_version,
+                deployment_override=deployment,
+                model_id_override=deployment,
             )
     report = run_benchmark(
         corpus_path=args.corpus,
