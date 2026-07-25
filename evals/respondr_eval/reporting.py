@@ -30,14 +30,23 @@ def _number(value: Any, digits: int = 2) -> str:
     return "n/a" if value is None else f"{float(value):.{digits}f}"
 
 
+def _case_count_label(dataset_kind: str) -> str:
+    if dataset_kind == "assumed-production":
+        return "Assumed-label evaluation cases"
+    if dataset_kind == "synthetic":
+        return "Synthetic evaluation cases"
+    return "Reviewed evaluation cases"
+
+
 def _markdown(run: dict[str, Any]) -> str:
+    dataset_kind = run["dataset"].get("kind", "unknown")
     lines = [
         "# Respondr evaluation report",
         "",
-        f"- Dataset type: `{run['dataset'].get('kind', 'unknown')}`",
+        f"- Dataset type: `{dataset_kind}`",
         f"- Dataset fingerprint: `{run['dataset']['fingerprint']}`",
         f"- Evaluation split: `{run['dataset']['evaluation_split']}`",
-        f"- Reviewed evaluation cases: {run['dataset']['evaluation_case_count']}",
+        f"- {_case_count_label(dataset_kind)}: {run['dataset']['evaluation_case_count']}",
         f"- ETA tolerance: {run['eta_tolerance_minutes']} minutes",
         "",
         "## Results",

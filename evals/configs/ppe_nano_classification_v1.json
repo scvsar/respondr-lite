@@ -1,0 +1,64 @@
+{
+  "dataset": "../local/prod-assumed-grouped.jsonl",
+  "evaluation_split": "test",
+  "eta_tolerance_minutes": 5,
+  "output_dir": "../results",
+  "cache": "../cache/ppe-nano-classification-v1.jsonl",
+  "pricing": "pricing-2026-07-25.json",
+  "thresholds": {
+    "status_macro_f1": {
+      "min": 0.9
+    },
+    "vehicle_accuracy": {
+      "min": 0.9
+    },
+    "eta_accuracy": {
+      "min": 0.9
+    },
+    "exact_match_accuracy": {
+      "min": 0.8
+    },
+    "schema_failure_rate": {
+      "max": 0.01
+    }
+  },
+  "paired_comparisons": [
+    {
+      "baseline": "ppe-gpt-5-nano",
+      "candidate": "ppe-gpt-5.4-nano"
+    }
+  ],
+  "experiments": [
+    {
+      "name": "heuristic-v1",
+      "type": "heuristic"
+    },
+    {
+      "name": "tfidf-logreg-v1",
+      "type": "classical",
+      "tune": true
+    },
+    {
+      "name": "ppe-gpt-5-nano",
+      "type": "production_llm",
+      "deployment": "gpt-5-nano",
+      "model_id": "gpt-5-nano",
+      "reasoning_effort": "medium",
+      "verbosity": "low",
+      "max_tokens": 2048,
+      "max_concurrency": 8,
+      "repetitions": 1
+    },
+    {
+      "name": "ppe-gpt-5.4-nano",
+      "type": "production_llm",
+      "deployment": "gpt-5.4-nano",
+      "model_id": "gpt-5.4-nano",
+      "reasoning_effort": "medium",
+      "verbosity": "low",
+      "max_tokens": 2048,
+      "max_concurrency": 8,
+      "repetitions": 1
+    }
+  ]
+}

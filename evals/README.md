@@ -98,6 +98,21 @@ The adapter calls the production extraction pipeline. The adapter can replace on
 
 `max_concurrency` controls parallel live calls. The runner accepts values from 1 through 16. Start with a low value.
 
+Set direct model comparisons at the top level:
+
+```json
+{
+  "paired_comparisons": [
+    {
+      "baseline": "older-model",
+      "candidate": "newer-model"
+    }
+  ]
+}
+```
+
+Each name must match an experiment name in the same configuration.
+
 Prompt files can use these tokens:
 
 - `{{text}}`

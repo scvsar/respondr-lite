@@ -189,6 +189,44 @@ def _experiment_predictions(
     return measured_cases, predictions, max_concurrency
 
 
+def _paired_comparisons(
+    experiment_results: list[dict[str, Any]],
+    rows_by_name: dict[str, list[dict[str, Any]]],
+    configured_pairs: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if not experiment_results:
+        return []
+    if configured_pairs is None:
+        baseline = experiment_results[0]["name"]
+        pairs = [
+            {"baseline": baseline, "candidate": result["name"]}
+            for result in experiment_results[1:]
+        ]
+    else:
+        pairs = configured_pairs
+
+    comparisons = []
+    for pair in pairs:
+        baseline = str(pair.get("baseline") or "")
+        candidate = str(pair.get("candidate") or "")
+        if baseline not in rows_by_name:
+            raise ValueError(f"Unknown paired comparison baseline {baseline!r}")
+        if candidate not in rows_by_name:
+            raise ValueError(f"Unknown paired comparison candidate {candidate!r}")
+        if baseline == candidate:
+            raise ValueError("Paired comparison models must be different")
+        comparisons.append(
+            {
+                "baseline": baseline,
+                "candidate": candidate,
+                "comparison": paired_comparison(
+                    rows_by_name[baseline], rows_by_name[candidate]
+                ),
+            }
+        )
+    return comparisons
+
+
 def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Path]:
     path = Path(config_path).resolve()
     base = path.parent
@@ -271,19 +309,14 @@ def run(config_path: str | Path, allow_live_llm: bool = False) -> tuple[Path, Pa
             }
         )
 
-    paired = []
-    if experiment_results:
-        baseline = experiment_results[0]["name"]
-        for candidate in experiment_results[1:]:
-            paired.append(
-                {
-                    "baseline": baseline,
-                    "candidate": candidate["name"],
-                    "comparison": paired_comparison(
-                        rows_by_name[baseline], rows_by_name[candidate["name"]]
-                    ),
-                }
-            )
+    configured_pairs = config.get("paired_comparisons")
+    if configured_pairs is not None and not isinstance(configured_pairs, list):
+        raise ValueError("paired_comparisons must be a list")
+    paired = _paired_comparisons(
+        experiment_results,
+        rows_by_name,
+        configured_pairs,
+    )
 
     eligible = [
         result

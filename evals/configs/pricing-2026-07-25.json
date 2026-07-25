@@ -1,0 +1,13 @@
+{
+  "effective_date": "2026-07-25",
+  "models": {
+    "gpt-5-nano": {
+      "input_usd_per_million": 0.05,
+      "output_usd_per_million": 0.4
+    },
+    "gpt-5.4-nano": {
+      "input_usd_per_million": 0.2,
+      "output_usd_per_million": 1.25
+    }
+  }
+}

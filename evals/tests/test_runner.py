@@ -4,7 +4,12 @@ from threading import Lock
 
 from respondr_eval.cache import PredictionCache
 from respondr_eval.dataset import load_jsonl
-from respondr_eval.runner import _dataset_kind, _experiment_predictions, run
+from respondr_eval.runner import (
+    _dataset_kind,
+    _experiment_predictions,
+    _paired_comparisons,
+    run,
+)
 from respondr_eval.strategies.base import Prediction
 
 
@@ -80,6 +85,40 @@ def test_assumed_production_labels_are_not_reported_as_reviewed():
     assert _dataset_kind(cases, ["azure_table"]) == "assumed-production"
 
 
+def test_configured_paired_comparison_can_compare_two_candidates():
+    experiment_results = [
+        {"name": "heuristic"},
+        {"name": "older-model"},
+        {"name": "newer-model"},
+    ]
+    rows_by_name = {
+        "heuristic": [{"case_id": "1", "exact_match": False}],
+        "older-model": [{"case_id": "1", "exact_match": True}],
+        "newer-model": [{"case_id": "1", "exact_match": False}],
+    }
+
+    comparisons = _paired_comparisons(
+        experiment_results,
+        rows_by_name,
+        [{"baseline": "older-model", "candidate": "newer-model"}],
+    )
+
+    assert comparisons == [
+        {
+            "baseline": "older-model",
+            "candidate": "newer-model",
+            "comparison": {
+                "shared_cases": 1,
+                "wins": 0,
+                "ties": 0,
+                "losses": 1,
+                "exact_match_delta": -1,
+                "delta_ci95": [-1, -1],
+            },
+        }
+    ]
+
+
 def test_example_matrix_writes_private_reports(tmp_path):
     config = json.loads(
         (ROOT / "configs" / "example_experiments.json").read_text(encoding="utf-8")
@@ -107,4 +146,7 @@ def test_example_matrix_writes_private_reports(tmp_path):
     assert "actual_eta_iso" in first_case
     assert "raw responder" in markdown_path.read_text(encoding="utf-8")
     assert "Dataset type: `synthetic`" in markdown_path.read_text(encoding="utf-8")
+    assert "Synthetic evaluation cases: 6" in markdown_path.read_text(
+        encoding="utf-8"
+    )
     assert "Rolling in 45" not in json_path.read_text(encoding="utf-8")
