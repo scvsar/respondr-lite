@@ -140,3 +140,15 @@ def test_contrastive_prompt_has_synthetic_correct_and_incorrect_examples():
     assert system_prompt.count("\nIncorrect:") == 16
     assert system_prompt.count("\nCorrect:") == 16
     assert "The following examples are synthetic." in system_prompt
+
+
+def test_ste_prompt_preserves_the_production_schema_without_examples():
+    prompt = json.loads(
+        (ROOT / "prompts" / "production-ste-v1.json").read_text(encoding="utf-8")
+    )
+
+    assert prompt["example_count"] == 0
+    assert "{{timezone}}" in prompt["system_prompt"]
+    assert "\"vehicle\"" in prompt["system_prompt"]
+    assert "\"eta_iso\"" in prompt["system_prompt"]
+    assert "\"status\"" in prompt["system_prompt"]
