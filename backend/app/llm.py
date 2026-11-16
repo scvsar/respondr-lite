@@ -167,7 +167,7 @@ def build_prompts(text: str, base_dt: datetime, prev_eta_iso: Optional[str]) -> 
     - IMPORTANT: If the user says "same ETA" or gives an update without a new time and they remain Responding, KEEP their most recent ETA from history.
     - Vehicles are typically SAR-<number>, but users may use shorthand ("taking 108", "grabbing 75", "coming in 99").
     - Vehicle types to output: "POV", "SAR-<number>", "SAR Rig", or "Unknown".
-    - If the person is clearly Responding but no vehicle is mentioned, default vehicle to "POV".
+    - If no vehicle is mentioned, use "Unknown". Do not infer a vehicle from response status.
     - NEVER use a status label (like "Not Responding") as a vehicle type.
 
     Status classification:

@@ -4,8 +4,8 @@
   "metadata": {
     "_generator": {
       "name": "bicep",
-      "version": "0.37.4.10188",
-      "templateHash": "2380046311765131567"
+      "version": "0.49.2.45890",
+      "templateHash": "12496420105560576499"
     }
   },
   "parameters": {
@@ -67,6 +67,13 @@
       "defaultValue": 200,
       "metadata": {
         "description": "TPM units for GPT-5-nano deployment; 1 unit = 1,000 TPM. 200 units = 200,000 TPM."
+      }
+    },
+    "gpt6lunaTpmUnits": {
+      "type": "int",
+      "defaultValue": 10,
+      "metadata": {
+        "description": "Capacity in thousands of tokens per minute for GPT-6 Luna."
       }
     },
     "containerAppName": {
@@ -137,11 +144,60 @@
         "description": "Non-secret env vars for the container: array of { name, value }"
       }
     },
+    "allowedOrigins": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Comma-separated list of allowed origins for CORS"
+      }
+    },
     "containerSecretMap": {
       "type": "secureObject",
       "defaultValue": {},
       "metadata": {
         "description": "Secret map: name -> value. Secrets are created and also exposed via env using the same name."
+      }
+    },
+    "staticWebAppName": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Static Web App name"
+      }
+    },
+    "repositoryUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Repository URL for Static Web App"
+      }
+    },
+    "repositoryBranch": {
+      "type": "string",
+      "defaultValue": "main",
+      "metadata": {
+        "description": "Repository branch for Static Web App"
+      }
+    },
+    "appArtifactLocation": {
+      "type": "string",
+      "defaultValue": "frontend/build",
+      "metadata": {
+        "description": "Build preset for Static Web App (React, Angular, Vue, etc.)"
+      }
+    },
+    "apiLocation": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "API location for Static Web App integration"
+      }
+    },
+    "githubToken": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "GitHub token for Static Web App deployment"
       }
     },
     "enableAuth": {
@@ -170,6 +226,13 @@
       "defaultValue": "",
       "metadata": {
         "description": "Azure AD Tenant ID (optional, defaults to current tenant)"
+      }
+    },
+    "webhookApiKey": {
+      "type": "securestring",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Webhook API Key for GroupMe integration"
       }
     }
   },
@@ -223,6 +286,25 @@
       "sku": {
         "name": "GlobalStandard",
         "capacity": "[parameters('gpt5nanoTpmUnits')]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts/deployments",
+      "apiVersion": "2025-06-01",
+      "name": "[format('{0}/{1}', parameters('openAiName'), 'gpt-6-luna')]",
+      "properties": {
+        "model": {
+          "name": "gpt-6-luna",
+          "format": "OpenAI",
+          "version": "2026-09-22"
+        }
+      },
+      "sku": {
+        "name": "GlobalStandard",
+        "capacity": "[parameters('gpt6lunaTpmUnits')]"
       },
       "dependsOn": [
         "[resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName'))]"
@@ -324,8 +406,16 @@
               "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', parameters('saName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('saName')), '2023-01-01').keys[0].value, environment().suffixes.storage)]"
             },
             {
+              "name": "AZURE_STORAGE_CONNECTION_STRING",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix={2}', parameters('saName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('saName')), '2023-01-01').keys[0].value, environment().suffixes.storage)]"
+            },
+            {
               "name": "STORAGE_QUEUE_NAME",
               "value": "[parameters('queueName')]"
+            },
+            {
+              "name": "WEBHOOK_API_KEY",
+              "value": "[parameters('webhookApiKey')]"
             }
           ]
         }
@@ -396,7 +486,7 @@
             {
               "name": "app",
               "image": "[parameters('containerImage')]",
-              "env": "[concat(parameters('containerEnvPlain'), variables('envFromSecrets'), createArray(createObject('name', 'STORAGE_QUEUE_NAME', 'value', parameters('queueName')), createObject('name', 'AZURE_STORAGE_ACCOUNT', 'value', parameters('saName')), createObject('name', 'AZURE_OPENAI_ENDPOINT', 'value', format('https://{0}.openai.azure.com/', parameters('openAiName')))))]",
+              "env": "[concat(parameters('containerEnvPlain'), variables('envFromSecrets'), createArray(createObject('name', 'STORAGE_QUEUE_NAME', 'value', parameters('queueName')), createObject('name', 'AZURE_STORAGE_ACCOUNT', 'value', parameters('saName')), createObject('name', 'AZURE_OPENAI_ENDPOINT', 'value', format('https://{0}.openai.azure.com/', parameters('openAiName'))), createObject('name', 'ALLOWED_ORIGINS', 'value', parameters('allowedOrigins'))))]",
               "probes": [
                 {
                   "type": "Liveness",
@@ -416,7 +506,6 @@
               }
             }
           ],
-          "revisionSuffix": "v1",
           "scale": {
             "minReplicas": "[parameters('containerMinReplicas')]",
             "maxReplicas": "[parameters('containerMaxReplicas')]",
@@ -467,7 +556,21 @@
           }
         },
         "globalValidation": {
-          "redirectToProvider": "azureActiveDirectory"
+          "unauthenticatedClientAction": "AllowAnonymous",
+          "redirectToProvider": "azureActiveDirectory",
+          "excludedPaths": [
+            "/",
+            "/.auth/*",
+            "/api/auth/local/*",
+            "/api/user",
+            "/static/*",
+            "/manifest.json",
+            "/*.ico",
+            "/*.png",
+            "/*.js",
+            "/*.css",
+            "/health"
+          ]
         },
         "platform": {
           "enabled": true,
@@ -479,12 +582,33 @@
       ]
     },
     {
+      "condition": "[not(empty(parameters('staticWebAppName')))]",
+      "type": "Microsoft.Web/staticSites",
+      "apiVersion": "2023-01-01",
+      "name": "[parameters('staticWebAppName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Free",
+        "tier": "Free"
+      },
+      "properties": {
+        "repositoryUrl": "[parameters('repositoryUrl')]",
+        "branch": "[parameters('repositoryBranch')]",
+        "repositoryToken": "[parameters('githubToken')]",
+        "buildProperties": {
+          "appLocation": "/frontend",
+          "appArtifactLocation": "[parameters('appArtifactLocation')]",
+          "apiLocation": "[parameters('apiLocation')]"
+        }
+      }
+    },
+    {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[format('Microsoft.Storage/storageAccounts/{0}/queueServices/{1}/queues/{2}', parameters('saName'), 'default', parameters('queueName'))]",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', parameters('saName'), 'default', parameters('queueName'))]",
       "name": "[guid(resourceId('Microsoft.Storage/storageAccounts/queueServices/queues', parameters('saName'), 'default', parameters('queueName')), parameters('containerAppName'), 'queue-msg-processor')]",
       "properties": {
-        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '8a0f0c08-91a1-4084-bc3d-661d67233fed')]",
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')]",
         "principalId": "[reference(resourceId('Microsoft.App/containerApps', parameters('containerAppName')), '2025-01-01', 'full').identity.principalId]",
         "principalType": "ServicePrincipal"
       },
@@ -496,7 +620,7 @@
     {
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
-      "scope": "[format('Microsoft.CognitiveServices/accounts/{0}', parameters('openAiName'))]",
+      "scope": "[resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName'))]",
       "name": "[guid(resourceId('Microsoft.CognitiveServices/accounts', parameters('openAiName')), parameters('containerAppName'), 'openai-user')]",
       "properties": {
         "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd')]",
@@ -529,6 +653,10 @@
     "gpt5nanoDeployment": {
       "type": "string",
       "value": "[parameters('gpt5nanoDeploymentName')]"
+    },
+    "staticWebAppName": {
+      "type": "string",
+      "value": "[parameters('staticWebAppName')]"
     }
   }
 }

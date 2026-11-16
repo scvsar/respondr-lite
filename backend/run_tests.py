@@ -12,6 +12,7 @@ def main():
     working_tests = [
         "tests/test_storage_working.py",
         "tests/test_queue_idempotency.py",
+        "tests/test_luna_extraction.py",
         "tests/test_cleanup_duplicate_responders.py",
         "tests/test_main.py",
         "tests/test_retention.py"

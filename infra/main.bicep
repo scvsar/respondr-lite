@@ -27,6 +27,9 @@ param gpt5nanoModelVersion string = '2025-08-07'
 @description('TPM units for GPT-5-nano deployment; 1 unit = 1,000 TPM. 200 units = 200,000 TPM.')
 param gpt5nanoTpmUnits int = 200
 
+@description('Capacity in thousands of tokens per minute for GPT-6 Luna.')
+param gpt6lunaTpmUnits int = 10
+
 // Container Apps parameters - matching the PowerShell script exactly
 @description('Container App name')
 param containerAppName string
@@ -128,6 +131,22 @@ resource gpt5nanoDeployment 'Microsoft.CognitiveServices/accounts/deployments@20
   sku: {
     name: 'GlobalStandard'
     capacity: gpt5nanoTpmUnits
+  }
+}
+
+resource gpt6lunaDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-06-01' = {
+  parent: openai
+  name: 'gpt-6-luna'
+  properties: {
+    model: {
+      name: 'gpt-6-luna'
+      format: 'OpenAI'
+      version: '2026-09-22'
+    }
+  }
+  sku: {
+    name: 'GlobalStandard'
+    capacity: gpt6lunaTpmUnits
   }
 }
 
