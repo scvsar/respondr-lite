@@ -1,5 +1,8 @@
 """Webhook and message parsing endpoints."""
 
+from ..responder_identity import attach_responder_keys, message_epoch
+from ..message_policy import is_system_notice, responder_messages
+
 import hashlib
 import logging
 import uuid
@@ -13,8 +16,8 @@ from pydantic import BaseModel
 from ..config import webhook_api_key, disable_api_key_check, APP_TZ, GROUP_ID_TO_TEAM
 from ..llm import extract_details_from_text, build_prompts
 from ..utils import parse_datetime_like
-from ..storage import add_message, get_messages
-from ..auth.dependencies import require_admin, require_auth, oauth2_scheme
+from ..storage import add_message, get_messages, get_deleted_messages
+from ..auth.dependencies import require_admin, require_auth
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -75,22 +78,55 @@ def verify_api_key(api_key: Optional[str] = None):
     return True
 
 
-@router.post("/webhook")
+def verify_webhook_request(request: Request):
+    """Authenticate the HTTP entry point while keeping queue processing internal."""
+    token = request.headers.get("X-Webhook-Token") or request.query_params.get("k")
+    return verify_api_key(token)
+
+
+@router.post("/webhook", dependencies=[Depends(verify_webhook_request)])
 async def webhook_handler(message: WebhookMessage, request: Request, debug: bool = Query(default=False)):
     """Handle incoming webhook messages from GroupMe."""
     try:
+        if debug:
+            if request is None:
+                raise HTTPException(status_code=401, detail="Sign-in required")
+            header = request.headers.get("Authorization", "")
+            token = header.split(" ", 1)[1] if header.lower().startswith("bearer ") else None
+            require_admin(require_auth(request=request, token=token))
         # Parse timestamp
         message_dt = parse_datetime_like(message.created_at) or datetime.now(APP_TZ)
+        if is_system_notice(message.model_dump()):
+            notice = message.model_dump(include={
+                "id", "name", "text", "created_at", "group_id", "sender_id",
+                "sender_type", "source_guid", "user_id", "system", "attachments",
+            })
+            notice.update({
+                "id": _build_storage_message_id(message.group_id, message.id),
+                "groupme_id": message.id,
+                "message_kind": "system",
+                "timestamp": message_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp_utc": message_dt.astimezone(timezone.utc).isoformat(),
+                "vehicle": "Unknown",
+                "eta": "Unknown",
+                "arrival_status": "Informational",
+                "raw_status": "Informational",
+                "status_source": "System",
+            })
+            if not await run_in_threadpool(add_message, notice):
+                raise RuntimeError("Failed to save system notice")
+            return {"status": "system_notice"}
         # Determine team from group_id early so we can scope history lookup
         group_id = message.group_id or "unknown"
         team = GROUP_ID_TO_TEAM.get(group_id, "Unknown")
         name_l = (message.name or "").strip().lower()
         storage_message_id = _build_storage_message_id(group_id, message.id)
+        deleted_history = await run_in_threadpool(get_deleted_messages)
+        history = responder_messages(await run_in_threadpool(get_messages) or [])
 
         # Look up previous ETA for this responder (same group) to allow persistence on updates
         prev_eta_iso: Optional[str] = None
         try:
-            history = get_messages() or []
             existing_message = next(
                 (
                     item
@@ -99,6 +135,9 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                 ),
                 None,
             )
+            if existing_message is None:
+                existing_message = next((item for item in deleted_history
+                                         if item.get('id') == storage_message_id), None)
             if existing_message is not None:
                 logger.info(
                     "Skipped duplicate GroupMe message %s",
@@ -111,30 +150,16 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
                     }
                 return {"status": "duplicate"}
 
-            # Sort latest first; prefer same group_id and same name
-            # Look for the most recent ETA that was actually calculated (not inherited)
-            for m in sorted(history, key=lambda x: x.get("created_at", 0), reverse=True):
-                if (m.get("group_id") or "unknown") != group_id:
-                    continue
-                if str(m.get("name", "")).strip().lower() != name_l:
-                    continue
-                # Skip if this message is too recent (avoid using current message as previous)
-                if m.get("created_at", 0) >= message.created_at:
-                    continue
-                # must have a valid prior ETA and have been responding
-                eta_utc = m.get("eta_timestamp_utc")
-                prior_status = m.get("raw_status") or m.get("arrival_status")
-                parse_source = m.get("parse_source", "")
-                
-                # Prefer ETAs that were originally parsed from text (not inherited from previous)
-                # to avoid perpetuating incorrect ETAs
-                if eta_utc and eta_utc != "Unknown" and prior_status == "Responding":
-                    prev_eta_iso = str(eta_utc)
-                    # If this ETA was originally parsed from LLM or deterministic parsing
-                    # (not inherited), use it and break
-                    if parse_source in ("LLM", "Deterministic") and "inherit" not in parse_source.lower():
-                        break
-                    # Otherwise keep looking for a better source, but save this as fallback
+            scoped = attach_responder_keys(history + [message.model_dump()])
+            person_key = scoped[-1]['responder_key']
+            recent_history = sorted((item for item in scoped[:-1]
+                if item['responder_key'] == person_key
+                and message.created_at - 12 * 3600 <= message_epoch(item) < message.created_at),
+                key=message_epoch, reverse=True)
+            if recent_history:
+                latest = recent_history[0]
+                if (latest.get('raw_status') or latest.get('arrival_status')) == 'Responding':
+                    prev_eta_iso = latest.get('eta_timestamp_utc') or None
         except Exception:
             # Non-fatal: proceed without prev ETA
             prev_eta_iso = None
@@ -148,19 +173,12 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         latest_eta: Optional[str] = None
         latest_vehicle: Optional[str] = None
         try:
-            history = get_messages() or []
-            # Sort by created_at ascending to build chronological history
-            sorted_hist = sorted(history, key=lambda x: x.get("created_at", 0))
-            
+            scoped = attach_responder_keys(history + [message.model_dump()])
+            person_key = scoped[-1]['responder_key']
+            sorted_hist = sorted((item for item in scoped[:-1]
+                if item['responder_key'] == person_key
+                and cutoff_timestamp <= message_epoch(item) < message.created_at), key=message_epoch)
             for m in sorted_hist:
-                # Only include messages from same group and user within time window
-                if (m.get("group_id") or "unknown") != group_id:
-                    continue
-                if str(m.get("name", "")).strip().lower() != name_l:
-                    continue
-                if m.get("created_at", 0) < cutoff_timestamp:
-                    continue
-                    
                 # Build history entry
                 hist_entry = {
                     "text": m.get("text", ""),
@@ -201,54 +219,18 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             snapshot = "; ".join(parts)
             enriched_text = f"History: {snapshot}. Current: {message.text}"
 
-        # Extract details using LLM with history snapshot and previous ETA
-        # Include prompt overrides only for admin users in debug mode
-        sys_override = None
-        user_override = None
-        if debug and (
-            message.debug_sys_prompt is not None
-            or message.debug_user_prompt is not None
-            or message.debug_verbosity is not None
-            or message.debug_reasoning is not None
-            or message.debug_max_tokens is not None
-        ):
-            try:
-                from .user import is_admin
-                user_email = (
-                    request.headers.get("X-Auth-Request-Email")
-                    or request.headers.get("X-Auth-Request-User")
-                    or request.headers.get("x-forwarded-email")
-                    or request.headers.get("X-User")
-                ) if request else None
-                if is_admin(user_email):
-                    sys_override = message.debug_sys_prompt
-                    user_override = message.debug_user_prompt
-                    verbosity_override = message.debug_verbosity
-                    reasoning_override = message.debug_reasoning
-                    max_tokens_override = message.debug_max_tokens
-                else:
-                    # ignore overrides for non-admin
-                    sys_override = None
-                    user_override = None
-                    verbosity_override = None
-                    reasoning_override = None
-                    max_tokens_override = None
-            except Exception:
-                sys_override = None
-                user_override = None
-                verbosity_override = None
-                reasoning_override = None
-                max_tokens_override = None
-        else:
-            verbosity_override = None
-            reasoning_override = None
-            max_tokens_override = None
+        # Debug callers have already passed authenticated admin authorization.
+        sys_override = message.debug_sys_prompt if debug else None
+        user_override = message.debug_user_prompt if debug else None
+        verbosity_override = message.debug_verbosity if debug else None
+        reasoning_override = message.debug_reasoning if debug else None
+        max_tokens_override = message.debug_max_tokens if debug else None
 
         # Get recent responders for ETA validation context
         other_responders = []
         try:
             # Get all recent messages from this group for context
-            recent_messages = get_messages() or []
+            recent_messages = history
             cutoff_time = message.created_at - (6 * 3600)  # 6 hours ago
             
             for m in recent_messages:
@@ -307,6 +289,7 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             reasoning_effort_override=reasoning_override,
             max_tokens_override=max_tokens_override,
             other_responders=other_responders,
+            original_text=message.text,
         )
         
         # Create message object
@@ -317,6 +300,11 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
         new_message = {
             "id": storage_message_id,
             "groupme_id": message.id,  # Store GroupMe message ID for debugging
+            "sender_type": message.sender_type,
+            "sender_id": message.sender_id,
+            "user_id": message.user_id,
+            "system": message.system,
+            "message_kind": "responder",
             "name": message.name,
             "text": message.text,
             "timestamp": message_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -330,61 +318,19 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             "raw_status": parsed["raw_status"],
             "status_source": parsed["status_source"],
             "status_confidence": parsed["status_confidence"],
+            "extraction_failed": parsed.get("extraction_failed", False),
+            "parse_source": parsed.get("parse_source", "LLM"),
             "team": team,
             "group_id": group_id,
             "created_at": message.created_at,
         }
 
         # Store message in storage layer
-        if not add_message(new_message):
+        if not await run_in_threadpool(add_message, new_message):
             raise RuntimeError("Failed to save responder message")
-        logger.info(
-            f"Processed webhook message from {message.name}: {parsed['vehicle']} ETA {parsed['eta']}"
-            + (f" (prev_eta carried)" if prev_eta_iso else "")
-        )
+        logger.info("Processed GroupMe message %s", storage_message_id[:20])
 
         if debug:
-            # Admin-only: require authenticated admin for debug payloads
-            try:
-                # In local debug mode, we might not have a proper token if called from the frontend debugger
-                # Check if we are in local dev mode and allow bypass if configured
-                from ..config import ENABLE_LOCAL_AUTH, ALLOW_LOCAL_AUTH_BYPASS
-                
-                # Try to get token from header
-                auth_header = request.headers.get("Authorization")
-                if not auth_header and ENABLE_LOCAL_AUTH:
-                    # If no header, check for session cookie
-                    cookie_token = request.cookies.get("session_token")
-                    if cookie_token:
-                        auth_header = f"Bearer {cookie_token}"
-                
-                if auth_header:
-                    token = auth_header.replace("Bearer ", "")
-                    # Pass request=None to avoid re-extracting from header/cookie inside require_auth
-                    # since we already have the token string
-                    user = require_auth(request=request, token=token)
-                    require_admin(user)
-                elif ALLOW_LOCAL_AUTH_BYPASS:
-                    logger.warning("Debug webhook allowed via local auth bypass")
-                else:
-                    # If we're here, we have no token and bypass is off
-                    # But wait! The frontend might be sending the token in the Authorization header
-                    # which oauth2_scheme should have picked up if we used it as a dependency.
-                    # Since we're calling it manually inside the function:
-                    token = await oauth2_scheme(request)
-                    if token:
-                        user = require_auth(token)
-                        require_admin(user)
-                    else:
-                        raise HTTPException(status_code=401, detail="No token provided for debug mode")
-
-            except HTTPException:
-                raise
-            except Exception as e:
-                logger.warning(f"Debug auth check failed: {e}")
-                # Fail closed if we can't determine auth
-                raise HTTPException(status_code=403, detail=f"Debug access requires admin: {e}")
-            
             return {
                 "status": "ok",
                 "inputs": {
@@ -405,6 +351,8 @@ async def webhook_handler(message: WebhookMessage, request: Request, debug: bool
             }
 
         return {"status": "ok"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Webhook processing failed: {e}")
         raise HTTPException(status_code=500, detail="Processing failed")

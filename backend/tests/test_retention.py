@@ -10,6 +10,13 @@ from datetime import datetime, timedelta
 from app.storage import purge_old_messages
 
 
+def test_nonfinite_timestamps_are_preserved():
+    rows = [{'id':str(i), 'created_at':value} for i,value in enumerate(['NaN', '-Infinity', 'Infinity'])]
+    with patch('app.storage.get_messages', return_value=rows), patch('app.storage.get_deleted_messages', return_value=[]), patch('app.storage.save_messages') as save:
+        assert purge_old_messages() == {'active':0, 'deleted':0}
+    save.assert_not_called()
+
+
 def test_purge_old_messages_no_messages():
     """Test purging when there are no messages."""
     with patch('app.storage.get_messages', return_value=[]), \

@@ -5,6 +5,10 @@ import "./Dashboard.geocities.css";
 import Logout from './Logout';
 import MobileView from './MobileView';
 import Profile from './Profile';
+import { responderKey as getUserId } from './responderIdentity';
+import { responderStatus as statusOf, vehicleLabel, minutesUntilArrival } from './responderPresentation';
+import {timeWindowUrl} from './timeWindow';
+import {validateResponderData} from './responderData';
 import StatusTabs from './StatusTabs';
 import WebhookDebug from './WebhookDebug';
 import LoginChoice from './LoginChoice';
@@ -171,6 +175,7 @@ const parseTs = (ts) => {
 
 function MainApp() {
   const [data, setData] = useState([]);
+  const [currentView, setCurrentView] = useState({rows:[],total:0,loading:true,error:null});
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [query, setQuery] = useState("");
@@ -303,97 +308,54 @@ function MainApp() {
   }, [lastActivity, isInactive, live, INACTIVITY_TIMEOUT, inactivityTimeoutMinutes]);
 
   // Time filter computation
-  const getTimeFilterUrl = useCallback(() => {
-    let url = "/api/responders";
-    
-    if (timeFilter !== 'all') {
-      const now = new Date();
-      let since;
-      
-      switch (timeFilter) {
-        case '1h':
-          since = new Date(now.getTime() - 1 * 60 * 60 * 1000);
-          break;
-        case '6h':
-          since = new Date(now.getTime() - 6 * 60 * 60 * 1000);
-          break;
-        case '12h':
-          since = new Date(now.getTime() - 12 * 60 * 60 * 1000);
-          break;
-        case '24h':
-          since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-          break;
-        case '3d':
-          since = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
-          break;
-        case '7d':
-          since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-          break;
-        case 'custom':
-          if (customTimeStart) {
-            since = parseTs(customTimeStart);
-          }
-          break;
-        default:
-          // 'all' case - no time filter
-          since = null;
-          break;
-      }
-      
-      if (since) {
-        url += `?since=${since.toISOString()}`;
-      }
-    }
-    
-    return url;
-  }, [timeFilter, customTimeStart]);
+  const getTimeFilterUrl = useCallback((endpoint = '/api/responders') =>
+    timeWindowUrl(endpoint, timeFilter, customTimeStart), [timeFilter, customTimeStart]);
 
+  const fetchGeneration = useRef(0);
+  useEffect(() => () => { fetchGeneration.current += 1; }, []);
   const fetchData = useCallback(async () => {
+    const generation = ++fetchGeneration.current;
+    const isCurrent = () => generation === fetchGeneration.current && !sessionStorage.getItem('loggedOut');
+    if (!isCurrent()) return false;
+    const url = getTimeFilterUrl();
+    if (!url) {
+      setData([]);
+      setIsLoading(false);
+      setError('Choose a valid start time.');
+      return false;
+    }
+    setIsLoading(true);
+    setError(null);
     try {
-      // Don't fetch data if user just logged out
-      if (sessionStorage.getItem('loggedOut')) {
-        return;
-      }
-      // Also don't fetch data if unauthenticated
-      try {
-        const uj = await apiGet('/api/user');
-        if (!uj.authenticated || uj.error === 'Access denied') {
-          setIsLoading(false);
-          setData([]);
-          return;
-        }
-      } catch {
-        setIsLoading(false);
+      const userInfo = await apiGet('/api/user');
+      if (!isCurrent()) return false;
+      if (!userInfo.authenticated || userInfo.error === 'Access denied') {
         setData([]);
-        return;
+        setError('Access denied. Sign in again.');
+        setIsLoading(false);
+        return false;
       }
-      
-      setError(null);
-      const url = getTimeFilterUrl();
       const json = await apiGet(url);
-      setData(json);
+      if (!isCurrent()) return false;
+      setData(validateResponderData(json));
       setIsLoading(false);
       setLastUpdated(new Date());
+      return true;
     } catch (err) {
-      console.error("Failed to fetch responder data:", err);
+      if (!isCurrent()) return false;
+      console.error('Failed to fetch responder data:', err);
       setError(err.message);
       setIsLoading(false);
+      return false;
     }
   }, [getTimeFilterUrl]);
 
   // Initial load + Live-controlled polling
-  const firstLoadRef = useRef(true);
   useEffect(() => {
     // Don't fetch data if user just logged out
     if (sessionStorage.getItem('loggedOut')) {
       setIsLoading(false);
       return;
-    }
-
-    // Only auto-fetch on initial mount
-    if (firstLoadRef.current) {
-      firstLoadRef.current = false;
-      fetchData();
     }
 
     // If Live is off or auto-paused due to inactivity, do not schedule polling
@@ -420,8 +382,8 @@ function MainApp() {
         if (autoPaused) return;
 
         try {
-          await fetchData();
-          pollInterval = 15000; // Reset on success
+          const success = await fetchData();
+          pollInterval = success ? 15000 : Math.min(pollInterval * 2, maxInterval);
         } catch (err) {
           // Exponential backoff on error
           pollInterval = Math.min(pollInterval * 2, maxInterval);
@@ -446,12 +408,8 @@ function MainApp() {
     };
   }, [fetchData, live, autoPaused]);
 
-  // Refresh data when time filter changes
-  useEffect(() => {
-    if (!firstLoadRef.current) {
-      fetchData();
-    }
-  }, [timeFilter, customTimeStart, fetchData]);
+  // Fetch on mount and whenever the selected time range changes.
+  useEffect(() => { fetchData(); }, [fetchData]);
 
   // User info (for avatar initials)
   useEffect(() => {
@@ -492,56 +450,7 @@ function MainApp() {
 
   // Derived helpers
   const initials = (user?.email || user?.name || 'U').split('@')[0].split('.').map(s=>s[0]).join('').slice(0,2).toUpperCase();
-  const statusOf = (entry) => {
-    // Use arrival_status from backend if available, otherwise fall back to vehicle-based logic
-    if (entry.arrival_status) {
-      if (entry.arrival_status === 'Not Responding') return 'Not Responding';
-      if (entry.arrival_status === 'Cancelled') return 'Cancelled';
-      if (entry.arrival_status === 'Available') return 'Available';
-  if (entry.arrival_status === 'Responding') return 'Responding';
-      if (entry.arrival_status === 'Informational') return 'Informational';
-      if (entry.arrival_status === 'Unknown') return 'Unknown';
-      if (entry.arrival_status === 'On Route') return 'Responding';
-      if (entry.arrival_status === 'Arrived') return 'Responding';
-      if (entry.arrival_status === 'ETA Format Unknown') return 'Unknown';
-      if (entry.arrival_status === 'ETA Parse Error') return 'Unknown';
-    }
-    
-    // Fallback to vehicle-based logic for backward compatibility
-    const v = (entry.vehicle || '').toLowerCase();
-    if (v === 'not responding') return 'Not Responding';
-    if (!v || v === 'unknown') return 'Unknown';
-    return 'Responding';
-  };
-  const vehicleMap = (v) => {
-    if (!v) return 'Unknown';
-    const s = v.toUpperCase().replace(/\s+/g,'');
-    if (s.includes('POV')) return 'POV';
-    const m = s.match(/SAR[- ]?(\d+)/);
-    return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : v));
-  };
-  // Resolve a user's vehicle for a given message by falling back to the most recent prior known vehicle
-  const getUserId = (entry) => entry.user_id || entry.name || entry.id;
-  const resolveVehicle = useCallback((entry) => {
-    const v0 = vehicleMap(entry.vehicle);
-    // If this message already has a clear vehicle, use it
-    if (v0 && v0 !== 'Unknown' && v0 !== 'Not Responding') return v0;
-    const uid = getUserId(entry);
-    if (!uid) return v0 || 'Unknown';
-    const ts = parseTs(entry.timestamp)?.getTime() || Number.MAX_SAFE_INTEGER;
-    let bestV = null;
-    let bestT = -1;
-    for (const m of data) {
-      const mid = getUserId(m);
-      if (mid !== uid) continue;
-      const mv = vehicleMap(m.vehicle);
-      if (!mv || mv === 'Unknown' || mv === 'Not Responding') continue;
-      const mt = parseTs(m.timestamp)?.getTime() || 0;
-      // Only consider prior or equal timestamps to avoid future-leak
-      if (mt <= ts && mt > bestT) { bestT = mt; bestV = mv; }
-    }
-    return bestV || v0 || 'Unknown';
-  }, [data]);
+  const resolveVehicle = useCallback((entry) => vehicleLabel(entry.vehicle), []);
   // Fallback mapping for older messages without `team`
   const GROUP_ID_TO_UNIT = {
     "102193274": "OSU Test group",
@@ -621,11 +530,10 @@ function MainApp() {
   // Live-updating elapsed string for lastUpdated
   const [nowTick, setNowTick] = useState(Date.now());
   useEffect(() => {
-    // Only tick the "updated ago" timer when Live is on to avoid periodic UI changes
-    if (!live) return;
+    // Freshness must keep aging even when data refresh is paused.
     const id = setInterval(() => setNowTick(Date.now()), 30000); // update every 30s
     return () => clearInterval(id);
-  }, [live]);
+  }, []);
   const updatedAgo = useMemo(() => {
     if (!lastUpdated) return '—';
     const diffMs = nowTick - lastUpdated.getTime();
@@ -691,7 +599,7 @@ function MainApp() {
     const arr = [...filtered];
     arr.sort((a,b) => {
       let av, bv;
-      if (sortBy.key === 'timestamp') { const ad=parseTs(a.timestamp); const bd=parseTs(b.timestamp); av = ad?ad.getTime():0; bv = bd?bd.getTime():0; }
+      if (sortBy.key === 'timestamp') { const ad=parseTs(a.timestamp_utc || a.timestamp); const bd=parseTs(b.timestamp_utc || b.timestamp); av = ad?ad.getTime():0; bv = bd?bd.getTime():0; }
       else if (sortBy.key === 'eta') { av = computeEtaMillis(a); bv = computeEtaMillis(b); if (isNaN(av)) av = 0; if (isNaN(bv)) bv = 0; }
       else { av = 0; bv = 0; }
       return sortBy.dir === 'asc' ? av - bv : bv - av;
@@ -701,25 +609,26 @@ function MainApp() {
 
   const avgMinutesVal = () => {
     // Average over unique users using latest message per user to avoid double-counting
-    const source = isUnfiltered ? data : filteredMessagesFlat;
+    const source = activeTab === 'current' ? currentView.rows : isUnfiltered ? data : filteredMessagesFlat;
     const latest = new Map();
     for (const msg of source) {
       const uid = getUserId(msg); if (!uid) continue;
-      const ts = parseTs(msg.timestamp)?.getTime() || 0;
+      const ts = parseTs(msg.timestamp_utc || msg.timestamp)?.getTime() || 0;
       const prev = latest.get(uid);
-      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
+      if (!prev || ts > (parseTs(prev.timestamp_utc || prev.timestamp)?.getTime() || 0)) latest.set(uid, msg);
     }
     const base = Array.from(latest.values());
     // Only include people who are actively responding with positive ETA
     const times = base
-      .map(e => e.minutes_until_arrival)
+      .filter(e => statusOf(e) === 'Responding')
+      .map(e => minutesUntilArrival(e))
       .filter(x => typeof x === 'number' && x > 0);
     if (!times.length) return null;
     const total = times.reduce((a,b)=>a+b,0);
     return Math.round(total / times.length);
   };
   const avgMin = avgMinutesVal();
-  const avgText = avgMin == null ? 'N/A' : `${Math.floor(avgMin/60)}h ${avgMin%60}m`;
+  const avgText = error || (activeTab === 'current' && currentView.error) ? 'N/A' : activeTab === 'current' && currentView.loading ? 'Loading' : avgMin == null ? 'N/A' : `${Math.floor(avgMin/60)}h ${avgMin%60}m`;
 
   const toggleInArray = (arr, val, setter) => {
     if (arr.includes(val)) setter(arr.filter(x=>x!==val)); else setter([...arr, val]);
@@ -1053,12 +962,12 @@ function MainApp() {
       <div className="stats-row">
         <div className="stat-card-Responders">
           <div className="stat-title">Responders</div>
-          <div className="stat-value">{filteredUniqueResponders}/{totalUniqueResponders}</div>
-          <div className="stat-sub">Unique users</div>
+          <div className="stat-value">{error ? 'Unavailable' : activeTab === 'current' ? (currentView.loading ? 'Loading' : currentView.error ? 'Unavailable' : `${currentView.rows.length}/${currentView.total}`) : `${filteredUniqueResponders}/${totalUniqueResponders}`}</div>
+          <div className="stat-sub">Responders by group</div>
         </div>
         <div className="stat-card">
           <div className="stat-title">Messages</div>
-          <div className="stat-value">{totalMessages}</div>
+          <div className="stat-value">{error ? 'Unavailable' : totalMessages}</div>
           <div className="stat-sub">Total messages</div>
         </div>
         <div className="stat-card">
@@ -1068,8 +977,8 @@ function MainApp() {
         </div>
         <div className="stat-card">
           <div className="stat-title">Updated</div>
-          <div className="stat-value"><span className="live-dot" aria-hidden />{updatedAgo}</div>
-          <div className="stat-sub">{lastUpdated ? lastUpdated.toLocaleTimeString() : 'waiting…'}</div>
+          <div className="stat-value">{live && !autoPaused && !error && !(activeTab === 'current' && currentView.error) && <span className="live-dot" aria-hidden />}{updatedAgo}</div>
+          <div className="stat-sub">{error || (activeTab === 'current' && currentView.error) ? 'Refresh failed' : (!live || autoPaused) ? 'Refresh paused' : lastUpdated ? lastUpdated.toLocaleTimeString() : 'waiting…'}</div>
         </div>
       </div>
 
@@ -1100,6 +1009,8 @@ function MainApp() {
   refreshNonce={refreshNonce}
         activeTab={activeTab}
         onTabChange={handleTabChange}
+        getTimeFilterUrl={getTimeFilterUrl}
+        onCurrentViewChange={setCurrentView}
       />
       </div>
 

@@ -1,11 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import './App.css';
+import {timeWindowUrl} from './timeWindow';
+import {validateResponderData} from './responderData';
 import { apiGet } from './api';
+import { responderStatus, vehicleLabel, parseTimestamp, localTimestamp, minutesUntilArrival } from './responderPresentation';
 import { msalInstance } from './auth/msalClient';
 
 // Minimal, focused view for mobile: Name, Vehicle, ETA for Responding only
 export default function MobileView() {
   const [data, setData] = useState([]);
+  const [clockTick, setClockTick] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setClockTick(Date.now()), 30000);
+    return () => clearInterval(timer);
+  }, []);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -20,74 +28,48 @@ export default function MobileView() {
   const [accessDenied, setAccessDenied] = useState(null);
   const INACTIVITY_TIMEOUT = inactivityTimeoutMinutes * 60 * 1000;
 
-  const parseTs = (ts) => {
-    if (!ts) return null;
-    const s = typeof ts === 'string' && ts.includes(' ') && !ts.includes('T') ? ts.replace(' ', 'T') : ts;
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? null : d;
-  };
+  const getTimeFilterUrl = useCallback(() =>
+    timeWindowUrl('/api/current-status', timeFilter, customTimeStart), [timeFilter, customTimeStart]);
 
-  const getTimeFilterUrl = useCallback(() => {
-    let url = '/api/responders';
-    if (timeFilter === 'all') return url;
-
-    const now = new Date();
-    let since;
-    switch (timeFilter) {
-      case '1h':
-        since = new Date(now.getTime() - 1 * 60 * 60 * 1000);
-        break;
-      case '6h':
-        since = new Date(now.getTime() - 6 * 60 * 60 * 1000);
-        break;
-      case '12h':
-        since = new Date(now.getTime() - 12 * 60 * 60 * 1000);
-        break;
-      case '24h':
-        since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-        break;
-      case '3d':
-        since = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
-        break;
-      case '7d':
-        since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-        break;
-      case 'custom':
-        since = customTimeStart ? parseTs(customTimeStart) : null;
-        break;
-      default:
-        since = null;
-        break;
-    }
-
-    if (since) {
-      url += `?since=${since.toISOString()}`;
-    }
-    return url;
-  }, [timeFilter, customTimeStart]);
-
+  const fetchGeneration = useRef(0);
+  useEffect(() => () => { fetchGeneration.current += 1; }, []);
   const fetchData = useCallback(async () => {
+    const generation = ++fetchGeneration.current;
+    const isCurrent = () => generation === fetchGeneration.current;
+    const url = getTimeFilterUrl();
+    if (!url) {
+      setData([]);
+      setIsLoading(false);
+      setError('Choose a valid start time.');
+      return false;
+    }
+    setError(null);
+    setIsLoading(true);
     try {
-      setError(null);
-      // check auth first
-      try {
-        const uj = await apiGet('/api/user');
-        setAuthChecked(true);
-        if (!uj.authenticated || uj.error === 'Access denied') {
-          setIsLoading(false);
-          setAccessDenied(uj);
-          setData([]);
-          return;
-        }
-      } catch {}
-      const json = await apiGet(getTimeFilterUrl());
-      setData(json);
-      setIsLoading(false);
+      const user = await apiGet('/api/user');
+      if (!isCurrent()) return false;
+      setAuthChecked(true);
+      if (!user.authenticated || user.error === 'Access denied') {
+        setAccessDenied(user);
+        setData([]);
+        setIsLoading(false);
+        return false;
+      }
+      setAccessDenied(null);
+      const result = await apiGet(url);
+      if (!isCurrent()) return false;
+      setData(validateResponderData(result));
+      setClockTick(Date.now());
       setLastUpdated(new Date());
-    } catch (e) {
-      console.error(e);
-      setError(String(e.message || e));
       setIsLoading(false);
+      return true;
+    } catch (error) {
+      if (!isCurrent()) return false;
+      setAuthChecked(true);
+      setError(error.message || 'Unable to load responders');
+      setData([]);
+      setIsLoading(false);
+      return false;
     }
   }, [getTimeFilterUrl]);
 
@@ -135,76 +117,24 @@ export default function MobileView() {
     return () => clearInterval(intervalId);
   }, [lastActivity, INACTIVITY_TIMEOUT, isInactive, live]);
 
-  const firstLoadRef = useRef(true);
+  useEffect(() => { fetchData(); }, [fetchData]);
   useEffect(() => {
-    if (firstLoadRef.current) {
-      firstLoadRef.current = false;
-      fetchData();
-    }
-    let id;
-    const poll = async () => {
-      // If Live is off, don't schedule the next poll
-      if (!live || autoPaused) return;
-      id = setTimeout(async () => {
-        try { await fetchData(); } finally { poll(); }
-      }, 15000);
+    if (!live || autoPaused) return;
+    let cancelled = false;
+    let timer;
+    let delay = 15000;
+    const poll = () => {
+      timer = setTimeout(async () => {
+        const success = await fetchData();
+        delay = success ? 15000 : Math.min(delay * 2, 60000);
+        if (!cancelled) poll();
+      }, delay);
     };
     poll();
-    return () => { if (id) clearTimeout(id); };
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [fetchData, live, autoPaused]);
 
-  // Refresh immediately when time filter changes
-  useEffect(() => {
-    if (!firstLoadRef.current) {
-      fetchData();
-    }
-  }, [timeFilter, customTimeStart, fetchData]);
-
-  // Helpers local to this view
-  const statusOf = (entry) => {
-    // Use arrival_status from backend if available, otherwise fall back to vehicle-based logic
-    if (entry.arrival_status) {
-      if (entry.arrival_status === 'Not Responding') return 'Not Responding';
-      if (entry.arrival_status === 'Cancelled') return 'Cancelled';
-      if (entry.arrival_status === 'Available') return 'Available';
-  if (entry.arrival_status === 'Responding') return 'Responding';
-      if (entry.arrival_status === 'Informational') return 'Informational';
-      if (entry.arrival_status === 'Unknown') return 'Unknown';
-      if (entry.arrival_status === 'On Route') return 'Responding';
-      if (entry.arrival_status === 'Arrived') return 'Responding';
-      if (entry.arrival_status === 'ETA Format Unknown') return 'Unknown';
-      if (entry.arrival_status === 'ETA Parse Error') return 'Unknown';
-    }
-    const v = (entry.vehicle || '').toLowerCase();
-    if (v === 'not responding') return 'Not Responding';
-    if (!v || v === 'unknown') return 'Unknown';
-    return 'Responding';
-  };
-
-  const vehicleMap = (v) => {
-    if (!v) return 'Unknown';
-    const s = String(v).toUpperCase().replace(/\s+/g, '');
-    if (s.includes('POV')) return 'POV';
-    const m = s.match(/SAR[- ]?(\d+)/);
-    return m ? `SAR-${m[1]}` : (s === 'NOTRESPONDING' ? 'Not Responding' : (s === 'UNKNOWN' ? 'Unknown' : String(v)));
-  };
-  const getUserId = (e) => e.user_id || e.name || e.id;
-  const resolveVehicle = useCallback((entry) => {
-    const v0 = vehicleMap(entry.vehicle);
-    if (v0 && v0 !== 'Unknown' && v0 !== 'Not Responding') return v0;
-    const uid = getUserId(entry);
-    if (!uid) return v0 || 'Unknown';
-    const ts = parseTs(entry.timestamp)?.getTime() || Number.MAX_SAFE_INTEGER;
-    let bestV = null, bestT = -1;
-    for (const m of data) {
-      const mid = getUserId(m); if (mid !== uid) continue;
-      const mv = vehicleMap(m.vehicle);
-      if (!mv || mv === 'Unknown' || mv === 'Not Responding') continue;
-      const mt = parseTs(m.timestamp)?.getTime() || 0;
-      if (mt <= ts && mt > bestT) { bestT = mt; bestV = mv; }
-    }
-    return bestV || v0 || 'Unknown';
-  }, [data]);
+  const resolveVehicle = entry => vehicleLabel(entry.vehicle);
   // Fallback mapping for unit display on mobile
   const GROUP_ID_TO_UNIT = {
     "102193274": "OSU Test group",
@@ -223,67 +153,22 @@ export default function MobileView() {
   };
   const unitOf = (entry) => entry.team || GROUP_ID_TO_UNIT[String(entry.group_id||"") ] || 'Unknown';
 
-  const pad2 = (n) => String(n).padStart(2, '0');
-  const formatTimestampDirect = (isoString) => {
-    if (!isoString) return '—';
-    try {
-      if (typeof isoString === 'string' && isoString.includes('T')) {
-        const match = isoString.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-        if (match) {
-          const [, y, M, D, h, m, s] = match;
-          return `${M}/${D}/${y} ${h}:${m}:${s}`;
-        }
-      }
-      const d = new Date(isoString);
-      if (isNaN(d.getTime())) return '—';
-      return `${pad2(d.getMonth()+1)}/${pad2(d.getDate())}/${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-    } catch { return '—'; }
-  };
-
-  const etaDisplay = (entry) => {
-    if (!entry) return 'Unknown';
-    if (entry.eta_timestamp) return formatTimestampDirect(entry.eta_timestamp);
-    return entry.eta || 'Unknown';
-  };
-
-  // Filter to Responding only
-  const responding = useMemo(() => data.filter((e) => statusOf(e) === 'Responding'), [data]);
-
-  // Dedupe by user_id keeping latest message per user among Responding
-  const deduped = useMemo(() => {
-    const latest = new Map();
-    responding.forEach(msg => {
-      const uid = getUserId(msg);
-      if (!uid) return;
-      const ts = parseTs(msg.timestamp)?.getTime() || 0;
-      const prev = latest.get(uid);
-      if (!prev || ts > (parseTs(prev.timestamp)?.getTime() || 0)) {
-        latest.set(uid, msg);
-      }
-    });
-    return Array.from(latest.values());
-  }, [responding]);
-
-  // Sort by most recent message (timestamp) descending
-  const sorted = useMemo(() => {
-    const arr = [...deduped];
-    arr.sort((a,b) => {
-      const at = parseTs(a.timestamp)?.getTime() || 0;
-      const bt = parseTs(b.timestamp)?.getTime() || 0;
-      return bt - at; // newest first
-    });
-    return arr;
-  }, [deduped]);
+  const etaDisplay = entry => entry.eta_timestamp_utc || entry.eta_timestamp
+    ? localTimestamp(entry.eta_timestamp_utc || entry.eta_timestamp) : entry.eta || 'Unknown';
+  const deduped = useMemo(() => data.filter(entry => responderStatus(entry) === 'Responding'), [data]);
+  const sorted = useMemo(() => [...deduped].sort((a,b) =>
+    (parseTimestamp(b.timestamp_utc || b.timestamp)?.getTime() || 0) -
+    (parseTimestamp(a.timestamp_utc || a.timestamp)?.getTime() || 0)), [deduped]);
 
   // Summary stats
-  const totalMessages = data.length;
+  const totalPeople = data.length;
   const uniqueFilteredResponders = deduped.length;
   const avgMinutes = useMemo(() => {
-    const times = deduped.map(e => e.minutes_until_arrival).filter(x => typeof x === 'number' && x > 0);
+    const times = deduped.map(e => minutesUntilArrival(e, clockTick)).filter(x => typeof x === 'number' && x > 0);
     if (!times.length) return null;
     const avg = Math.round(times.reduce((a,b)=>a+b,0) / times.length);
     return avg; // minutes
-  }, [deduped]);
+  }, [deduped, clockTick]);
 
   const avgText = avgMinutes == null ? 'N/A' : `${avgMinutes}m`;
 
@@ -311,16 +196,16 @@ export default function MobileView() {
 
       <div className="mobile-stats">
         <div className="mobile-stat">
-          <div className="mobile-stat-label">Messages</div>
-          <div className="mobile-stat-value">{totalMessages}</div>
+          <div className="mobile-stat-label">People</div>
+          <div className="mobile-stat-value">{error || accessDenied ? '—' : totalPeople}</div>
         </div>
         <div className="mobile-stat">
-          <div className="mobile-stat-label">Responders</div>
-          <div className="mobile-stat-value">{uniqueFilteredResponders}</div>
+          <div className="mobile-stat-label">Responding</div>
+          <div className="mobile-stat-value">{error || accessDenied ? '—' : uniqueFilteredResponders}</div>
         </div>
         <div className="mobile-stat">
           <div className="mobile-stat-label">Avg ETA</div>
-          <div className="mobile-stat-value">{avgText}</div>
+          <div className="mobile-stat-value">{error || accessDenied ? 'N/A' : avgText}</div>
         </div>
       </div>
 
@@ -375,7 +260,7 @@ export default function MobileView() {
         </div>
       )}
 
-      {isLoading ? (
+      {!error && !accessDenied && (isLoading ? (
         <div className="mobile-list">
           {[...Array(6)].map((_,i)=> (
             <div className="mobile-card" key={i}>
@@ -396,7 +281,7 @@ export default function MobileView() {
             <div className="empty">No responders yet.</div>
           )}
       {sorted.map((e, idx) => (
-            <div className="mobile-card" key={idx}>
+            <div className="mobile-card" key={e.responder_key || e.id || idx}>
               <div className="mobile-row">
                 <div className="mobile-name">{e.name || 'Unknown'}</div>
                 <div className="mobile-eta" title={`ETA ${etaDisplay(e)}`}>{etaDisplay(e)}</div>
@@ -406,10 +291,10 @@ export default function MobileView() {
             </div>
           ))}
         </div>
-      )}
+      ))}
 
       <div className="mobile-footer">
-        <span className="live-dot" aria-hidden /> Updated {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '—'}
+        {live && !autoPaused && !error && !accessDenied && !isLoading && <span className="live-dot" aria-hidden />} {error || accessDenied ? 'Refresh failed. Last updated' : !live || autoPaused ? 'Refresh paused. Last updated' : 'Updated'} {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : '—'}
         <label className="toggle" style={{marginLeft:12}}>
           <input
             type="checkbox"
@@ -421,6 +306,7 @@ export default function MobileView() {
                 setIsInactive(false);
                 setAutoPaused(false);
                 setLastActivity(Date.now());
+                fetchData();
               }
             }}
           /> Live {autoPaused && <span style={{color:'#ff9800', fontSize:'0.9em'}}>(Paused - Inactive)</span>}

@@ -60,17 +60,8 @@ def coerce_datetime(s: Optional[str]) -> datetime:
     """Coerce various timestamp strings to a timezone-aware UTC datetime for stable sorting.
     Falls back to datetime.min UTC when parsing fails.
     """
-    if not s:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    try:
-        return datetime.fromisoformat(str(s).replace('Z', '+00:00')).astimezone(timezone.utc)
-    except Exception:
-        try:
-            # Legacy testing format: naive local time -> assume APP_TZ and convert to UTC
-            dt_local = datetime.strptime(str(s), '%Y-%m-%d %H:%M:%S').replace(tzinfo=APP_TZ)
-            return dt_local.astimezone(timezone.utc)
-        except Exception:
-            return datetime.min.replace(tzinfo=timezone.utc)
+    parsed = parse_datetime_like(s)
+    return parsed.astimezone(timezone.utc) if parsed else datetime.min.replace(tzinfo=timezone.utc)
 
 
 def compute_eta_fields(eta_str: Optional[str], eta_ts: Optional[datetime], base_time: datetime) -> Dict[str, Any]:

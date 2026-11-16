@@ -7,7 +7,8 @@ Provides timezone handling and basic logging setup.
 import os
 import sys
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, tzinfo, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Dict
 from dotenv import load_dotenv
 
@@ -28,35 +29,19 @@ logging.getLogger("azure").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-# Timezone handling
-try:
-    from zoneinfo import ZoneInfo as _ZoneInfo
-    zoneinfo_available = True
-except ImportError:
-    zoneinfo_available = False
-    _ZoneInfo = None
-
-def get_timezone(name: str) -> timezone:
-    """Get timezone object with fallback for systems without zoneinfo."""
+def get_timezone(name: str) -> tzinfo:
+    """Load the configured timezone with its daylight saving rules."""
     if name == "UTC":
         return timezone.utc
-    elif name == "America/Los_Angeles" and zoneinfo_available:
-        try:
-            return _ZoneInfo("America/Los_Angeles")  # type: ignore
-        except Exception:
-            pass
-    # Fallback: PST approximation (no DST) if zoneinfo unavailable
-    return timezone(timedelta(hours=-8))
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError("TIMEZONE must name an installed IANA timezone") from exc
+
 
 TIMEZONE = os.getenv("TIMEZONE", "America/Los_Angeles")
 APP_TZ = get_timezone(TIMEZONE)
 
-# Warn about timezone fallback
-if not zoneinfo_available and TIMEZONE.upper() != "UTC":
-    logger.warning(
-        "zoneinfo not available; using fixed UTC-8 fallback. "
-        "Set TIMEZONE=UTC or install zoneinfo for correct DST."
-    )
 
 def now_tz() -> datetime:
     """Get current time in the configured timezone."""
@@ -88,7 +73,7 @@ ENABLE_LOCAL_AUTH = os.getenv("ENABLE_LOCAL_AUTH", "false").lower() == "true"
 LOCAL_USERS_TABLE = os.getenv("LOCAL_USERS_TABLE", "LocalUsers")
 LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_KEY")
 if not LOCAL_AUTH_SECRET_KEY:
-    LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_FALLBACK", "your-secret-key-change-this")
+    LOCAL_AUTH_SECRET_KEY = os.getenv("LOCAL_AUTH_SECRET_FALLBACK")
 LOCAL_AUTH_SESSION_HOURS = int(os.getenv("LOCAL_AUTH_SESSION_HOURS", "24"))
 
 # GeoCities theme configuration
@@ -101,11 +86,11 @@ INACTIVITY_TIMEOUT_MINUTES = int(os.getenv("INACTIVITY_TIMEOUT_MINUTES", "10"))
 # Data retention configuration
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "365"))
 
-# JWT token configuration for local auth
-import secrets
-if LOCAL_AUTH_SECRET_KEY == "your-secret-key-change-this" and not is_testing:
-    logger.warning("LOCAL_AUTH_SECRET_KEY not set! Using random key (sessions won't persist across restarts)")
-    LOCAL_AUTH_SECRET_KEY = secrets.token_urlsafe(32)
+# Reject known development secrets in every environment.
+if LOCAL_AUTH_SECRET_KEY in ("your-secret-key-change-this", "dev-local-secret-key"):
+    logger.error("Local authentication signing secret is not configured")
+    LOCAL_AUTH_SECRET_KEY = None
+
 
 # API security flags  
 disable_api_key_check = (

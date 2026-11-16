@@ -1,0 +1,32 @@
+name: Function tests
+
+on:
+  workflow_call:
+  push:
+    branches: [main, preprod]
+  pull_request:
+    branches: [main, preprod]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install ingestion test dependencies
+        run: python -m pip install azure-functions azure-storage-queue azure-data-tables pydantic PyJWT pytest
+      - name: Test ingestion with fake services
+        run: python -m pytest functions/tests/test_ingest_unit.py functions/tests/test_login_unit.py -q
+      - name: Validate deployment configuration
+        shell: pwsh
+        run: ./infra/tests/Test-DeployConfiguration.ps1
+      - name: Validate deployment failure handling
+        shell: pwsh
+        run: ./infra/tests/Test-DeploySafety.ps1
+      - name: Build infrastructure template
+        run: az bicep build --file infra/main.bicep --outfile /tmp/respondr-template.json

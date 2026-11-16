@@ -6,7 +6,8 @@ import uuid
 import logging
 import asyncio
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
+from .config import is_testing
 
 from azure.data.tables import TableServiceClient, TableEntity
 from azure.core.exceptions import ResourceExistsError
@@ -20,13 +21,15 @@ class RequestLogger:
     def __init__(self):
         self.enabled = False
         self.table_client = None
+        if is_testing or os.getenv('ENABLE_REQUEST_LOGGING', 'false').lower() != 'true':
+            return
         
         # Only enable if connection string is available
         conn_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
         if conn_str:
             try:
                 table_name = os.getenv("REQUEST_LOG_TABLE", "RequestLogs")
-                service_client = TableServiceClient.from_connection_string(conn_str)
+                service_client = TableServiceClient.from_connection_string(conn_str, connection_timeout=5, read_timeout=15)
                 
                 # Create table if it doesn't exist
                 try:
@@ -38,8 +41,8 @@ class RequestLogger:
                 self.table_client = service_client.get_table_client(table_name)
                 self.enabled = True
                 logger.info("Request logging to Azure Table Storage enabled")
-            except Exception as e:
-                logger.warning(f"Failed to initialize request logging: {e}")
+            except Exception:
+                logger.warning("Failed to initialize request logging")
     
     async def log_request(self, request, response=None, tag="HTTP_REQUEST"):
         """Log an HTTP request to Azure Table Storage."""
@@ -48,7 +51,8 @@ class RequestLogger:
         
         try:
             # Generate unique keys for Azure Table Storage
-            partition_key = datetime.utcnow().strftime("%Y%m%d")  # Daily partitions
+            current = datetime.now(timezone.utc)
+            partition_key = current.strftime("%Y%m%d")
             row_key = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
             
             # Extract headers
@@ -67,10 +71,10 @@ class RequestLogger:
                 "PartitionKey": partition_key,
                 "RowKey": row_key,
                 "tag": tag,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": current.isoformat().replace('+00:00', 'Z'),
                 "method": request.method,
                 "path": str(request.url.path),
-                "query": str(request.url.query) if request.url.query else "",
+                "query": "",
                 "client_ip": client_ip,
                 "client_port": request.client.port if request.client else 0,
                 "user_agent": h.get("user-agent", ""),
@@ -80,11 +84,11 @@ class RequestLogger:
                 "x_real_ip": h.get("x-real-ip", ""),
                 "scheme": request.url.scheme,
                 "host": h.get("host", ""),
-                "full_url": str(request.url),
+                "full_url": str(request.url.replace(query="")),
                 "status_code": response.status_code if response else 0,
                 "x_ms_client_principal": h.get("x-ms-client-principal-name", ""),
                 "x_auth_request_email": h.get("x-auth-request-email", ""),
-                "referer": h.get("referer", ""),
+                "referer": "",
                 "origin": h.get("origin", ""),
             }
             
@@ -97,16 +101,16 @@ class RequestLogger:
             # Log to table (fire and forget)
             asyncio.create_task(self._insert_entity(entity))
             
-        except Exception as e:
+        except Exception:
             # Don't let logging errors affect the application
-            logger.error(f"Failed to log request: {e}")
+            logger.error("Failed to log request")
     
     async def _insert_entity(self, entity):
         """Insert entity to Azure Table Storage."""
         try:
             await asyncio.to_thread(self.table_client.create_entity, entity)
-        except Exception as e:
-            logger.error(f"Failed to insert request log: {e}")
+        except Exception:
+            logger.error("Failed to insert request log")
 
 
 # Global instance

@@ -65,7 +65,7 @@ param containerEnvPlain array = []
 param allowedOrigins string = ''
 
 @secure()
-@description('Secret map: name -> value. Secrets are created and also exposed via env using the same name.')
+@description('Secret values keyed by environment variable name.')
 param containerSecretMap object = {}
 
 // Static Web App parameters
@@ -201,6 +201,14 @@ resource plan 'Microsoft.Web/serverfarms@2022-09-01' = {
   }
 }
 
+// Share login policy and credentials with the backend configuration.
+var applicationSettings = toObject(containerEnvPlain, setting => setting.name, setting => string(setting.value))
+var localAuthEnabled = toLower(applicationSettings.?ENABLE_LOCAL_AUTH ?? 'false') == 'true'
+var localUsersTable = applicationSettings.?LOCAL_USERS_TABLE ?? 'LocalUsers'
+var primaryLocalAuthSecret = containerSecretMap.?LOCAL_AUTH_SECRET_KEY ?? ''
+var localAuthSecret = empty(primaryLocalAuthSecret) ? (containerSecretMap.?LOCAL_AUTH_SECRET_FALLBACK ?? '') : primaryLocalAuthSecret
+var allowedGroupIds = applicationSettings.?ALLOWED_GROUPME_GROUP_IDS ?? ''
+
 resource func 'Microsoft.Web/sites@2022-09-01' = {
   name: functionAppName
   location: location
@@ -247,6 +255,22 @@ resource func 'Microsoft.Web/sites@2022-09-01' = {
           name: 'WEBHOOK_API_KEY'
           value: webhookApiKey
         }
+        {
+          name: 'ENABLE_LOCAL_AUTH'
+          value: localAuthEnabled ? 'true' : 'false'
+        }
+        {
+          name: 'LOCAL_USERS_TABLE'
+          value: localUsersTable
+        }
+        {
+          name: 'LOCAL_AUTH_SECRET_KEY'
+          value: localAuthSecret
+        }
+        {
+          name: 'ALLOWED_GROUPME_GROUP_IDS'
+          value: allowedGroupIds
+        }
       ]
     }
   }
@@ -258,8 +282,9 @@ output functionUrl string = 'https://${func.properties.defaultHostName}'
 // ---------- Azure OpenAI (moved to top since it's referenced) ----------
 
 // Convert secret map to Container Apps secrets + env refs, including auth secrets
+// Keep environment variable names while giving each secret a stable, valid name.
 var baseSecrets = [for s in items(containerSecretMap): {
-  name: s.key
+  name: 's-${uniqueString(s.key)}'
   value: s.value
 }]
 
@@ -274,8 +299,21 @@ var containerSecretsArray = union(baseSecrets, authSecrets)
 
 var envFromSecrets = [for s in items(containerSecretMap): {
   name: s.key
-  secretRef: s.key
+  secretRef: 's-${uniqueString(s.key)}'
 }]
+
+var resourceEnv = [
+  { name: 'STORAGE_QUEUE_NAME', value: queueName }
+  { name: 'AZURE_STORAGE_ACCOUNT', value: sa.name }
+  { name: 'AZURE_OPENAI_ENDPOINT', value: 'https://${openai.name}.openai.azure.com/' }
+  { name: 'ALLOWED_ORIGINS', value: !empty(allowedOrigins) ? allowedOrigins : (applicationSettings.?ALLOWED_ORIGINS ?? '') }
+]
+// Resource settings must keep the Function, worker, and scaler aligned.
+var containerEnvByName = union(
+  toObject(containerEnvPlain, setting => setting.name, setting => setting),
+  toObject(envFromSecrets, setting => setting.name, setting => setting),
+  toObject(resourceEnv, setting => setting.name, setting => setting)
+)
 
 // Log Analytics for Container Apps logs
 resource law 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -332,16 +370,7 @@ resource respondr 'Microsoft.App/containerApps@2025-01-01' = {
         {
           name: 'app'
           image: containerImage
-          env: concat(
-            containerEnvPlain,
-            envFromSecrets,
-            [
-              { name: 'STORAGE_QUEUE_NAME', value: queueName }
-              { name: 'AZURE_STORAGE_ACCOUNT', value: sa.name }
-              { name: 'AZURE_OPENAI_ENDPOINT', value: 'https://${openai.name}.openai.azure.com/' }
-              { name: 'ALLOWED_ORIGINS', value: allowedOrigins }
-            ]
-          )
+          env: [for setting in items(containerEnvByName): setting.value]
           probes: [
             {
               type: 'Liveness'

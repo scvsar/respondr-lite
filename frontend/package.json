@@ -4,44 +4,33 @@
   "private": true,
   "dependencies": {
     "@azure/msal-browser": "^4.26.2",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-router-dom": "^7.18.5",
+    "web-vitals": "^2.1.4"
+  },
+  "scripts": {
+    "start": "vite",
+    "build": "vite build",
+    "test": "node scripts/test.mjs",
+    "preview": "vite preview"
+  },
+  "description": "Authenticated responder dashboard for Respondr Lite.",
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.0",
     "@testing-library/user-event": "^13.5.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "react-router-dom": "^6.30.1",
-    "react-scripts": "5.0.1",
-    "web-vitals": "^2.1.4"
+    "vite": "^7.3.8",
+    "@vitejs/plugin-react": "^5.2.0",
+    "vitest": "^4.1.12",
+    "@vitest/coverage-v8": "^4.1.12",
+    "jsdom": "^27.4.0"
   },
-  "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test",
-    "eject": "react-scripts eject"
-  },
-  "eslintConfig": {
-    "extends": [
-      "react-app",
-      "react-app/jest"
-    ]
-  },
-  "proxy": "http://localhost:8000",
-  "browserslist": {
-    "production": [
-      ">0.2%",
-      "not dead",
-      "not op_mini all"
-    ],
-    "development": [
-      "last 1 chrome version",
-      "last 1 firefox version",
-      "last 1 safari version"
-    ]
-  },
-  "description": "This directory contains the React application that renders the responder dashboard.\r It communicates with the FastAPI backend to display current responder status and was originally bootstrapped with [Create React App](https://github.com/facebook/create-react-app).",
-  "main": "jest.config.js",
-  "keywords": [],
-  "author": "",
-  "license": "ISC"
+  "engines": {
+    "node": "^20.19.0 || ^22.12.0 || >=24.0.0"
+  }
 }

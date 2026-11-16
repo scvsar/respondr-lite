@@ -14,6 +14,11 @@ env:
   DOCKER_REPO: randytreit/respondr-lite
 
 jobs:
+  test-functions:
+    uses: ./.github/workflows/test-functions.yml
+    permissions:
+      contents: read
+
   test-backend:
     name: Backend tests (uv)
     runs-on: ubuntu-latest
@@ -73,7 +78,7 @@ jobs:
 
   build-and-push:
     name: Build and push Docker image to Docker Hub
-    needs: [test-backend, test-frontend]
+    needs: [test-backend, test-frontend, test-functions]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     

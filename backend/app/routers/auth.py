@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from ..config import ENABLE_LOCAL_AUTH, allowed_admin_users, is_testing
 from ..local_auth import (
+    LocalAuthStorageError,
     verify_local_user, create_session_token,
     create_local_user, update_local_user_password, list_local_users, get_local_user, delete_local_user
 )
@@ -119,6 +120,8 @@ async def local_login(login_request: LoginRequest):
                 content={"success": False, "error": "Invalid username or password"}
             )
             
+    except LocalAuthStorageError:
+        return JSONResponse(status_code=503, content={"success": False, "error": "Local authentication unavailable"})
     except Exception as e:
         logger.error(f"Error in local login: {e}")
         return JSONResponse(

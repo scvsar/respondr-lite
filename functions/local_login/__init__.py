@@ -12,6 +12,9 @@ from azure.core.exceptions import ResourceNotFoundError
 def main(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function processed a login request.')
 
+    if os.getenv('ENABLE_LOCAL_AUTH', 'false').lower() != 'true':
+        return func.HttpResponse('Local authentication disabled', status_code=403)
+
     try:
         req_body = req.get_json()
     except ValueError:
@@ -20,10 +23,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
              status_code=400
         )
 
+    if not isinstance(req_body, dict):
+        return func.HttpResponse('Invalid payload', status_code=400)
+
     email = req_body.get('email')
     password = req_body.get('password')
 
-    if not email or not password:
+    if not isinstance(email, str) or not isinstance(password, str) or not email.strip() or not password:
         return func.HttpResponse(
              "Please pass email and password in the request body",
              status_code=400
@@ -35,16 +41,16 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     secret_key = os.environ.get("LOCAL_AUTH_SECRET_KEY")
     if not secret_key:
         secret_key = os.environ.get("LOCAL_AUTH_SECRET_FALLBACK")
-    if not secret_key:
-        secret_key = "dev-local-secret-key"
-        logging.warning("LOCAL_AUTH_SECRET_KEY not configured; using dev-local-secret-key fallback")
+    if not secret_key or secret_key in ("dev-local-secret-key", "your-secret-key-change-this"):
+        logging.error("Local authentication signing secret is not configured")
+        return func.HttpResponse("Local authentication unavailable", status_code=503)
 
     if not connection_string:
         logging.error("Missing configuration: AzureWebJobsStorage")
         return func.HttpResponse("Server configuration error", status_code=500)
 
     try:
-        table_client = TableClient.from_connection_string(conn_str=connection_string, table_name=table_name)
+        table_client = TableClient.from_connection_string(conn_str=connection_string, table_name=table_name, connection_timeout=5, read_timeout=15, retry_total=2)
         
         # Query for the user by email
         parameters = {"email": email}
@@ -89,8 +95,9 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             'email': user.get('email'),
             'display_name': user.get('display_name'),
             'roles': ['user'],
-            'is_admin': user.get('is_admin', False),
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=24)
+            'auth_type': 'local',
+            'is_admin': user.get('is_admin') is True,
+            'exp': datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
         }
         
         token = jwt.encode(payload, secret_key, algorithm='HS256')
@@ -102,5 +109,5 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     except Exception as e:
-        logging.error(f"Login error: {str(e)}")
+        logging.error("Login failed")
         return func.HttpResponse("Login failed", status_code=500)

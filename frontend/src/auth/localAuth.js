@@ -1,19 +1,14 @@
 import { apiUrl } from '../config';
 
 export async function localLogin(email, password) {
-  // The function URL should be configured in environment variables or derived
-  // If REACT_APP_FUNC_URL is set, use it (Azure Functions)
-  // Otherwise, use the backend API path (FastAPI)
-  
-    let url = apiUrl('/api/auth/local/login');
-  if (process.env.REACT_APP_FUNC_URL) {
-      url = `${process.env.REACT_APP_FUNC_URL}/api/local_login`;
-  }
+  const functionUrl = (process.env.REACT_APP_FUNC_URL || '').trim().replace(/\/+$/, '');
+  const url = functionUrl ? `${functionUrl}/api/local_login` : apiUrl('/api/auth/local/login');
+  const credentials = functionUrl ? {email, password} : {username: email, password};
 
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: email, password })
+    body: JSON.stringify(credentials)
   });
 
   if (!resp.ok) {

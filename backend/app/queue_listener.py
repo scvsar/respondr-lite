@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 import os
+import hashlib
+import re
 from typing import Any, Dict, Optional
 
 from azure.storage.queue import QueueClient
@@ -14,6 +16,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_VISIBILITY_TIMEOUT_SECONDS = 300
 DEFAULT_VISIBILITY_RENEWAL_SECONDS = 120
+
+
+def _poison_queue_name(source_name):
+    configured = os.getenv("STORAGE_POISON_QUEUE_NAME")
+    name = configured or f"{source_name}-poison"
+    if not configured and len(name) > 63:
+        digest = hashlib.sha256(source_name.encode()).hexdigest()[:10]
+        name = f"{source_name[:45].rstrip('-')}-{digest}-poison"
+    if name == source_name or not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", name) or "--" in name:
+        raise ValueError("Invalid poison queue configuration")
+    return name
 
 
 def _positive_int_setting(name: str, default: int) -> int:
@@ -133,8 +146,9 @@ async def _renew_message_visibility(
 async def process_queue_message(
     queue: QueueClient,
     message: Any,
-    visibility_timeout: int,
-    renewal_interval: int,
+    visibility_timeout: int = DEFAULT_VISIBILITY_TIMEOUT_SECONDS,
+    renewal_interval: int = DEFAULT_VISIBILITY_RENEWAL_SECONDS,
+    poison_queue=None,
 ) -> bool:
     """Process and delete one queue message."""
     message_state: Dict[str, Any] = {"message": message}
@@ -151,12 +165,23 @@ async def process_queue_message(
     processing_success = False
 
     try:
-        payload = json.loads(message.content)
-        web_msg = WebhookMessage(**payload)
-        await webhook_handler(web_msg, request=None, debug=False)
+        max_attempts = _positive_int_setting("QUEUE_MAX_ATTEMPTS", 5)
+        if getattr(message, "dequeue_count", 1) > max_attempts:
+            if poison_queue is None:
+                raise RuntimeError("Poison queue is not configured")
+            if not await ensure_queue_exists(poison_queue, "poison queue"):
+                raise RuntimeError("Poison queue unavailable")
+            ttl = _positive_int_setting("QUEUE_POISON_TTL_SECONDS", 604800)
+            # Preserve the original size so a maximum-size message can still be quarantined.
+            await asyncio.to_thread(poison_queue.send_message, message.content, time_to_live=ttl)
+            logger.warning("Moved exhausted queue message %s to poison queue", message.id)
+        else:
+            payload = json.loads(message.content)
+            web_msg = WebhookMessage(**payload)
+            await webhook_handler(web_msg, request=None, debug=False)
         processing_success = True
     except Exception:
-        logger.exception("Failed processing queue message")
+        logger.error("Queue message processing failed")
     finally:
         stop_event.set()
         try:
@@ -188,15 +213,21 @@ async def listen_to_queue() -> None:
         return
 
     queue_api_version = _get_queue_api_version(conn_str)
+    queue_options = {"connection_timeout": 5, "read_timeout": 15, "retry_total": 2}
     if queue_api_version:
         logger.info("Using queue API version %s", queue_api_version)
         queue = QueueClient.from_connection_string(
             conn_str,
             queue_name,
             api_version=queue_api_version,
+            **queue_options,
         )
     else:
-        queue = QueueClient.from_connection_string(conn_str, queue_name)
+        queue = QueueClient.from_connection_string(conn_str, queue_name, **queue_options)
+
+    poison_name = _poison_queue_name(queue_name)
+    poison_options = {**queue_options, **({"api_version": queue_api_version} if queue_api_version else {})}
+    poison_queue = QueueClient.from_connection_string(conn_str, poison_name, **poison_options)
 
     # Ensure queue exists before starting listener
     queue_ready = await ensure_queue_exists(queue, queue_name)
@@ -209,18 +240,16 @@ async def listen_to_queue() -> None:
 
     while True:
         try:
-            messages = await asyncio.to_thread(
-                queue.receive_messages,
-                messages_per_page=1,
-                max_messages=1,
-                visibility_timeout=visibility_timeout,
-            )
+            messages = await asyncio.to_thread(lambda: list(queue.receive_messages(
+                messages_per_page=1, max_messages=1, visibility_timeout=visibility_timeout,
+            )))
             for msg in messages:
                 await process_queue_message(
                     queue,
                     msg,
                     visibility_timeout,
                     renewal_interval,
+                    poison_queue=poison_queue,
                 )
         except Exception as e:
             error_msg = str(e).lower()

@@ -4,6 +4,9 @@ Storage backends for Respondr - pluggable storage implementations.
 
 import os, json
 import logging
+from copy import deepcopy
+from functools import wraps
+from threading import RLock
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import List, Dict, Any, Optional
@@ -11,6 +14,14 @@ from enum import Enum
 
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    @wraps(method)
+    def operation(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return operation
 
 
 class StorageBackend(Enum):
@@ -68,33 +79,40 @@ class MemoryStorage(BaseStorage):
     """In-memory storage implementation."""
     
     def __init__(self):
+        self._lock = RLock()
         self._messages: List[Dict[str, Any]] = []
         self._deleted_messages: List[Dict[str, Any]] = []
         logger.info("Initialized in-memory storage")
     
+    @_locked
     def get_messages(self) -> List[Dict[str, Any]]:
-        return self._messages.copy()
+        return deepcopy(self._messages)
     
+    @_locked
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
-        self._messages = messages.copy()
+        self._messages = deepcopy(messages)
         return True
 
+    @_locked
     def add_message(self, message: Dict[str, Any]) -> bool:
         message_id = message.get("id")
         if message_id:
             self._messages = [
                 item for item in self._messages if item.get("id") != message_id
             ]
-        self._messages.append(message.copy())
+        self._messages.append(deepcopy(message))
         return True
     
+    @_locked
     def get_deleted_messages(self) -> List[Dict[str, Any]]:
-        return self._deleted_messages.copy()
+        return deepcopy(self._deleted_messages)
     
+    @_locked
     def save_deleted_messages(self, messages: List[Dict[str, Any]]) -> bool:
-        self._deleted_messages = messages.copy()
+        self._deleted_messages = deepcopy(messages)
         return True
     
+    @_locked
     def is_healthy(self) -> bool:
         return True
     
@@ -110,37 +128,63 @@ class FileStorage(BaseStorage):
     
     def __init__(self, messages_file: str = "messages.json", 
                  deleted_file: str = "deleted_messages.json"):
+        self._lock = RLock()
         self.messages_file = messages_file
         self.deleted_file = deleted_file
         logger.info(f"Initialized file storage: {messages_file}, {deleted_file}")
     
     def _read_json_file(self, filepath: str) -> List[Dict[str, Any]]:
-        """Read JSON data from file."""
+        from pathlib import Path
+
         try:
-            import os
-            if os.path.exists(filepath):
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to read {filepath}: {e}")
-        return []
-    
+            with Path(filepath).open('r', encoding='utf-8') as stream:
+                data = json.load(stream)
+        except FileNotFoundError:
+            return []
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Cannot read file storage") from exc
+        if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
+            raise ValueError("File storage must contain a list of records")
+        return data
+
     def _write_json_file(self, filepath: str, data: List[Dict[str, Any]]) -> bool:
-        """Write JSON data to file."""
+        from pathlib import Path
+        import tempfile
+
+        temporary = None
         try:
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+            # Serialize before opening a file so invalid data cannot damage records.
+            encoded = json.dumps(data, indent=2, allow_nan=False)
+            target = Path(filepath)
+            with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8', dir=target.parent,
+                prefix=f'.{target.name}.', delete=False,
+            ) as stream:
+                temporary = Path(stream.name)
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, target)
             return True
-        except Exception as e:
-            logger.error(f"Failed to write {filepath}: {e}")
+        except (OSError, TypeError, ValueError):
+            logger.error("File storage write failed")
             return False
-    
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    logger.error("File storage temporary file cleanup failed")
+
+    @_locked
     def get_messages(self) -> List[Dict[str, Any]]:
         return self._read_json_file(self.messages_file)
     
+    @_locked
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
         return self._write_json_file(self.messages_file, messages)
 
+    @_locked
     def add_message(self, message: Dict[str, Any]) -> bool:
         messages = self.get_messages()
         message_id = message.get("id")
@@ -149,16 +193,23 @@ class FileStorage(BaseStorage):
         messages.append(message)
         return self.save_messages(messages)
     
+    @_locked
     def get_deleted_messages(self) -> List[Dict[str, Any]]:
         return self._read_json_file(self.deleted_file)
     
+    @_locked
     def save_deleted_messages(self, messages: List[Dict[str, Any]]) -> bool:
         return self._write_json_file(self.deleted_file, messages)
     
+    @_locked
     def is_healthy(self) -> bool:
-        # File storage is always "healthy" - worst case we create new files
-        return True
-    
+        try:
+            self.get_messages()
+            self.get_deleted_messages()
+            return True
+        except (OSError, ValueError, RuntimeError):
+            return False
+
     @property
     def backend_type(self) -> StorageBackend:
         return StorageBackend.FILE
@@ -169,7 +220,7 @@ class AzureTableStorage(BaseStorage):
     
     def __init__(self, connection_string: str, table_name: Optional[str] = None):
         # Prefer env var STORAGE_TABLE_NAME, then provided table_name, then default
-        self.table_name = os.getenv("STORAGE_TABLE_NAME") or table_name or "responder-messages"
+        self.table_name = os.getenv("STORAGE_TABLE_NAME") or table_name or "ResponderMessages"
         self.connection_string = connection_string
         self._client = None
         self._last_health_check = 0
@@ -190,7 +241,7 @@ class AzureTableStorage(BaseStorage):
                 self._is_healthy_cached = False
                 return
             
-            self._client = TableServiceClient.from_connection_string(self.connection_string)
+            self._client = TableServiceClient.from_connection_string(self.connection_string, connection_timeout=5, read_timeout=15, retry_total=2)
             
             # Create table if it doesn't exist
             try:
@@ -274,7 +325,9 @@ class AzureTableStorage(BaseStorage):
                 parsed_data[parsed_key] = value
             else:
                 # Convert specific fields back to their proper types
-                if key == "minutes_until_arrival":
+                if key in ("system", "extraction_failed"):
+                    message[key] = str(value).lower() == "true"
+                elif key == "minutes_until_arrival":
                     try:
                         message[key] = int(value) if value is not None else None
                     except (ValueError, TypeError):
@@ -344,6 +397,73 @@ class AzureTableStorage(BaseStorage):
             logger.error(f"Failed to save message {message_id}: {e}")
             return False
     
+    def _row_client(self):
+        if not self.is_healthy() or self._client is None:
+            raise RuntimeError("Azure Table Storage unavailable")
+        return self._client.get_table_client(self.table_name)
+
+    @staticmethod
+    def _row_etag(entity):
+        etag = getattr(entity, "metadata", {}).get("etag")
+        if not etag:
+            raise RuntimeError("Storage concurrency token unavailable")
+        return etag
+
+    def update_message(self, message_id, updates):
+        from azure.core import MatchConditions
+        from azure.data.tables import UpdateMode
+        try:
+            table = self._row_client()
+            source = table.get_entity("messages", message_id)
+            changes = {key: value for key, value in updates.items()
+                       if key not in ("id", "PartitionKey", "RowKey", "Timestamp", "etag")}
+            entity = self._message_to_entity({"id": message_id, **changes})
+            table.update_entity(entity, mode=UpdateMode.MERGE, etag=self._row_etag(source),
+                                match_condition=MatchConditions.IfNotModified)
+            return True
+        except Exception:
+            logger.warning("Storage row update failed")
+            return False
+
+    def move_message(self, message_id, source_partition, target_partition):
+        from azure.core import MatchConditions
+        from datetime import timezone
+        try:
+            table = self._row_client()
+            source = table.get_entity(source_partition, message_id)
+            etag = self._row_etag(source)
+            target = {key: value for key, value in source.items()
+                      if key not in ("Timestamp", "etag")}
+            target["PartitionKey"] = target_partition
+            if target_partition == "deleted":
+                target["deleted_at"] = datetime.now(timezone.utc).isoformat()
+            else:
+                target.pop("deleted_at", None)
+            # Cross-partition moves cannot be atomic. Preserve the copy before removing the source.
+            from azure.data.tables import UpdateMode
+            table.upsert_entity(target, mode=UpdateMode.REPLACE)
+            table.delete_entity(source_partition, message_id, etag=etag,
+                                match_condition=MatchConditions.IfNotModified)
+            return True
+        except Exception:
+            logger.warning("Storage row move failed")
+            return False
+
+    def remove_message(self, message_id, partition="deleted", expected=None):
+        from azure.core import MatchConditions
+        try:
+            table = self._row_client()
+            source = table.get_entity(partition, message_id)
+            if expected and any(str(source.get(key, "")) != str(value or "")
+                                for key, value in expected.items()):
+                return False
+            table.delete_entity(partition, message_id, etag=self._row_etag(source),
+                                match_condition=MatchConditions.IfNotModified)
+            return True
+        except Exception:
+            logger.warning("Storage row removal failed")
+            return False
+
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
         """Save all active messages to Azure Table Storage."""
         if not self.is_healthy() or self._client is None:

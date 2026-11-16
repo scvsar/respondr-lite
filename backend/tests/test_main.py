@@ -46,7 +46,9 @@ def test_get_responder_data_empty():
     
     app.dependency_overrides = {}
 
-def test_webhook_endpoint(mock_openai_response):
+def test_webhook_endpoint(mock_openai_response, monkeypatch):
+    monkeypatch.setattr("app.routers.webhook.webhook_api_key", "test-key")
+    monkeypatch.setattr("app.routers.webhook.disable_api_key_check", False)
     """Test the webhook endpoint with a mock OpenAI response"""
     app.dependency_overrides[require_auth] = lambda: mock_user
     app.dependency_overrides[require_admin] = lambda: mock_user
@@ -71,7 +73,7 @@ def test_webhook_endpoint(mock_openai_response):
             "created_at": 1627484400
         }
         
-        response = client.post("/webhook", json=webhook_data)
+        response = client.post("/webhook", json=webhook_data, headers={"X-Webhook-Token": "test-key"})
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
         
@@ -153,6 +155,7 @@ def test_dashboard_endpoint():
     }
     
     # Patch the messages list with our test data
+    app.dependency_overrides[require_auth] = lambda: mock_user
     with patch('main.messages', [test_message]):
         response = client.get("/dashboard")
         assert response.status_code == 200
@@ -161,6 +164,7 @@ def test_dashboard_endpoint():
         assert "Test User" in response.text
         assert "SAR78" in response.text
         assert "2025-08-01 12:15:00" in response.text
+    app.dependency_overrides = {}
 
 def test_static_files():
     """Test that static files are correctly handled based on environment"""
@@ -181,7 +185,8 @@ def test_user_info():
     app.dependency_overrides[require_auth] = lambda: mock_user
     app.dependency_overrides[require_admin] = lambda: mock_user
     
-    response = client.get("/api/user")
+    with patch("app.auth.dependencies.allowed_admin_users", ["test@scvsar.org"]):
+        response = client.get("/api/user")
     assert response.status_code == 200
     
     data = response.json()

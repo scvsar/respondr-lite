@@ -1,6 +1,5 @@
 import logging
 import os
-import traceback
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -34,13 +33,7 @@ def _get_queue_api_version(conn_str: str) -> Optional[str]:
 
 def main(req: func.HttpRequest) -> func.HttpResponse:
     """HTTP trigger function that enqueues messages to Azure Storage Queue."""
-    # Use Azure Functions built-in logging
     logging.info("Processing GroupMe webhook")
-    logging.info("TEST debug log — function entered")
-    logging.info(f"Request method: {req.method}")
-    logging.info(f"Request URL: {req.url}")
-    logging.info(f"Request headers: {dict(req.headers)}")
-    logging.info(f"Request headers: {dict(req.headers)}")
 
     expected_key = os.getenv("WEBHOOK_API_KEY", "")
     k_param = req.params.get("k", None)
@@ -69,31 +62,19 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
         allowed = os.getenv("ALLOWED_GROUPME_GROUP_IDS", "")
         allowed_ids = [g.strip() for g in allowed.split(",") if g.strip()]
 
+    if not expected_key and not allowed_ids:
+        logging.error("Webhook authentication policy is not configured")
+        return func.HttpResponse("Webhook unavailable", status_code=503)
+
     try:
         body = req.get_json()
-        logging.info("Request JSON parsed; keys: %s", list(body.keys())[:10])
-        
-        # Log the exact incoming payload to storage table
-        log_payload(body, dict(req.headers), req.method)
-        
-    except ValueError as e:
-        logging.exception("Failed to parse JSON from request")
-        # Log failed parsing attempts too
-        try:
-            raw_body = req.get_body().decode('utf-8')
-            log_payload({"_parse_error": str(e), "_raw_body": raw_body}, dict(req.headers), req.method)
-        except:
-            pass
-        return func.HttpResponse(f"Invalid JSON: {e}", status_code=400)
-    
+    except ValueError:
+        return func.HttpResponse("Invalid JSON", status_code=400)
 
-    # Validate payload against expected schema
     try:
-        parsed: GroupMeMessage = GroupMeMessage.model_validate(body)  # pydantic v2
-        logging.info("Payload validation succeeded; group_id=%s id=%s", parsed.group_id, parsed.id)
-    except ValidationError as e:
-        logging.warning("Payload validation failed: %s", str(e))
-        return func.HttpResponse(f"Invalid payload: {e}", status_code=400)
+        parsed = GroupMeMessage.model_validate(body)
+    except ValidationError:
+        return func.HttpResponse("Invalid payload", status_code=400)
 
     group_id = parsed.group_id
 
@@ -107,6 +88,10 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse("Unauthorized: group not allowed", status_code=401)
 
 
+    # Preserve only validated, authorized payloads. Never persist authentication headers.
+    log_payload(parsed.model_dump(), None, req.method)
+
+
     queue_name = os.getenv("STORAGE_QUEUE_NAME")
     logging.info(queue_name)
     conn_str = os.getenv("AzureWebJobsStorage")
@@ -117,38 +102,38 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # check if queue exists and if not, create it
         queue_api_version = _get_queue_api_version(conn_str)
+        queue_options = {"connection_timeout": 3, "read_timeout": 5, "retry_total": 1}
         if queue_api_version:
             logging.info("Using queue API version %s", queue_api_version)
             queue = QueueClient.from_connection_string(
                 conn_str,
                 queue_name,
                 api_version=queue_api_version,
+                **queue_options,
             )
         else:
-            queue = QueueClient.from_connection_string(conn_str, queue_name)
+            queue = QueueClient.from_connection_string(conn_str, queue_name, **queue_options)
         try:
-            r = queue.create_queue()
-            print(r)
+            queue.create_queue()
         except ResourceExistsError:
             pass  # Queue already exists
         logging.info("Sending message to queue '%s'", queue_name)
         
         # Serialize the GroupMeMessage to JSON using Pydantic's built-in method
         message_json = parsed.model_dump_json()
-        logging.info("Serialized message: %s", message_json)
         
         try:
             queue.send_message(message_json)
             logging.info("Successfully sent message to queue")
         except Exception as e:
-            logging.error("Failed to send message to queue: %s", e)
+            logging.error("Failed to send message to queue")
             raise
         
         # Wake up the container app if configured
         wake_url = os.getenv("CONTAINER_APP_WAKE_URL")
         if wake_url:
             try:
-                logging.info(f"Waking container app at: {wake_url}")
+                logging.info("Waking container app")
                 wake_req = urllib.request.Request(wake_url, method='GET')
                 wake_req.add_header('User-Agent', 'Azure-Function-Wake-Request')
                 
@@ -160,15 +145,13 @@ def main(req: func.HttpRequest) -> func.HttpResponse:
                         logging.warning(f"Container app wake request returned status: {response.status}")
             except urllib.error.URLError as e:
                 # Log but don't fail - the container might already be awake
-                logging.warning(f"Failed to wake container app: {e}")
+                logging.warning("Failed to wake container app")
             except Exception as e:
-                logging.warning(f"Unexpected error waking container app: {e}")
+                logging.warning("Unexpected error waking container app")
         else:
             logging.info("CONTAINER_APP_WAKE_URL not configured, skipping wake request")
             
         return func.HttpResponse("OK", status_code=200)       
     except Exception as e:
-        # Log full traceback and return exception type+message for local debugging
-        logging.error("Failed to send message to queue: %s", e)
-        logging.error(traceback.format_exc())
-        return func.HttpResponse(f"Queue error: {type(e).__name__}: {e}", status_code=500)
+        logging.error("Failed to send message to queue")
+        return func.HttpResponse("Queue unavailable", status_code=500)

@@ -64,7 +64,7 @@ class PayloadLogger:
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "method": method,
                 "payload": json.dumps(payload) if payload else "",
-                "headers": json.dumps(headers) if headers else "",
+                "headers": "",
                 "group_id": payload.get("group_id", "") if payload else "",
                 "message_id": payload.get("id", "") if payload else "",
                 "sender_name": payload.get("name", "") if payload else "",

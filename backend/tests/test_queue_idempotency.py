@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.queue_listener import process_queue_message
+from app.queue_listener import _poison_queue_name
 from app.routers.webhook import (
     WebhookMessage,
     _build_storage_message_id,
@@ -38,6 +39,18 @@ def test_source_message_id_is_stable_and_scoped_to_group():
     assert first == retry
     assert first != other_group
     assert first.startswith("groupme-")
+
+
+def test_poison_queue_name_is_valid_for_maximum_source_length(monkeypatch):
+    monkeypatch.delenv('STORAGE_POISON_QUEUE_NAME', raising=False)
+    name=_poison_queue_name('a'*63)
+    assert len(name)<=63
+    assert name!=_poison_queue_name('a'*62+'b')
+
+
+def test_poison_queue_cannot_be_the_source_queue(monkeypatch):
+    monkeypatch.setenv('STORAGE_POISON_QUEUE_NAME','synthetic-source')
+    with pytest.raises(ValueError): _poison_queue_name('synthetic-source')
 
 
 def test_memory_storage_upserts_one_message_without_removing_others():
@@ -121,6 +134,7 @@ async def test_duplicate_webhook_delivery_runs_extraction_once_and_stores_one_ro
     assert len(stored_messages) == 1
     assert stored_messages[0]["groupme_id"] == "source-message-1"
     assert extract.call_count == 1
+    assert extract.call_args.kwargs['original_text'] == message.text
 
 
 @pytest.mark.asyncio
@@ -190,3 +204,50 @@ async def test_failed_queue_processing_does_not_delete_message():
 
     assert result is False
     queue.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_restore_a_soft_deleted_message():
+    message = WebhookMessage(id='deleted-source', group_id='synthetic-group',
+                             name='Synthetic User', text='Responding', created_at=1784844000)
+    deleted = {'id': _build_storage_message_id(message.group_id, message.id)}
+    with (patch('app.routers.webhook.get_messages', return_value=[]),
+          patch('app.routers.webhook.get_deleted_messages', return_value=[deleted]),
+          patch('app.routers.webhook.add_message') as save,
+          patch('app.routers.webhook.extract_details_from_text') as extract):
+        assert await webhook_handler(message, None, False) == {'status':'duplicate'}
+    save.assert_not_called()
+    extract.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_message_is_preserved_in_poison_queue_before_delete():
+    message = SimpleNamespace(content='{malformed',id='synthetic-queue-id',pop_receipt='receipt',dequeue_count=6)
+    queue, poison = MagicMock(), MagicMock()
+    with patch('app.queue_listener.webhook_handler') as handler:
+        assert await process_queue_message(queue,message,poison_queue=poison) is True
+    handler.assert_not_called()
+    poison.send_message.assert_called_once()
+    assert poison.send_message.call_args.args[0]=='{malformed'
+    queue.delete_message.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_poison_write_leaves_source_message():
+    message=SimpleNamespace(content='{malformed',id='synthetic-queue-id',pop_receipt='receipt',dequeue_count=6)
+    queue,poison=MagicMock(),MagicMock()
+    poison.send_message.side_effect=RuntimeError('synthetic outage')
+    assert await process_queue_message(queue,message,poison_queue=poison) is False
+    queue.delete_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_invalid_queue_payload_does_not_log_private_content(caplog):
+    message = SimpleNamespace(
+        content=json.dumps({'name': {'private': 'synthetic-private-message-marker'}, 'text': 'Synthetic response'}),
+        id='synthetic-queue-id', pop_receipt='receipt', dequeue_count=1,
+    )
+    queue = MagicMock()
+    assert await process_queue_message(queue, message) is False
+    queue.delete_message.assert_not_called()
+    assert 'synthetic-private-message-marker' not in caplog.text

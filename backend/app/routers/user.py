@@ -11,7 +11,7 @@ from ..config import (
     FORCE_GEOCITIES_MODE, ENABLE_GEOCITIES_TOGGLE, INACTIVITY_TIMEOUT_MINUTES,
     ALLOW_LOCAL_AUTH_BYPASS, LOCAL_BYPASS_IS_ADMIN, ENABLE_LOCAL_AUTH, is_testing
 )
-from ..auth.dependencies import require_auth
+from ..auth.dependencies import require_auth, is_admin_user
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +43,9 @@ def get_user_info(user: dict = Depends(require_auth)) -> JSONResponse:
     # Extract info from token payload
     email = _extract_user_email(user)
     name = user.get("name") or user.get("display_name") or email
-    is_admin = user.get("is_admin", False)
+    is_admin = is_admin_user(user)
     auth_type = user.get("auth_type", "entra") # Default to entra if not specified (local has it)
     
-    # Apply explicit admin allowlist by email for any auth type.
-    if email and email.lower() in [u.lower() for u in allowed_admin_users]:
-        is_admin = True
-
     return JSONResponse(content={
         "authenticated": True,
         "email": email,

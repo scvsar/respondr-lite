@@ -1,13 +1,14 @@
 """Local user authentication system for external users (deputies, etc.)."""
 
+import asyncio
 import hashlib
 import secrets
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
-from azure.data.tables import TableServiceClient, TableClient
-from azure.core.exceptions import ResourceNotFoundError
+from azure.data.tables import TableClient
+from azure.core.exceptions import ResourceNotFoundError, ResourceExistsError
 
 from .config import (
     LOCAL_USERS_TABLE, LOCAL_AUTH_SECRET_KEY, LOCAL_AUTH_SESSION_HOURS,
@@ -20,44 +21,35 @@ logger = logging.getLogger(__name__)
 # In-memory storage for local development when Azure Storage is not available
 _local_users_memory_store: Dict[str, Dict[str, Any]] = {}
 
+class LocalAuthStorageError(RuntimeError):
+    """Local-user storage cannot complete an operation."""
+
+
 def get_table_client(table_name: str) -> Optional[TableClient]:
-    """Get a table client for the specified table, or None if not available."""
-    # Check if we're in local development mode without Azure Storage
+    backend = os.getenv("LOCAL_AUTH_STORAGE_BACKEND", "azure_table").lower()
+    if is_testing or backend == "memory":
+        return None
+    if backend != "azure_table":
+        raise LocalAuthStorageError("Invalid local-user storage configuration")
     connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    
     if not connection_string:
-        # Fallback to account name and key
         account_name = os.getenv("AZURE_STORAGE_ACCOUNT")
         account_key = os.getenv("AZURE_STORAGE_KEY")
-        
         if account_name and account_key:
             connection_string = f"DefaultEndpointsProtocol=https;AccountName={account_name};AccountKey={account_key};EndpointSuffix=core.windows.net"
-        else:
-            # No Azure Storage configured - use in-memory storage for local development
-            logger.info(f"No Azure Storage configured, using in-memory storage for {table_name}")
-            return None
-    
+    if not connection_string:
+        raise LocalAuthStorageError("Local-user storage is not configured")
     try:
-        # Create table service client and get table client
-        table_service = TableServiceClient.from_connection_string(connection_string)
-        table_client = table_service.get_table_client(table_name)
-        
-        # Ensure table exists
+        client = TableClient.from_connection_string(
+            connection_string, table_name=table_name, connection_timeout=5, read_timeout=15, retry_total=2,
+        )
         try:
-            table_client.create_table()
-            logger.info(f"Created table {table_name}")
-        except Exception as e:
-            # Table might already exist
-            error_msg = str(e).lower()
-            if "already exists" in error_msg or "conflict" in error_msg:
-                logger.debug(f"Table {table_name} already exists")
-            else:
-                logger.warning(f"Could not create table {table_name}: {e}")
-        
-        return table_client
-    except Exception as e:
-        logger.warning(f"Could not connect to Azure Storage, using in-memory storage: {e}")
-        return None
+            client.create_table()
+        except ResourceExistsError:
+            pass
+        return client
+    except Exception as exc:
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 class LocalUser:
@@ -69,7 +61,7 @@ class LocalUser:
         self.username = username
         self.email = email
         self.display_name = display_name
-        self.is_admin = is_admin
+        self.is_admin = is_admin is True
         self.organization = organization
         self.created_at = created_at or now_tz()
     
@@ -144,29 +136,26 @@ def create_session_token(user: LocalUser) -> str:
         'organization': user.organization,
         'auth_type': 'local',
         'iss': 'local',
-        'exp': datetime.utcnow() + timedelta(hours=LOCAL_AUTH_SESSION_HOURS),
-        'iat': datetime.utcnow()
+        'exp': datetime.now(timezone.utc) + timedelta(hours=LOCAL_AUTH_SESSION_HOURS),
+        'iat': datetime.now(timezone.utc)
     }
     
+    if not LOCAL_AUTH_SECRET_KEY:
+        raise ValueError("Local authentication signing secret is not configured")
     return jwt.encode(payload, LOCAL_AUTH_SECRET_KEY, algorithm='HS256')
 
 
 def verify_session_token(token: str) -> Optional[Dict[str, Any]]:
     """Verify and decode a JWT session token."""
+    from .auth.dependencies import require_auth
+    import jwt
+
     try:
-        import jwt
-    except ImportError:
-        logger.error("PyJWT package not installed - required for local authentication")
-        return None
-    
-    try:
-        payload = jwt.decode(token, LOCAL_AUTH_SECRET_KEY, algorithms=['HS256'])
-        return payload
-    except jwt.ExpiredSignatureError:
-        logger.debug("JWT token has expired")
-        return None
-    except jwt.InvalidTokenError as e:
-        logger.debug(f"Invalid JWT token: {e}")
+        if jwt.get_unverified_header(token).get("alg") != "HS256":
+            return None
+        return require_auth(None, token)
+    except Exception:
+        logger.debug("Local session token validation failed")
         return None
 
 
@@ -176,7 +165,7 @@ async def get_local_user(username: str) -> Optional[LocalUser]:
         return None
     
     try:
-        table_client = get_table_client(LOCAL_USERS_TABLE)
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
         if table_client is None:
             # Use in-memory storage
             user_data = _local_users_memory_store.get(username)
@@ -185,13 +174,13 @@ async def get_local_user(username: str) -> Optional[LocalUser]:
             return None
         else:
             # Use Azure Table Storage
-            entity = table_client.get_entity("localuser", username)
+            entity = await asyncio.to_thread(table_client.get_entity, "localuser", username)
             return LocalUser.from_dict(entity)
     except ResourceNotFoundError:
         return None
-    except Exception as e:
-        logger.error(f"Error getting local user {username}: {e}")
-        return None
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 async def get_local_user_by_email(email: str) -> Optional[LocalUser]:
@@ -200,7 +189,7 @@ async def get_local_user_by_email(email: str) -> Optional[LocalUser]:
         return None
     
     try:
-        table_client = get_table_client(LOCAL_USERS_TABLE)
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
         if table_client is None:
             # Use in-memory storage
             for user_data in _local_users_memory_store.values():
@@ -210,17 +199,21 @@ async def get_local_user_by_email(email: str) -> Optional[LocalUser]:
         else:
             # Use Azure Table Storage - Query by email
             # Note: This is a scan, but acceptable for small number of local users
-            filter_query = f"PartitionKey eq 'localuser' and email eq '{email}'"
-            entities = table_client.query_entities(filter_query)
+            filter_query = "PartitionKey eq 'localuser' and email eq @email"
+            entities = await asyncio.to_thread(lambda: list(table_client.query_entities(filter_query, parameters={"email": email})))
             
             for entity in entities:
                 return LocalUser.from_dict(entity)
-            
+            # Older records can contain mixed-case email addresses.
+            entities = await asyncio.to_thread(lambda: list(table_client.query_entities("PartitionKey eq 'localuser'")))
+            for entity in entities:
+                if str(entity.get("email", "")).casefold() == email.casefold():
+                    return LocalUser.from_dict(entity)
             return None
             
-    except Exception as e:
-        logger.error(f"Error getting local user by email {email}: {e}")
-        return None
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 async def verify_local_user(username_or_email: str, password: str) -> Optional[LocalUser]:
@@ -247,11 +240,11 @@ async def verify_local_user(username_or_email: str, password: str) -> Optional[L
         # Let's fetch the entity using the resolved username
         username = user.username
         
-        table_client = get_table_client(LOCAL_USERS_TABLE)
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
         if table_client is None:
             entity = _local_users_memory_store.get(username)
         else:
-            entity = table_client.get_entity("localuser", username)
+            entity = await asyncio.to_thread(table_client.get_entity, "localuser", username)
         
         stored_hash = entity.get("password_hash")
         stored_salt = entity.get("password_salt")
@@ -260,7 +253,7 @@ async def verify_local_user(username_or_email: str, password: str) -> Optional[L
             logger.warning(f"Missing password data for user {username}")
             return None
         
-        if verify_password(password, stored_hash, stored_salt):
+        if await asyncio.to_thread(verify_password, password, stored_hash, stored_salt):
             return LocalUser.from_dict(entity)
         else:
             logger.info(f"Invalid password for user {username}")
@@ -269,9 +262,9 @@ async def verify_local_user(username_or_email: str, password: str) -> Optional[L
     except ResourceNotFoundError:
         logger.info(f"Local user {username_or_email} not found")
         return None
-    except Exception as e:
-        logger.error(f"Error verifying local user {username_or_email}: {e}")
-        return None
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 async def create_local_user(username: str, password: str, email: str, 
@@ -289,7 +282,7 @@ async def create_local_user(username: str, password: str, email: str,
             return False
         
         # Hash password
-        password_hash, salt = hash_password(password)
+        password_hash, salt = await asyncio.to_thread(hash_password, password)
         
         # Create user entity
         user = LocalUser(username, email, display_name, is_admin, organization)
@@ -298,21 +291,25 @@ async def create_local_user(username: str, password: str, email: str,
         entity["password_salt"] = salt
         
         # Store in table or memory
-        table_client = get_table_client(LOCAL_USERS_TABLE)
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
         if table_client is None:
             # Use in-memory storage
+            if username in _local_users_memory_store:
+                return False
             _local_users_memory_store[username] = entity
             logger.info(f"Created local user in memory: {username} ({email})")
         else:
             # Use Azure Table Storage
-            table_client.create_entity(entity)
+            await asyncio.to_thread(table_client.create_entity, entity)
             logger.info(f"Created local user in Azure Storage: {username} ({email})")
         
         return True
         
-    except Exception as e:
-        logger.error(f"Error creating local user {username}: {e}")
+    except ResourceExistsError:
         return False
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 async def update_local_user_password(username: str, new_password: str) -> bool:
@@ -321,16 +318,25 @@ async def update_local_user_password(username: str, new_password: str) -> bool:
         return False
     
     try:
-        table_client = get_table_client(LOCAL_USERS_TABLE)
-        entity = table_client.get_entity("localuser", username)
-        
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
+        if table_client is None:
+            if username not in _local_users_memory_store:
+                return False
+            password_hash, salt = await asyncio.to_thread(hash_password, new_password)
+            if username not in _local_users_memory_store:
+                return False
+            _local_users_memory_store[username].update(password_hash=password_hash, password_salt=salt)
+            return True
+        entity = await asyncio.to_thread(table_client.get_entity, "localuser", username)
+
         # Hash new password
-        password_hash, salt = hash_password(new_password)
+        password_hash, salt = await asyncio.to_thread(hash_password, new_password)
         entity["password_hash"] = password_hash
         entity["password_salt"] = salt
         
         # Update entity
-        table_client.update_entity(entity, mode="replace")
+        password_fields = {key: entity[key] for key in ("PartitionKey", "RowKey", "password_hash", "password_salt")}
+        await asyncio.to_thread(table_client.update_entity, password_fields, mode="merge")
         
         logger.info(f"Updated password for local user: {username}")
         return True
@@ -338,9 +344,9 @@ async def update_local_user_password(username: str, new_password: str) -> bool:
     except ResourceNotFoundError:
         logger.warning(f"Local user {username} not found for password update")
         return False
-    except Exception as e:
-        logger.error(f"Error updating password for local user {username}: {e}")
-        return False
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 async def list_local_users() -> list[LocalUser]:
@@ -349,8 +355,10 @@ async def list_local_users() -> list[LocalUser]:
         return []
     
     try:
-        table_client = get_table_client(LOCAL_USERS_TABLE)
-        entities = table_client.query_entities("PartitionKey eq 'localuser'")
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
+        if table_client is None:
+            return [LocalUser.from_dict(row) for row in _local_users_memory_store.values()]
+        entities = await asyncio.to_thread(lambda: list(table_client.query_entities("PartitionKey eq 'localuser'")))
         
         users = []
         for entity in entities:
@@ -362,9 +370,9 @@ async def list_local_users() -> list[LocalUser]:
         
         return users
         
-    except Exception as e:
-        logger.error(f"Error listing local users: {e}")
-        return []
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 async def delete_local_user(username: str) -> bool:
@@ -373,7 +381,7 @@ async def delete_local_user(username: str) -> bool:
         return False
     
     try:
-        table_client = get_table_client(LOCAL_USERS_TABLE)
+        table_client = await asyncio.to_thread(get_table_client, LOCAL_USERS_TABLE)
         
         if table_client is None:
             # Use in-memory storage
@@ -387,16 +395,16 @@ async def delete_local_user(username: str) -> bool:
         row_key = username
         partition_key = "localuser"
         
-        table_client.delete_entity(partition_key=partition_key, row_key=row_key)
+        await asyncio.to_thread(table_client.delete_entity, partition_key=partition_key, row_key=row_key)
         logger.info(f"Deleted local user: {username}")
         return True
         
     except ResourceNotFoundError:
         logger.warning(f"User {username} not found for deletion")
         return False
-    except Exception as e:
-        logger.error(f"Error deleting local user {username}: {e}")
-        return False
+    except Exception as exc:
+        logger.error("Local-user storage operation failed")
+        raise LocalAuthStorageError("Local-user storage is unavailable") from exc
 
 
 def extract_session_token_from_request(request) -> Optional[str]:

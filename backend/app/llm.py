@@ -3,12 +3,15 @@ import logging
 import re
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Tuple
-from openai import AzureOpenAI
+from openai import AzureOpenAI, APIConnectionError, APIStatusError
+import time
 from openai.types.chat import ChatCompletionMessageParam
+
+from .model_output import ModelExtraction
 
 from .config import (
     azure_openai_api_key, azure_openai_endpoint, azure_openai_deployment,
-    azure_openai_api_version, DEBUG_FULL_LLM_LOG, TIMEZONE, APP_TZ,
+    azure_openai_api_version, TIMEZONE, APP_TZ,
     DEFAULT_MAX_COMPLETION_TOKENS, MIN_COMPLETION_TOKENS, MAX_COMPLETION_TOKENS_CAP,
     LLM_REASONING_EFFORT, LLM_VERBOSITY, LLM_MAX_RETRIES, LLM_TOKEN_INCREASE_FACTOR,
     ENABLE_LLM_MOCK
@@ -24,6 +27,8 @@ if azure_openai_api_key and azure_openai_endpoint:
             api_key=azure_openai_api_key,
             api_version=azure_openai_api_version or "2024-02-01",
             azure_endpoint=azure_openai_endpoint,
+            timeout=30.0,
+            max_retries=0,
         )
     except Exception as e:
         logger.error(f"Failed to initialize Azure OpenAI client: {e}")
@@ -279,7 +284,7 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                    verbosity_override: Optional[str] = None, reasoning_effort_override: Optional[str] = None,
                    max_tokens_override: Optional[int] = None) -> Dict[str, Any]:
     if ENABLE_LLM_MOCK:
-        logger.info(f"MOCK LLM: Processing '{text}'")
+        logger.info("Processing message with mock LLM")
         return _call_mock_llm(text, base_dt)
 
     c = llm_client or client
@@ -307,183 +312,72 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
         debug_info["sys_prompt"] = sys_msg
         debug_info["user_prompt"] = user_msg
 
-    def _try_call_with_retry(kwargs: Dict[str, Any], with_json_format: bool, attempt: int = 1) -> Tuple[Optional[str], Dict[str, Any]]:
-        """Enhanced LLM call with comprehensive retry logic and token usage logging."""
-        call_info = {
-            "attempt": attempt,
-            "max_completion_tokens": kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS),
-            "with_json_format": with_json_format,
-            "tokens_used": None,
-            "error": None,
-            "success": False
-        }
-        
-        try:
-            assert azure_openai_deployment is not None
-            logger.info(f"LLM call attempt {attempt}/{LLM_MAX_RETRIES} - max_completion_tokens: {call_info['max_completion_tokens']}")
-            
-            if with_json_format:
-                resp = c.chat.completions.create(
-                    model=azure_openai_deployment,
-                    messages=messages_payload,
-                    response_format={"type": "json_object"},
-                    **kwargs
-                )
-            else:
-                resp = c.chat.completions.create(
-                    model=azure_openai_deployment,
-                    messages=messages_payload,
-                    **kwargs
-                )
-            
-            # Log token usage
-            if hasattr(resp, 'usage') and resp.usage:
-                call_info["tokens_used"] = {
-                    "prompt_tokens": getattr(resp.usage, 'prompt_tokens', None),
-                    "completion_tokens": getattr(resp.usage, 'completion_tokens', None),
-                    "total_tokens": getattr(resp.usage, 'total_tokens', None)
-                }
-                logger.info(f"LLM tokens used - prompt: {call_info['tokens_used']['prompt_tokens']}, "
-                           f"completion: {call_info['tokens_used']['completion_tokens']}, "
-                           f"total: {call_info['tokens_used']['total_tokens']}")
-            
-            content = (resp.choices[0].message.content or "").strip()
-            
-            if not content:
-                call_info["error"] = "empty_response"
-                logger.warning(f"LLM returned empty response on attempt {attempt}")
-                return None, call_info
-            
-            call_info["success"] = True
-            logger.info(f"LLM call successful on attempt {attempt}")
-            return content, call_info
-            
-        except Exception as e:
-            call_info["error"] = str(e)
-            etxt = str(e).lower()
-            logger.warning(f"LLM call failed on attempt {attempt}: {e}")
-            
-            # Handle unsupported parameters
-            params_removed = []
-            for k in ("temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"):
-                if k in kwargs and (k.replace("_", " ") in etxt or "unknown" in etxt):
-                    kwargs.pop(k, None)
-                    params_removed.append(k)
-            
-            if params_removed:
-                logger.info(f"Removed unsupported parameters: {params_removed}")
-            
-            # Handle token limit errors
-            if "max tokens" in etxt or "output limit" in etxt or "too long" in etxt:
-                current = int(kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS))
-                new_tokens = min(
-                    int(MAX_COMPLETION_TOKENS_CAP),
-                    max(int(current * LLM_TOKEN_INCREASE_FACTOR), max(int(MIN_COMPLETION_TOKENS), 1024))
-                )
-                kwargs["max_completion_tokens"] = new_tokens
-                logger.info(f"Token limit error - increasing from {current} to {new_tokens}")
-            
-            return None, call_info
-
     kwargs = _select_kwargs_for_model(azure_openai_deployment)
-    # Log the resolved LLM kwargs so operators can verify what will be sent
-    try:
-        logger.debug(f"LLM kwargs before overrides: {kwargs}")
-    except Exception:
-        pass
-    # Apply optional overrides if provided and valid
     if verbosity_override:
-        v = str(verbosity_override).lower().strip()
-        if v in ("low", "medium", "high"):
-            kwargs["verbosity"] = v
+        value = str(verbosity_override).lower().strip()
+        if value in ("low", "medium", "high"):
+            kwargs["verbosity"] = value
     if reasoning_effort_override:
-        r = str(reasoning_effort_override).lower().strip()
-        if r in ("minimal", "low", "medium", "high"):
-            kwargs["reasoning_effort"] = r
+        value = str(reasoning_effort_override).lower().strip()
+        if value in ("minimal", "low", "medium", "high"):
+            kwargs["reasoning_effort"] = value
     if isinstance(max_tokens_override, int) and max_tokens_override > 0:
-        # Clamp to configured safe range; align with existing retry cap
         kwargs["max_completion_tokens"] = max(
-            int(MIN_COMPLETION_TOKENS),
-            min(int(MAX_COMPLETION_TOKENS_CAP), int(max_tokens_override))
+            int(MIN_COMPLETION_TOKENS), min(int(MAX_COMPLETION_TOKENS_CAP), max_tokens_override)
         )
 
-    # Enhanced retry logic with comprehensive logging
     content = None
-    all_call_info = []
-    
-    # Try with JSON format first
-    for attempt in range(1, LLM_MAX_RETRIES + 1):
-        content, call_info = _try_call_with_retry(dict(kwargs), True, attempt)
-        all_call_info.append(call_info)
-        
-        if content:
-            break
-        
-        if not call_info["success"] and call_info["error"]:
-            logger.warning(f"LLM attempt {attempt} failed: {call_info['error']}")
-            
-            # If we got an empty response, try increasing tokens for next attempt
-            if call_info["error"] == "empty_response" and attempt < LLM_MAX_RETRIES:
-                current_tokens = kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS)
-                new_tokens = min(
-                    int(MAX_COMPLETION_TOKENS_CAP),
-                    max(int(current_tokens * LLM_TOKEN_INCREASE_FACTOR), max(int(MIN_COMPLETION_TOKENS), 1024))
-                )
-                kwargs["max_completion_tokens"] = new_tokens
-                logger.info(f"Empty response - increasing tokens from {current_tokens} to {new_tokens} for attempt {attempt + 1}")
-    
-    # If JSON format failed, try without JSON format
-    if not content:
-        logger.info("JSON format attempts failed, trying without JSON format")
-        for attempt in range(1, LLM_MAX_RETRIES + 1):
-            content, call_info = _try_call_with_retry(dict(kwargs), False, attempt)
-            all_call_info.append(call_info)
-            
-            if content:
-                break
-                
-            if not call_info["success"] and call_info["error"]:
-                logger.warning(f"Non-JSON attempt {attempt} failed: {call_info['error']}")
-                
-                # If we got an empty response, try increasing tokens for next attempt
-                if call_info["error"] == "empty_response" and attempt < LLM_MAX_RETRIES:
-                    current_tokens = kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS)
-                    new_tokens = min(
-                        int(MAX_COMPLETION_TOKENS_CAP),
-                        max(int(current_tokens * LLM_TOKEN_INCREASE_FACTOR), max(int(MIN_COMPLETION_TOKENS), 1024))
-                    )
-                    kwargs["max_completion_tokens"] = new_tokens
-                    logger.info(f"Empty response - increasing tokens from {current_tokens} to {new_tokens} for non-JSON attempt {attempt + 1}")
-    
-    # Last-ditch compact retry if still no content
-    if not content or not content.strip():
-        logger.warning("All retry attempts failed, trying last-ditch compact retry")
-        messages_retry: List[ChatCompletionMessageParam] = [
-            {"role": "system", "content": "Return ONLY valid compact JSON per schema."},
-            {"role": "user", "content": f"{user_msg}\nReturn only JSON."},
-        ]
+    max_attempts = max(1, min(10, int(LLM_MAX_RETRIES)))
+    error = "empty_response"
+    removable = {"temperature", "top_p", "presence_penalty", "frequency_penalty", "verbosity", "reasoning_effort"}
+    for attempt in range(1, max_attempts + 1):
         try:
-            resp = c.chat.completions.create(
+            response = c.chat.completions.create(
                 model=azure_openai_deployment,
-                messages=messages_retry,
+                messages=messages_payload,
                 response_format={"type": "json_object"},
-                max_completion_tokens=min(
-                    int(MAX_COMPLETION_TOKENS_CAP),
-                    max(int(kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS)), max(int(MIN_COMPLETION_TOKENS), 1024))
-                ),
+                **kwargs,
             )
-            content = (resp.choices[0].message.content or "").strip()
-            if content:
-                logger.info("Last-ditch compact retry succeeded")
-            else:
-                logger.error("Last-ditch compact retry returned empty content")
-        except Exception as e:
-            logger.error(f"Final LLM retry failed: {e}")
-            # Log summary of all attempts
-            logger.error(f"All LLM attempts failed. Summary: {len(all_call_info)} attempts made")
-            for i, info in enumerate(all_call_info, 1):
-                logger.error(f"  Attempt {i}: tokens={info['max_completion_tokens']}, success={info['success']}, error={info.get('error', 'None')}")
-            return {"_llm_error": str(e)}
+            choice = response.choices[0]
+            refusal = getattr(choice.message, "refusal", None)
+            if choice.finish_reason == "content_filter" or (isinstance(refusal, str) and refusal):
+                return {"_llm_error": "content_filtered"}
+            content = (choice.message.content or "").strip()
+            if choice.finish_reason != "length" and content:
+                break
+            error = "output_limit" if choice.finish_reason == "length" else "empty_response"
+            content = None
+            current = int(kwargs.get("max_completion_tokens", DEFAULT_MAX_COMPLETION_TOKENS))
+            kwargs["max_completion_tokens"] = min(
+                int(MAX_COMPLETION_TOKENS_CAP),
+                max(int(current * LLM_TOKEN_INCREASE_FACTOR), int(MIN_COMPLETION_TOKENS), 1024),
+            )
+        except APIStatusError as exc:
+            error = f"provider_status_{exc.status_code}"
+            body = exc.body if isinstance(exc.body, dict) else {}
+            details = body.get("error", body)
+            if not isinstance(details, dict):
+                details = {}
+            parameter = details.get("param")
+            # Change only a parameter that the provider explicitly rejects.
+            if (exc.status_code == 400 and details.get("code") in ("unsupported_parameter", "unsupported_value")
+                    and isinstance(parameter, str) and parameter in removable and parameter in kwargs):
+                kwargs.pop(parameter)
+                continue
+            if exc.status_code not in (408, 409, 429) and exc.status_code < 500:
+                return {"_llm_error": error}
+            if attempt < max_attempts:
+                time.sleep(min(2 ** (attempt - 1), 8))
+        except APIConnectionError:
+            error = "provider_connection_failed"
+            if attempt < max_attempts:
+                time.sleep(min(2 ** (attempt - 1), 8))
+        except Exception:
+            logger.error("LLM request failed")
+            return {"_llm_error": "provider_request_failed"}
+    if not content:
+        logger.warning("LLM extraction failed after bounded attempts: %s", error)
+        return {"_llm_error": error}
 
     try:
         parsed = json.loads(content) if content else {"_llm_error": "empty"}
@@ -516,6 +410,22 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
                 res["_debug_user_prompt"] = debug_info.get("user_prompt", "")
                 res["_debug_raw_response"] = content
             return res
+
+
+def _validated_model_output(value):
+    if not isinstance(value, dict):
+        return {"_llm_error": "invalid_model_output"}
+    if value.get("_llm_error") or value.get("_llm_unavailable"):
+        return value
+    try:
+        candidate = dict(value)
+        if "vehicle" in candidate and isinstance(candidate["vehicle"], str):
+            candidate["vehicle"] = _normalize_vehicle_name(candidate["vehicle"])
+        validated = ModelExtraction.model_validate(candidate)
+        return {**value, **validated.model_dump()}
+    except Exception:
+        logger.warning("Invalid structured model output")
+        return {"_llm_error": "invalid_model_output"}
 
 
 def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, prev_eta_iso: Optional[str], status: str) -> Tuple[Dict[str, Any], str]:
@@ -705,6 +615,7 @@ def extract_details_from_text(
     reasoning_effort_override: Optional[str] = None,
     max_tokens_override: Optional[int] = None,
     other_responders: Optional[List[Dict[str, Any]]] = None,
+    original_text: Optional[str] = None,
 ) -> Dict[str, Any]:
     anchor = base_time or now_tz()
 
@@ -729,12 +640,14 @@ def extract_details_from_text(
     max_tokens_override=max_tokens_override,
     )
 
-    # Enhanced debugging for LLM responses
-    logger.debug(f"LLM DEBUG - Input text: '{text}'")
-    logger.debug(f"LLM DEBUG - Raw response: {llm_data}")
+    # Only the current reply can trigger deterministic status and time rules.
+    # History remains in the model prompt, separate from the source message.
+    text = original_text if original_text is not None else text
+
+    llm_data = _validated_model_output(llm_data)
 
     if isinstance(llm_data, dict) and (llm_data.get("_llm_unavailable") or llm_data.get("_llm_error")):
-        logger.warning(f"LLM unavailable or error: {llm_data}")
+        logger.warning("LLM extraction unavailable or invalid")
         return {
             "vehicle": "Unknown",
             "eta": "Unknown",
@@ -745,7 +658,8 @@ def extract_details_from_text(
             "eta_timestamp": None,
             "eta_timestamp_utc": None,
             "minutes_until_arrival": None,
-            "parse_source": "LLM",
+            "parse_source": "Failed",
+            "extraction_failed": True,
         }
 
     vehicle = _normalize_vehicle_name(str(llm_data.get("vehicle") or "Unknown"))
@@ -787,12 +701,6 @@ def extract_details_from_text(
         }
         eta_source = "Rule"
 
-    if DEBUG_FULL_LLM_LOG:
-        try:
-            logger.debug(f"LLM raw: {llm_data}")
-        except Exception:
-            pass
-
     evidence = str(llm_data.get("evidence") or "")
 
     # Check if ETA validation is needed and perform correction if anomalous
@@ -803,15 +711,8 @@ def extract_details_from_text(
         not _validate_eta_against_context(eta_minutes, other_responders) and
         status in ("Responding", "Available")):  # Only correct for response statuses
         
-        # Log context for debugging
-        context_summary = []
-        if other_responders:
-            for r in other_responders[:3]:  # Show first 3 for context
-                context_summary.append(f"{r.get('name', 'Unknown')}: {r.get('eta', 'Unknown')} ({r.get('minutes_until_arrival', '?')} min)")
-        context_str = "; ".join(context_summary) if context_summary else "no context"
-        
-        logger.warning(f"ETA appears anomalous: {eta_fields.get('eta')} ({eta_minutes} min) vs others [{context_str}]. Attempting correction.")
-        
+        logger.warning("ETA requires correction")
+
         try:
             # Create correction prompt with enhanced reasoning
             sys_correction, user_correction = _create_correction_prompt(
@@ -828,6 +729,7 @@ def extract_details_from_text(
                 max_tokens_override=1024
             )
             
+            corrected_data = _validated_model_output(corrected_data)
             if (isinstance(corrected_data, dict) and 
                 not corrected_data.get("_llm_unavailable") and 
                 not corrected_data.get("_llm_error")):
@@ -847,18 +749,8 @@ def extract_details_from_text(
                             eta_source = "LLM-Corrected"
                             correction_applied = True
                             
-                            # Update other fields from correction if available
-                            corrected_vehicle = _normalize_vehicle_name(str(corrected_data.get("vehicle") or vehicle))
-                            corrected_status = str(corrected_data.get("status") or status).strip()
-                            corrected_confidence = float(corrected_data.get("confidence") or confidence)
-                            corrected_evidence = str(corrected_data.get("evidence") or evidence)
-                            
-                            if corrected_vehicle != "Unknown":
-                                vehicle = corrected_vehicle
-                            if corrected_status != "Unknown":
-                                status = corrected_status  
-                            if corrected_confidence > 0:
-                                confidence = corrected_confidence
+                            # A time correction must not change independently extracted responder facts.
+                            corrected_evidence = str(corrected_data.get("evidence") or "")
                             if corrected_evidence:
                                 evidence = f"{evidence} [Corrected: {corrected_evidence}]"
                         else:
@@ -868,13 +760,14 @@ def extract_details_from_text(
                 else:
                     logger.warning("Correction attempt returned Unknown ETA")
             else:
-                logger.warning(f"ETA correction call failed: {corrected_data}")
+                logger.warning("ETA correction call failed")
                 
         except Exception as e:
             logger.error(f"ETA correction attempt failed: {e}")
 
     result = {
         "vehicle": vehicle,
+        "extraction_failed": False,
         "eta": eta_fields.get("eta", "Unknown"),
         "raw_status": status,
         "arrival_status": status,  # webhook may flip to "Arrived" based on minutes

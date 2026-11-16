@@ -265,6 +265,7 @@ Log "Using storage account name: $StorageAccountName"
   -RepositoryBranch $RepositoryBranch `
   -GithubToken $GithubToken `
   -DotEnvPath $DotEnvPath
+if ($LASTEXITCODE -ne 0) { throw 'Infrastructure deployment failed. Post-deployment configuration stopped.' }
 Log "Using direct invocation of ..\infra\deploy.ps1 (the earlier backtick call handles parameters)"
 
 # --- Post-Deployment Configuration ---
@@ -301,13 +302,15 @@ $originList = @(
 
 $allowedOrigins = ($originList -join ",")
 # Note: This update might trigger a new revision
-az containerapp update -n $ContainerAppName -g $ResourceGroup --set-env-vars "ALLOWED_ORIGINS=$allowedOrigins" "STATIC_WEB_APP_URL=$primaryOrigin"
+az containerapp update -n $ContainerAppName -g $ResourceGroup --set-env-vars "ALLOWED_ORIGINS=$allowedOrigins" "STATIC_WEB_APP_URL=$primaryOrigin" --output none
+if ($LASTEXITCODE -ne 0) { throw 'Container App configuration failed.' }
 Log "Container App updated."
 
 # 4. Update Function App with CONTAINER_APP_WAKE_URL
 Log "Updating Function App settings..."
 $wakeUrl = "$caUrl/api/wake"
-az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings "CONTAINER_APP_WAKE_URL=$wakeUrl"
+az functionapp config appsettings set -n $FunctionAppName -g $ResourceGroup --settings "CONTAINER_APP_WAKE_URL=$wakeUrl" --output none
+if ($LASTEXITCODE -ne 0) { throw 'Function configuration failed.' }
 Log "Function App updated."
 
 Log "Deployment script complete. Check $global:LogFile for full logs."

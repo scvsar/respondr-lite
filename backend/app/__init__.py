@@ -5,6 +5,8 @@ from fastapi import FastAPI, Request, Response, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
+from .local_auth import LocalAuthStorageError
 
 from .routers import webhook, responders, dashboard, user, auth
 from .auth.dependencies import require_auth
@@ -16,6 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Disable automatic docs generation - we'll create protected versions
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.exception_handler(LocalAuthStorageError)
+async def local_auth_storage_unavailable(request: Request, exc: LocalAuthStorageError):
+    return JSONResponse(status_code=503, content={"detail": "Local authentication storage unavailable"})
 
 # Enable CORS with strict origins
 origins = [
@@ -64,14 +71,6 @@ async def log_requests(request: Request, call_next):
         tag = "HEALTH_CHECK"
     elif path.startswith("/api/"):
         tag = "API_REQUEST"
-        # Log auth header presence for API requests
-        auth_header = request.headers.get("authorization", "")
-        if auth_header:
-            print(f"🔵 API request to {path} with auth header: {auth_header[:20]}...")
-            logger.info(f"API request to {path} with auth header: {auth_header[:20]}...")
-        else:
-            print(f"🔴 API request to {path} WITHOUT auth header")
-            logger.warning(f"API request to {path} WITHOUT auth header")
     else:
         tag = "OTHER_REQUEST"
     

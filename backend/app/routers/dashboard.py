@@ -1,8 +1,11 @@
 """Dashboard and static file endpoints."""
 
+from ..message_policy import responder_messages
+
 import os
 from pathlib import Path
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from ..auth.dependencies import require_auth, require_admin
 from fastapi.responses import HTMLResponse, FileResponse
 from typing import List, Dict, Any
 
@@ -102,14 +105,14 @@ def generate_dashboard_html(messages: List[Dict[str, Any]], title: str = "Respon
 
 
 @router.get("/dashboard", response_class=HTMLResponse)
-def get_dashboard():
+def get_dashboard(_: dict = Depends(require_auth)):
     """Serve the main dashboard HTML."""
-    messages = get_messages()
+    messages = responder_messages(get_messages())
     return HTMLResponse(content=generate_dashboard_html(messages, "Responder Dashboard"))
 
 
 @router.get("/deleted-dashboard", response_class=HTMLResponse)
-def get_deleted_dashboard():
+def get_deleted_dashboard(_: dict = Depends(require_admin)):
     """Serve the deleted messages dashboard HTML."""
     messages = get_deleted_messages()
     return HTMLResponse(content=generate_dashboard_html(messages, "Deleted Messages Dashboard"))

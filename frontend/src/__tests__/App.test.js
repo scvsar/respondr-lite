@@ -1,7 +1,8 @@
+import {vi} from 'vitest';
 import React from 'react';
 // Mock react-router-dom primitives used by the app so tests don't depend on real routing
-jest.mock('react-router-dom', () => {
-  const actual = jest.requireActual('react-router-dom');
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
   const Mocked = {
     ...actual,
     BrowserRouter: ({ children }) => <>{children}</>,
@@ -19,34 +20,34 @@ jest.mock('react-router-dom', () => {
 });
 
 // Mock MSAL and Local Auth modules
-jest.mock('../auth/msalClient', () => {
+vi.mock('../auth/msalClient', () => {
   return {
-    getAccessToken: jest.fn().mockImplementation(() => {
+    getAccessToken: vi.fn().mockImplementation(() => {
       console.log("MOCK getAccessToken CALLED");
       return Promise.resolve('dummy.eyJuYW1lIjogIlRlc3QgVXNlciIsICJwcmVmZXJyZWRfdXNlcm5hbWUiOiAidGVzdEBleGFtcGxlLmNvbSJ9.dummy');
     }),
     msalInstance: {
-      initialize: jest.fn().mockResolvedValue(),
-      handleRedirectPromise: jest.fn().mockResolvedValue(null),
-      getAllAccounts: jest.fn().mockReturnValue([{ username: 'test@example.com' }]),
-      getActiveAccount: jest.fn().mockReturnValue({ username: 'test@example.com' }),
-      setActiveAccount: jest.fn(),
-      addEventCallback: jest.fn(),
-      removeEventCallback: jest.fn(),
-      logoutRedirect: jest.fn(),
+      initialize: vi.fn().mockResolvedValue(),
+      handleRedirectPromise: vi.fn().mockResolvedValue(null),
+      getAllAccounts: vi.fn().mockReturnValue([{ username: 'test@example.com' }]),
+      getActiveAccount: vi.fn().mockReturnValue({ username: 'test@example.com' }),
+      setActiveAccount: vi.fn(),
+      addEventCallback: vi.fn(),
+      removeEventCallback: vi.fn(),
+      logoutRedirect: vi.fn(),
     },
-    initializeMsal: jest.fn().mockResolvedValue(),
+    initializeMsal: vi.fn().mockResolvedValue(),
   };
 });
 
 const mockLocalToken = 'local.eyJkaXNwbGF5X25hbWUiOiJUZXN0IFVzZXIiLCJlbWFpbCI6InRlc3RAZXhhbXBsZS5jb20iLCJpc19hZG1pbiI6dHJ1ZSwiYXV0aF90eXBlIjoibG9jYWwifQ==.sig';
 
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react';
 import App from '../App';
 
 // Mock fetch API for all tests
 beforeEach(() => {
-  global.fetch = jest.fn(async (url, opts) => {
+  global.fetch = vi.fn(async (url, opts) => {
     const u = typeof url === 'string' ? url : '';
     if (u.includes('/api/user')) {
       return {
@@ -126,9 +127,9 @@ beforeEach(() => {
 
 afterEach(() => {
   window.localStorage.clear();
-  jest.restoreAllMocks();
-  jest.clearAllTimers();
-  jest.useRealTimers();
+  vi.restoreAllMocks();
+  vi.clearAllTimers();
+  vi.useRealTimers();
 });
 
 test('renders SCVSAR Response Tracker', async () => {
@@ -137,6 +138,47 @@ test('renders SCVSAR Response Tracker', async () => {
   });
   const headingElement = screen.getByText(/SCVSAR Response Tracker/i);
   expect(headingElement).toBeInTheDocument();
+});
+
+test.each([null, {rows: []}, [null], [{name: {invalid: true}}]])('malformed current status shows an error without a blank dashboard: %p', async payload => {
+  const originalFetch = global.fetch;
+  global.fetch = vi.fn(async (url, options) => String(url).includes('/api/current-status')
+    ? {ok:true,json:async () => payload} : originalFetch(url, options));
+  await act(async () => { render(<App />); });
+  fireEvent.click(screen.getByRole('button', {name:/Current Status/i}));
+  expect(await screen.findByText('Error: Invalid responder response')).toBeInTheDocument();
+  expect(screen.getByText(/SCVSAR Response Tracker/i)).toBeInTheDocument();
+});
+
+test('current status applies time changes, including empty ranges and all time', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = vi.fn(async (url, options) => {
+    if (String(url).includes('/api/current-status')) {
+      const params = new URL(String(url), 'http://localhost').searchParams;
+      const rows = params.has('since') ? [] : [{
+        id: 'old', name: 'Older Synthetic Responder', text: 'Responding',
+        arrival_status: 'Responding', vehicle: 'Unknown', eta: 'Unknown',
+        timestamp: '2026-02-22T18:50:56Z',
+      }];
+      return { ok: true, json: async () => rows };
+    }
+    return originalFetch(url, options);
+  });
+  await act(async () => { render(<App />); });
+  fireEvent.click(screen.getByRole('button', { name: /Current Status/i }));
+  fireEvent.change(screen.getByTitle('Filter messages by time period'), { target: { value: '3d' } });
+  await waitFor(() => {
+    const calls = global.fetch.mock.calls.filter(([url]) => String(url).includes('/api/current-status'));
+    const params = new URL(calls[calls.length - 1][0], 'http://localhost').searchParams;
+    const elapsed = Date.now() - Date.parse(params.get('since'));
+    expect(elapsed).toBeGreaterThanOrEqual(3 * 86400000 - 2000);
+    expect(elapsed).toBeLessThan(3 * 86400000 + 2000);
+    expect(screen.queryByText('Older Synthetic Responder')).not.toBeInTheDocument();
+  });
+  fireEvent.change(screen.getByTitle('Filter messages by time period'), { target: { value: 'all' } });
+  await waitFor(() => expect(screen.getByText('Older Synthetic Responder')).toBeInTheDocument());
+  fireEvent.change(screen.getByTitle('Filter messages by time period'), { target: { value: '3d' } });
+  await waitFor(() => expect(screen.queryByText('Older Synthetic Responder')).not.toBeInTheDocument());
 });
 
 test('renders responder stats', async () => {
@@ -153,9 +195,61 @@ test('renders responder stats', async () => {
   expect(avgEtaElement).toBeInTheDocument();
 });
 
+test('unknown vehicle stays unknown even with a previous known vehicle', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = vi.fn(async (url, options) => {
+    if (String(url).includes('/api/responders')) return {ok:true, json:async () => [
+      {id:'old',user_id:'user-1',name:'Synthetic User',text:'Earlier reply',vehicle:'POV',timestamp:'2026-01-01T00:00:00Z'},
+      {id:'new',user_id:'user-1',name:'Synthetic User',text:'Vehicle is unknown',vehicle:'Unknown',timestamp:'2026-01-01T01:00:00Z'},
+    ]};
+    return originalFetch(url, options);
+  });
+  await act(async () => { render(<App />); });
+  const row = (await screen.findByText('Vehicle is unknown')).closest('tr');
+  expect(within(row).getAllByRole('cell')[4]).toHaveTextContent('Unknown');
+});
+
+test('late response from an old time filter cannot replace current data', async () => {
+  let releaseOld;
+  const oldResult = new Promise(resolve => { releaseOld = resolve; });
+  const originalFetch = global.fetch;
+  const newer = [{id:'new',name:'New Range Responder',text:'Responding',vehicle:'Unknown'}];
+  global.fetch = vi.fn(async (url, options) => {
+    if (String(url).includes('/api/responders')) {
+      const rows = String(url).includes('since=') ? await oldResult : newer;
+      return {ok:true,json:async () => rows};
+    }
+    return originalFetch(url, options);
+  });
+  await act(async () => { render(<App />); });
+  fireEvent.change(screen.getByTitle('Filter messages by time period'), {target:{value:'all'}});
+  await screen.findByText('New Range Responder');
+  await act(async () => releaseOld([{id:'old',name:'Old Range Responder',text:'Old',vehicle:'Unknown'}]));
+  expect(screen.getByText('New Range Responder')).toBeInTheDocument();
+  expect(screen.queryByText('Old Range Responder')).not.toBeInTheDocument();
+});
+
+test('current status totals use latest statuses rather than older responding messages', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = vi.fn(async (url, options) => {
+    if (String(url).includes('/api/current-status')) return {ok:true,json:async () => [
+      {id:'latest',user_id:'user-1',name:'Synthetic User',text:'Cannot respond',arrival_status:'Cancelled',vehicle:'Unknown',eta:'Unknown'},
+    ]};
+    return originalFetch(url, options);
+  });
+  await act(async () => { render(<App />); });
+  fireEvent.click(screen.getByRole('button',{name:/Current Status/i}));
+  await waitFor(() => {
+    const card=screen.getByText('Responders',{exact:true}).closest('.stat-card-Responders');
+    expect(within(card).getByText('0/1')).toBeInTheDocument();
+    expect(screen.getByText('No responders match the filters')).toBeInTheDocument();
+    expect(screen.getByRole('button',{name:/Current Status/i})).toHaveTextContent('0');
+  });
+});
+
 test('calculates average ETA correctly', async () => {
   // Mock fetch for both user authentication and responder data
-  global.fetch = jest.fn((url) => {
+  global.fetch = vi.fn((url) => {
     if (url.includes('/api/user')) {
       return Promise.resolve({
         ok: true,
@@ -172,6 +266,7 @@ test('calculates average ETA correctly', async () => {
         json: () => Promise.resolve([
           {
             id: '1',
+            arrival_status: 'Responding',
             name: 'Responder 1',
             text: 'On my way',
             vehicle: 'SAR1',
@@ -181,6 +276,7 @@ test('calculates average ETA correctly', async () => {
           },
           {
             id: '2', 
+            arrival_status: 'Responding',
             name: 'Responder 2',
             text: 'Responding',
             vehicle: 'SAR2',
@@ -190,6 +286,7 @@ test('calculates average ETA correctly', async () => {
           },
           {
             id: '3',
+            arrival_status: 'Responding',
             name: 'Responder 3', 
             text: 'Already there',
             vehicle: 'SAR3',

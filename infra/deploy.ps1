@@ -36,6 +36,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$tempParams = $null
 
 # run the main deploy operations inside a try/catch to avoid PowerShell printing script source
 try {
@@ -80,8 +81,11 @@ $envParsed = Parse-DotEnv -path $DotEnvPath
 $plainEnv = $envParsed.Plain
 $secretMap = $envParsed.SecretMap
 
+. (Join-Path $PSScriptRoot 'validate-deployment-config.ps1')
+Assert-LocalAuthConfiguration -PlainEnv $plainEnv -SecretMap $secretMap
+
 # Build a temp parameters file so we can pass complex arrays/objects cleanly
-$tempParams = Join-Path $env:TEMP "aca-params-$($ContainerAppName)-$(Get-Date -Format 'yyyyMMddHHmmss').json"
+$tempParams = (New-TemporaryFile).FullName
 
 # Build parameters object
 $params = @{
@@ -147,23 +151,18 @@ $params | ConvertTo-Json -Depth 50 | Set-Content -Encoding UTF8 $tempParams
     --resource-group $ResourceGroup `
     --template-file "$scriptDir/main.bicep" `
     --parameters `@"$tempParams" `
-    --debug
+    --only-show-errors `
+    --output none
+  if ($LASTEXITCODE -ne 0) { throw 'Infrastructure deployment failed.' }
 
-  Remove-Item $tempParams -Force
   Write-Host "Deployment complete."
 
 } catch {
-  # Save full exception details to a file and emit a concise message only
-  $ex = $_.Exception
-  $time = Get-Date -Format 'yyyyMMddHHmmss'
-  try {
-    $errFile = Join-Path $scriptDir "deploy-error-$time.txt"
-    $ex.ToString() | Out-File -FilePath $errFile -Encoding UTF8
-    Write-Host "ERROR: Deployment failed. Full details saved to $errFile"
-  }
-  catch {
-    Write-Host "ERROR: Deployment failed. (Failed to write error file)"
-  }
-  # exit with non-zero code so callers know it failed
+  Write-Host 'ERROR: Deployment failed.'
   exit 1
+}
+finally {
+  if ($tempParams -and (Test-Path -LiteralPath $tempParams)) {
+    Remove-Item -LiteralPath $tempParams -Force
+  }
 }

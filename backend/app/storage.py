@@ -1,17 +1,19 @@
 """
-Unified storage manager for Respondr with pluggable backends and automatic fallback.
+Storage manager with explicit fallback policy.
 
-This module provides a seamless storage abstraction that can work with Azure
-Table Storage, file-based storage, or in-memory storage with automatic
-fallback when primary storage is unavailable.
+Azure Table Storage is the default durable backend.
+Memory and file backends support local use. Fallback requires explicit configuration.
 """
 
 import json
 import logging
 import os
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
+import math
+from functools import wraps
+from threading import RLock
 
 from .storage_backends import (
     BaseStorage, StorageBackend, MemoryStorage,
@@ -38,6 +40,7 @@ class StorageManager:
     """
     
     def __init__(self):
+        self.allow_fallback = os.getenv("ALLOW_STORAGE_FALLBACK", "false").lower() == "true"
         self.primary_backend: Optional[BaseStorage] = None
         self.fallback_backend: Optional[BaseStorage] = None
         self.current_backend: Optional[BaseStorage] = None
@@ -91,8 +94,7 @@ class StorageManager:
             return MemoryStorage()
 
         else:
-            logger.warning(f"Unknown storage backend '{backend_type}', falling back to memory")
-            return MemoryStorage()
+            raise ValueError("Unknown storage backend")
     
     def _select_active_backend(self):
         """Select the active backend based on health checks."""
@@ -104,6 +106,10 @@ class StorageManager:
                 self.current_backend = self.primary_backend
             return
         
+        if not self.allow_fallback:
+            self.current_backend = self.primary_backend
+            return
+
         # Fallback to secondary backend
         if self.fallback_backend and self.fallback_backend.is_healthy():
             if self.current_backend != self.fallback_backend:
@@ -123,6 +129,13 @@ class StorageManager:
         if not self.current_backend or not self.current_backend.is_healthy():
             self._select_active_backend()
         
+        if not self.allow_fallback and (
+            self.current_backend is not self.primary_backend
+            or not self.current_backend
+            or not self.current_backend.is_healthy()
+        ):
+            raise RuntimeError("Primary storage unavailable")
+
         # If we still don't have a backend, create emergency memory storage
         if not self.current_backend:
             logger.critical("No storage backend available, creating emergency memory storage")
@@ -155,12 +168,13 @@ class StorageManager:
             logger.error(f"Failed to get messages from {backend_name}: {e}")
             
             # Try to switch to fallback
-            if self.current_backend == self.primary_backend and self.fallback_backend:
+            if self.allow_fallback and self.current_backend == self.primary_backend and self.fallback_backend:
                 logger.warning("Switching to fallback storage due to error")
                 self.current_backend = self.fallback_backend
                 return self.get_messages()  # Recursive retry with fallback
             
-            # Return empty list if all else fails
+            if not self.allow_fallback:
+                raise RuntimeError("Primary storage read failed") from e
             return []
     
     def save_messages(self, messages: List[Dict[str, Any]]) -> bool:
@@ -194,7 +208,7 @@ class StorageManager:
             logger.error(f"Failed to save messages to {backend_name}: {e}")
             
             # Try to switch to fallback
-            if self.current_backend == self.primary_backend and self.fallback_backend:
+            if self.allow_fallback and self.current_backend == self.primary_backend and self.fallback_backend:
                 logger.warning("Switching to fallback storage for save operation")
                 self.current_backend = self.fallback_backend
                 return self.save_messages(messages)  # Recursive retry with fallback
@@ -235,7 +249,8 @@ class StorageManager:
                     backend.backend_type.value,
                 )
                 if (
-                    self.current_backend == self.primary_backend
+                    self.allow_fallback
+                    and self.current_backend == self.primary_backend
                     and self.fallback_backend
                 ):
                     logger.warning(
@@ -249,7 +264,7 @@ class StorageManager:
             backend_name = backend.backend_type.value if backend else "unknown"
             logger.error(f"Failed to add message to {backend_name}: {e}")
 
-            if self.current_backend == self.primary_backend and self.fallback_backend:
+            if self.allow_fallback and self.current_backend == self.primary_backend and self.fallback_backend:
                 logger.warning("Switching to fallback storage for add operation")
                 self.current_backend = self.fallback_backend
                 return self.add_message(message)
@@ -279,11 +294,13 @@ class StorageManager:
             logger.error(f"Failed to get deleted messages from {backend_name}: {e}")
             
             # Try to switch to fallback
-            if self.current_backend == self.primary_backend and self.fallback_backend:
+            if self.allow_fallback and self.current_backend == self.primary_backend and self.fallback_backend:
                 logger.warning("Switching to fallback storage due to error")
                 self.current_backend = self.fallback_backend
                 return self.get_deleted_messages()  # Recursive retry with fallback
             
+            if not self.allow_fallback:
+                raise RuntimeError("Primary storage read failed") from e
             return []
     
     def save_deleted_messages(self, deleted_messages: List[Dict[str, Any]]) -> bool:
@@ -313,7 +330,7 @@ class StorageManager:
             logger.error(f"Failed to save deleted messages to {backend_name}: {e}")
             
             # Try to switch to fallback
-            if self.current_backend == self.primary_backend and self.fallback_backend:
+            if self.allow_fallback and self.current_backend == self.primary_backend and self.fallback_backend:
                 logger.warning("Switching to fallback storage for save operation")
                 self.current_backend = self.fallback_backend
                 return self.save_deleted_messages(deleted_messages)  # Recursive retry with fallback
@@ -323,6 +340,7 @@ class StorageManager:
     def get_storage_info(self) -> Dict[str, Any]:
         """Get information about current storage configuration."""
         return {
+            "fallback_allowed": self.allow_fallback,
             "current_backend": self.current_backend.backend_type.value if self.current_backend else None,
             "primary_backend": self.primary_backend.backend_type.value if self.primary_backend else None,
             "fallback_backend": self.fallback_backend.backend_type.value if self.fallback_backend else None,
@@ -336,12 +354,26 @@ class StorageManager:
 _storage_manager = StorageManager()
 
 
+_local_mutation_lock = RLock()
+
+
+def _serialize_local_mutation(operation):
+    @wraps(operation)
+    def run(*args, **kwargs):
+        if _azure_row_backend() is not None:
+            return operation(*args, **kwargs)
+        with _local_mutation_lock:
+            return operation(*args, **kwargs)
+    return run
+
+
 # Backwards-compatible API functions
 def get_messages() -> List[Dict[str, Any]]:
     """Get all active messages from storage."""
     return _storage_manager.get_messages()
 
 
+@_serialize_local_mutation
 def save_messages(messages: List[Dict[str, Any]]):
     """Save all active messages to storage."""
     return _storage_manager.save_messages(messages)
@@ -352,6 +384,7 @@ def get_deleted_messages() -> List[Dict[str, Any]]:
     return _storage_manager.get_deleted_messages()
 
 
+@_serialize_local_mutation
 def save_deleted_messages(deleted_messages: List[Dict[str, Any]]):
     """Save all deleted messages to storage."""
     return _storage_manager.save_deleted_messages(deleted_messages)
@@ -365,119 +398,135 @@ def get_storage_info() -> Dict[str, Any]:
 
 
 # Legacy functions that might be used by other parts of the codebase
+@_serialize_local_mutation
 def add_message(message: Dict[str, Any]):
     """Add or replace one message."""
     return _storage_manager.add_message(message)
 
 
+def _azure_row_backend():
+    if is_testing:
+        return None
+    _storage_manager._ensure_backend()
+    backend = _storage_manager.current_backend
+    return backend if isinstance(backend, AzureTableStorage) else None
+
+
+@_serialize_local_mutation
 def delete_message(msg_id: str) -> bool:
     """Soft delete a message by moving it to deleted collection."""
+    backend = _azure_row_backend()
+    if backend:
+        return backend.move_message(msg_id, "messages", "deleted")
     messages = get_messages()
     deleted_messages = get_deleted_messages()
     
     for i, msg in enumerate(messages):
         if msg.get("id") == msg_id:
-            deleted_msg = messages.pop(i)
-            deleted_msg["deleted_at"] = datetime.now().isoformat()
+            deleted_msg = dict(messages.pop(i))
+            deleted_msg["deleted_at"] = datetime.now(timezone.utc).isoformat()
+            deleted_messages = [row for row in deleted_messages if row.get("id") != msg_id]
             deleted_messages.append(deleted_msg)
-            
-            save_messages(messages)
-            save_deleted_messages(deleted_messages)
-            return True
+            if not save_deleted_messages(deleted_messages):
+                return False
+            return bool(save_messages(messages))
     
     return False
 
 
+@_serialize_local_mutation
 def update_message(msg_id: str, updates: Dict[str, Any]) -> bool:
     """Update a message."""
+    backend = _azure_row_backend()
+    if backend:
+        return backend.update_message(msg_id, updates)
     messages = get_messages()
     
     for msg in messages:
         if msg.get("id") == msg_id:
-            msg.update(updates)
-            save_messages(messages)
-            return True
+            index = messages.index(msg)
+            messages[index] = {**msg, **updates}
+            return bool(save_messages(messages))
     
     return False
 
 
+@_serialize_local_mutation
 def clear_all_messages():
     """Move all active messages to deleted."""
-    messages = get_messages()
-    deleted_messages = get_deleted_messages()
-    
-    timestamp = datetime.now().isoformat()
-    for msg in messages:
-        msg["deleted_at"] = timestamp
-        deleted_messages.append(msg)
-    
-    save_messages([])
-    save_deleted_messages(deleted_messages)
-    
-    return len(messages)
+    if _azure_row_backend():
+        return sum(bool(delete_message(m["id"])) for m in get_messages())
+    return bulk_delete_messages([row["id"] for row in get_messages()])
 
 
+@_serialize_local_mutation
 def undelete_message(msg_id: str) -> bool:
     """Restore a deleted message."""
+    backend = _azure_row_backend()
+    if backend:
+        return backend.move_message(msg_id, "deleted", "messages")
     messages = get_messages()
     deleted_messages = get_deleted_messages()
     
     for i, msg in enumerate(deleted_messages):
         if msg.get("id") == msg_id:
-            restored_msg = deleted_messages.pop(i)
+            restored_msg = dict(deleted_messages.pop(i))
             restored_msg.pop("deleted_at", None)
+            messages = [row for row in messages if row.get("id") != msg_id]
             messages.append(restored_msg)
-            
-            save_messages(messages)
-            save_deleted_messages(deleted_messages)
-            return True
+            if not save_messages(messages):
+                return False
+            return bool(save_deleted_messages(deleted_messages))
     
     return False
 
 
+@_serialize_local_mutation
 def permanently_delete_message(msg_id: str) -> bool:
     """Permanently delete a message from deleted collection."""
+    backend = _azure_row_backend()
+    if backend:
+        return backend.remove_message(msg_id)
     deleted_messages = get_deleted_messages()
     
     for i, msg in enumerate(deleted_messages):
         if msg.get("id") == msg_id:
             deleted_messages.pop(i)
-            save_deleted_messages(deleted_messages)
-            return True
+            return bool(save_deleted_messages(deleted_messages))
     
     return False
 
 
+@_serialize_local_mutation
 def clear_all_deleted_messages():
     """Permanently delete all deleted messages."""
+    if _azure_row_backend():
+        return sum(bool(permanently_delete_message(m["id"])) for m in get_deleted_messages())
     deleted_messages = get_deleted_messages()
     count = len(deleted_messages)
-    save_deleted_messages([])
-    return count
+    return count if save_deleted_messages([]) else 0
 
 
+@_serialize_local_mutation
 def bulk_delete_messages(msg_ids: List[str]) -> int:
     """Bulk delete multiple messages."""
+    if _azure_row_backend():
+        return sum(bool(delete_message(m["id"])) for m in [m for m in get_messages() if m.get("id") in msg_ids])
     messages = get_messages()
-    deleted_messages = get_deleted_messages()
-    
-    deleted_count = 0
-    timestamp = datetime.now().isoformat()
-    
-    # Process from end to beginning to avoid index shifting
-    for i in range(len(messages) - 1, -1, -1):
-        if messages[i].get("id") in msg_ids:
-            deleted_msg = messages.pop(i)
-            deleted_msg["deleted_at"] = timestamp
-            deleted_messages.append(deleted_msg)
-            deleted_count += 1
-    
-    save_messages(messages)
-    save_deleted_messages(deleted_messages)
-    
-    return deleted_count
+    selected = {str(value) for value in msg_ids}
+    moved = [{**row, "deleted_at": datetime.now(timezone.utc).isoformat()}
+             for row in messages if str(row.get("id")) in selected]
+    if not moved:
+        return 0
+    deleted_messages = [row for row in get_deleted_messages()
+                        if str(row.get("id")) not in selected]
+    if not save_deleted_messages(deleted_messages + moved):
+        return 0
+    remaining = [row for row in messages if str(row.get("id")) not in selected]
+    return len(moved) if save_messages(remaining) else 0
 
 
+@_serialize_local_mutation
 def purge_old_messages() -> Dict[str, int]:
     """
     Purge messages older than RETENTION_DAYS from both active and deleted messages.
@@ -512,7 +561,7 @@ def purge_old_messages() -> Dict[str, int]:
             active_to_keep.append(msg)
             continue
         
-        if created_timestamp >= cutoff_time:
+        if not math.isfinite(created_timestamp) or created_timestamp >= cutoff_time:
             active_to_keep.append(msg)
         else:
             active_purged += 1
@@ -545,19 +594,32 @@ def purge_old_messages() -> Dict[str, int]:
             deleted_to_keep.append(msg)
             continue
         
-        if deleted_timestamp >= cutoff_time:
+        if not math.isfinite(deleted_timestamp) or deleted_timestamp >= cutoff_time:
             deleted_to_keep.append(msg)
         else:
             deleted_purged += 1
             logger.debug(f"Purging old deleted message: {msg.get('id', 'unknown')}")
     
+    backend = _azure_row_backend()
+    if backend:
+        active_ids = {m.get("id") for m in active_to_keep}
+        deleted_ids = {m.get("id") for m in deleted_to_keep}
+        active_purged = sum(backend.remove_message(m["id"], "messages", {"created_at": m.get("created_at")})
+                            for m in messages if m.get("id") not in active_ids)
+        deleted_purged = sum(backend.remove_message(m["id"], "deleted", {
+            "created_at": m.get("created_at"), "deleted_at": m.get("deleted_at"),
+        }) for m in deleted_messages if m.get("id") not in deleted_ids)
+        return {"active": active_purged, "deleted": deleted_purged}
+
     # Save the filtered messages
     if active_purged > 0:
-        save_messages(active_to_keep)
+        if not save_messages(active_to_keep):
+            active_purged = 0
         logger.info(f"Purged {active_purged} old active messages")
     
     if deleted_purged > 0:
-        save_deleted_messages(deleted_to_keep)
+        if not save_deleted_messages(deleted_to_keep):
+            deleted_purged = 0
         logger.info(f"Purged {deleted_purged} old deleted messages")
     
     return {"active": active_purged, "deleted": deleted_purged}

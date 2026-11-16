@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from app.llm import _call_llm_only, _derive_eta_fields
+from app.llm import _call_llm_only, _derive_eta_fields, extract_details_from_text
+from unittest.mock import patch
 
 
 def test_extraction_prompt_requires_evidence_for_vehicle(monkeypatch):
@@ -30,3 +31,13 @@ def test_explicit_unknown_eta_clears_unsubstantiated_model_and_previous_eta():
     )
     assert fields["eta"] == "Unknown"
     assert fields["eta_timestamp_utc"] is None
+
+
+def test_previous_standdown_does_not_cancel_current_response():
+    history = 'Previous messages: "10-22" -> Not Responding\nCurrent message: Responding, ETA unknown.'
+    with patch('app.llm._call_llm_only', return_value={
+        'vehicle': 'Unknown', 'status': 'Responding', 'eta_iso': 'Unknown', 'confidence': 0.9,
+    }):
+        result = extract_details_from_text(history, original_text='Responding, ETA unknown.')
+    assert result['arrival_status'] == 'Responding'
+    assert result['eta'] == 'Unknown'

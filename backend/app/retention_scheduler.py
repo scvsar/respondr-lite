@@ -30,7 +30,7 @@ async def retention_cleanup_task():
             
             # Run the purge
             logger.info(f"Running scheduled retention cleanup at {datetime.now(APP_TZ).isoformat()}")
-            result = purge_old_messages()
+            result = await asyncio.to_thread(purge_old_messages)
             
             if result["active"] > 0 or result["deleted"] > 0:
                 logger.info(f"Retention cleanup completed: purged {result['active']} active and {result['deleted']} deleted messages")
@@ -52,7 +52,7 @@ async def run_retention_cleanup_now():
     """
     logger.info(f"Running manual retention cleanup at {datetime.now(APP_TZ).isoformat()}")
     try:
-        result = purge_old_messages()
+        result = await asyncio.to_thread(purge_old_messages)
         logger.info(f"Manual retention cleanup completed: purged {result['active']} active and {result['deleted']} deleted messages")
         return result
     except Exception as e:

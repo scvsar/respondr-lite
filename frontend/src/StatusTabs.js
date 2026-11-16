@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import './StatusTabs.css';
 import { apiCall } from './api';
+import { responderKey } from './responderIdentity';
+import { validateResponderData } from './responderData';
+
+const unfilteredUrl = (endpoint) => endpoint;
 
 const StatusTabs = ({ 
   data, 
@@ -25,6 +29,8 @@ const StatusTabs = ({
   query = '',
   refreshNonce = 0,
   geocitiesMode = false,
+  getTimeFilterUrl = unfilteredUrl,
+  onCurrentViewChange,
   // Controlled tab props (optional)
   activeTab: controlledActiveTab,
   onTabChange,
@@ -44,45 +50,32 @@ const StatusTabs = ({
   const [currentStatusLoading, setCurrentStatusLoading] = useState(true);
   const [currentStatusError, setCurrentStatusError] = useState(null);
 
-  // Fetch current status data
-  const fetchCurrentStatus = async () => {
-    try {
-      setCurrentStatusError(null);
-      setCurrentStatusLoading(true);
-      const response = await apiCall(`/api/current-status?t=${Date.now()}`, { cache: 'no-store' });
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+  useEffect(() => {
+    if (activeTab !== 'current') return;
+    let cancelled = false;
+    const fetchCurrentStatus = async () => {
+      try {
+        setCurrentStatusError(null);
+        setCurrentStatusLoading(true);
+        const url = getTimeFilterUrl('/api/current-status');
+        if (!url) throw new Error('Choose a valid start time.');
+        const response = await apiCall(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const currentStatus = validateResponderData(await response.json());
+
+        if (!cancelled) setCurrentStatusData(currentStatus);
+      } catch (err) {
+        console.error('Failed to fetch current status:', err);
+        if (!cancelled) setCurrentStatusError(err.message);
+      } finally {
+        if (!cancelled) setCurrentStatusLoading(false);
       }
-      const currentStatus = await response.json();
-      
-      setCurrentStatusData(currentStatus);
-    } catch (err) {
-      console.error('Failed to fetch current status:', err);
-      setCurrentStatusError(err.message);
-    } finally {
-      setCurrentStatusLoading(false);
-    }
-  };
-
-  useEffect(() => {
-  if (activeTab === 'current') {
-      fetchCurrentStatus();
-    }
-  }, [activeTab]);
-
-  // Also refresh current status whenever parent indicates data changes (e.g., delete/save)
-  useEffect(() => {
-  if (activeTab === 'current') {
-      fetchCurrentStatus();
-    }
-  }, [refreshNonce, activeTab]);
-
-  // Re-fetch current status when main data updates
-  useEffect(() => {
-  if (activeTab === 'current' && data.length > 0) {
-      fetchCurrentStatus();
-    }
-  }, [data, activeTab]);
+    };
+    fetchCurrentStatus();
+    return () => { cancelled = true; };
+  }, [data, activeTab, refreshNonce, getTimeFilterUrl]);
 
   // Apply filters to current status data (status / vehicle / search)
   const filteredCurrentStatus = useMemo(() => {
@@ -104,6 +97,13 @@ const StatusTabs = ({
     return filtered;
   }, [currentStatusData, statusFilter, vehicleFilter, query, statusOf, resolveVehicle]);
 
+  useEffect(() => {
+    if (onCurrentViewChange) onCurrentViewChange({
+      rows: filteredCurrentStatus, total: currentStatusData.length,
+      loading: currentStatusLoading, error: currentStatusError,
+    });
+  }, [filteredCurrentStatus, currentStatusData, currentStatusLoading, currentStatusError, onCurrentViewChange]);
+
   // Sort current status data after filtering
   const sortedCurrentStatus = useMemo(() => {
     if (!filteredCurrentStatus?.length) return [];
@@ -116,13 +116,13 @@ const StatusTabs = ({
       
       switch (key) {
         case 'timestamp':
-          aVal = new Date(a.timestamp || 0).getTime();
-          bVal = new Date(b.timestamp || 0).getTime();
+          aVal = new Date(a.timestamp_utc || a.timestamp || 0).getTime();
+          bVal = new Date(b.timestamp_utc || b.timestamp || 0).getTime();
           break;
         case 'eta':
           // Sort by eta_timestamp if available, otherwise by eta string
-          aVal = a.eta_timestamp ? new Date(a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
-          bVal = b.eta_timestamp ? new Date(b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
+          aVal = (a.eta_timestamp_utc || a.eta_timestamp) ? new Date(a.eta_timestamp_utc || a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
+          bVal = (b.eta_timestamp_utc || b.eta_timestamp) ? new Date(b.eta_timestamp_utc || b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
           break;
         default:
           aVal = String(a[key] || '').toLowerCase();
@@ -149,12 +149,12 @@ const StatusTabs = ({
       
       switch (key) {
         case 'timestamp':
-          aVal = new Date(a.timestamp || 0).getTime();
-          bVal = new Date(b.timestamp || 0).getTime();
+          aVal = new Date(a.timestamp_utc || a.timestamp || 0).getTime();
+          bVal = new Date(b.timestamp_utc || b.timestamp || 0).getTime();
           break;
         case 'eta':
-          aVal = a.eta_timestamp ? new Date(a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
-          bVal = b.eta_timestamp ? new Date(b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
+          aVal = (a.eta_timestamp_utc || a.eta_timestamp) ? new Date(a.eta_timestamp_utc || a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
+          bVal = (b.eta_timestamp_utc || b.eta_timestamp) ? new Date(b.eta_timestamp_utc || b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
           break;
         default:
           aVal = String(a[key] || '').toLowerCase();
@@ -176,11 +176,11 @@ const StatusTabs = ({
     // Pick latest per user by timestamp
     const latest = new Map();
     const tsOf = (e) => {
-      const t = e.timestamp || e.timestamp_utc || 0;
+      const t = e.timestamp_utc || e.timestamp || 0;
       const d = new Date(t);
       return isNaN(d.getTime()) ? 0 : d.getTime();
     };
-    const uidOf = (e) => e.user_id || e.name || String(e.id || '');
+    const uidOf = responderKey;
     for (const m of data) {
       const uid = uidOf(m);
       if (!uid) continue;
@@ -195,12 +195,12 @@ const StatusTabs = ({
       let aVal, bVal;
       switch (key) {
         case 'timestamp':
-          aVal = new Date(a.timestamp || 0).getTime();
-          bVal = new Date(b.timestamp || 0).getTime();
+          aVal = new Date(a.timestamp_utc || a.timestamp || 0).getTime();
+          bVal = new Date(b.timestamp_utc || b.timestamp || 0).getTime();
           break;
         case 'eta':
-          aVal = a.eta_timestamp ? new Date(a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
-          bVal = b.eta_timestamp ? new Date(b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
+          aVal = (a.eta_timestamp_utc || a.eta_timestamp) ? new Date(a.eta_timestamp_utc || a.eta_timestamp).getTime() : (a.eta === 'Cancelled' ? 0 : 999999999999);
+          bVal = (b.eta_timestamp_utc || b.eta_timestamp) ? new Date(b.eta_timestamp_utc || b.eta_timestamp).getTime() : (b.eta === 'Cancelled' ? 0 : 999999999999);
           break;
         default:
           aVal = String(a[key] || '').toLowerCase();
@@ -275,7 +275,7 @@ const StatusTabs = ({
             {!loading && !error && tableData.length === 0 && (
               <tr>
                 <td colSpan={editMode && showAllColumns ? "8" : "7"} className="empty">
-                  {activeTab === 'current' ? 'No current status data' : 'No messages found'}
+                  {activeTab === 'current' ? (currentStatusData.length ? 'No responders match the filters' : 'No current status data') : 'No messages found'}
                 </td>
               </tr>
             )}
@@ -347,7 +347,7 @@ const StatusTabs = ({
           <span className="tab-icon">👥</span>
           Current Status
           {currentStatusData?.length > 0 && (
-            <span className="tab-badge">{currentStatusData.length}</span>
+            <span className="tab-badge">{filteredCurrentStatus.length}</span>
           )}
         </button>
         <button 

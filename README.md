@@ -144,7 +144,7 @@ sequenceDiagram
 - Docker (for local development and container builds)
 - **Azurite** (for local storage emulation) - Install via [VS Code Extension](https://marketplace.visualstudio.com/items?itemName=Azurite.azurite) or `npm install -g azurite`
 - Python 3.11+ (for local development)
-- Node.js 18+ (for frontend development)
+- Node.js 20.19, 22.12, or a later supported release (for frontend development)
 
 ## Deployment
 
