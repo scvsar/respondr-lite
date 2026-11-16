@@ -521,6 +521,15 @@ def _call_llm_only(text: str, base_dt: datetime, prev_eta_iso: Optional[str], ll
 def _derive_eta_fields(text: str, llm_data: Dict[str, Any], base_dt: datetime, prev_eta_iso: Optional[str], status: str) -> Tuple[Dict[str, Any], str]:
     source = "LLM"
 
+    # An explicit unknown ETA supersedes both model guesses and earlier ETAs.
+    if re.search(r'\beta\s*(?:is\s*)?(?::\s*)?unknown[.!?\s]*$', text or '', re.IGNORECASE):
+        return {
+            "eta": "Unknown",
+            "eta_timestamp": None,
+            "eta_timestamp_utc": None,
+            "minutes_until_arrival": None,
+        }, "Rule"
+
     # If stand-down/cancel, never keep/parse ETA
     if _looks_like_code_1022(text) or _is_standdown(text):
         return {

@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from app.llm import _call_llm_only
+from app.llm import _call_llm_only, _derive_eta_fields
 
 
 def test_extraction_prompt_requires_evidence_for_vehicle(monkeypatch):
@@ -18,3 +18,15 @@ def test_extraction_prompt_requires_evidence_for_vehicle(monkeypatch):
     assert "If no vehicle is mentioned, use \"Unknown\"" in prompt
     assert "default vehicle to \"POV\"" not in prompt
     assert result["vehicle"] == "Unknown"
+
+
+def test_explicit_unknown_eta_clears_unsubstantiated_model_and_previous_eta():
+    fields, _ = _derive_eta_fields(
+        "Responding, ETA unknown.",
+        {"eta_iso": "2026-01-01T01:00:00Z"},
+        datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "2026-01-01T02:00:00Z",
+        "Responding",
+    )
+    assert fields["eta"] == "Unknown"
+    assert fields["eta_timestamp_utc"] is None
