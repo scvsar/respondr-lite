@@ -36,7 +36,7 @@ export async function initializeMsal() {
                 // Handle the redirect response after login
                 const response = await msalInstance.handleRedirectPromise();
                 if (response) {
-                    console.log("Login successful via redirect", response);
+                    console.log("Login successful via redirect");
                     msalInstance.setActiveAccount(response.account);
               } else {
                 const existing = msalInstance.getAllAccounts();

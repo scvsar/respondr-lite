@@ -81,6 +81,48 @@ def test_valid_v1_entra_token(entra, monkeypatch):
     assert auth.require_auth(None, jwt.encode(claims, private, algorithm='RS256'))['sub'] == 'synthetic-user'
 
 
+def test_v1_keys_without_issuer_metadata_are_supported(entra, monkeypatch):
+    private, claims, _ = entra
+    claims.update(ver='1.0', iss=f'https://sts.windows.net/{TENANT}/')
+    public_jwk = jwt.PyJWK.from_json(jwt.algorithms.RSAAlgorithm.to_jwk(private.public_key()))
+    client = MagicMock()
+    client.get_signing_key_from_jwt.return_value = public_jwk
+    monkeypatch.setattr(auth, 'jwks_client_v1', client)
+    assert auth.require_auth(None, jwt.encode(claims, private, algorithm='RS256'))['sub'] == 'synthetic-user'
+
+
+def test_v2_keys_still_require_issuer_metadata(entra):
+    private, claims, key = entra
+    key._jwk_data.pop('issuer')
+    with pytest.raises(HTTPException):
+        auth.require_auth(None, jwt.encode(claims, private, algorithm='RS256'))
+
+
+@pytest.mark.parametrize('change', ['consumer-tenant','key-issuer'])
+def test_v1_common_keys_keep_tenant_and_issuer_restrictions(entra, monkeypatch, change):
+    private, claims, key = entra
+    claims.update(ver='1.0', iss=f'https://sts.windows.net/{TENANT}/')
+    key._jwk_data.clear()
+    if change == 'consumer-tenant':
+        claims['tid'] = '9188040d-6c67-4c5b-b112-36a304b66dad'
+        claims['iss'] = f"https://sts.windows.net/{claims['tid']}/"
+    else:
+        key._jwk_data['issuer'] = 'https://evil.example/'
+    monkeypatch.setattr(auth, 'jwks_client_v1', auth.jwks_client)
+    with pytest.raises(HTTPException):
+        auth.require_auth(None, jwt.encode(claims, private, algorithm='RS256'))
+
+
+@pytest.mark.parametrize('tenant,version,expected', [
+    ('organizations','1.0','https://login.microsoftonline.com/common/discovery/keys'),
+    ('common','1.0','https://login.microsoftonline.com/common/discovery/keys'),
+    (TENANT,'1.0',f'https://login.microsoftonline.com/{TENANT}/discovery/keys'),
+    ('organizations','2.0','https://login.microsoftonline.com/organizations/discovery/v2.0/keys'),
+])
+def test_key_endpoint_matches_supported_token_version(tenant, version, expected):
+    assert auth._jwks_url(tenant, version) == expected
+
+
 def test_string_false_does_not_grant_admin(monkeypatch):
     monkeypatch.setattr(auth, 'is_testing', False)
     monkeypatch.setattr(auth, 'allowed_admin_users', [])

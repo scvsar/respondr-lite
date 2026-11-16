@@ -48,10 +48,19 @@ if API_AUDIENCE:
 else:
     logger.warning("API audience not set; Entra authentication will reject tokens")
 
-JWKS_URL = f"https://login.microsoftonline.com/{TENANT_ID}/discovery/v2.0/keys"
+def _jwks_url(tenant: Optional[str], version: str) -> Optional[str]:
+    if not tenant:
+        return None
+    # The v1 metadata service supports common, not organizations or consumers.
+    authority = 'common' if version == '1.0' and tenant.lower() in ('organizations', 'consumers') else tenant
+    path = 'discovery/keys' if version == '1.0' else 'discovery/v2.0/keys'
+    return f'https://login.microsoftonline.com/{authority}/{path}'
 
-jwks_client = PyJWKClient(JWKS_URL, timeout=10) if TENANT_ID else None
-jwks_client_v1 = PyJWKClient(JWKS_URL.replace("/v2.0/", "/"), timeout=10) if TENANT_ID else None
+
+JWKS_URL = _jwks_url(TENANT_ID, '2.0')
+JWKS_URL_V1 = _jwks_url(TENANT_ID, '1.0')
+jwks_client = PyJWKClient(JWKS_URL, timeout=10) if JWKS_URL else None
+jwks_client_v1 = PyJWKClient(JWKS_URL_V1, timeout=10) if JWKS_URL_V1 else None
 
 
 def _extract_user_email(payload: dict) -> Optional[str]:
@@ -119,8 +128,11 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
         else:
             raise credentials_exception
         signing_key = key_client.get_signing_key_from_jwt(token_value)
-        key_issuer = signing_key._jwk_data.get("issuer", "").replace("{tenantid}", tenant)
-        if key_issuer != issuer:
+        key_issuer = signing_key._jwk_data.get("issuer")
+        # Microsoft v1 keys omit issuer metadata. Token issuer and tenant checks still apply.
+        if key_issuer is None and version != '1.0':
+            raise credentials_exception
+        if key_issuer is not None and (not isinstance(key_issuer, str) or key_issuer.replace("{tenantid}", tenant) != issuer):
             raise credentials_exception
         audiences = [API_AUDIENCE]
         if API_AUDIENCE.startswith("api://"):
@@ -139,8 +151,8 @@ def require_auth(request: Request, token: Optional[str] = Depends(oauth2_scheme)
         return payload
     except HTTPException:
         raise
-    except Exception:
-        logger.warning("Token validation failed")
+    except Exception as exc:
+        logger.warning("Token validation failed (%s)", type(exc).__name__)
         raise credentials_exception
 
 
