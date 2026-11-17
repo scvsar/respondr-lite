@@ -147,6 +147,7 @@ celerybeat.pid
 *.env
 !.env.example 
 .envrc
+/responder-messages.jsonl
 .venv
 env/
 venv/
