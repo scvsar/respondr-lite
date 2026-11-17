@@ -17,7 +17,13 @@ class ExportResponderMessagesTests(unittest.TestCase):
     def test_dotenv_and_environment_precedence(self):
         with TemporaryDirectory() as directory:
             env_file = Path(directory) / ".env"
-            env_file.write_text(f"{export.KEY_ENV}=sample-file-key\n", encoding="utf-8")
+            env_file.write_text(
+                f"{export.ACCOUNT_ENV}=sampleaccount\n"
+                f"{export.KEY_ENV}=sample-file-key\n"
+                f"{export.TABLE_ENV}=SampleTable\n"
+                f"{export.TIMEZONE_ENV}=America/Los_Angeles\n",
+                encoding="utf-8",
+            )
             for environment, expected_key in (
                 ({}, "sample-file-key"),
                 ({export.KEY_ENV: "sample-env-key"}, "sample-env-key"),
@@ -34,12 +40,15 @@ class ExportResponderMessagesTests(unittest.TestCase):
                     clock.now.return_value = datetime(2026, 11, 17, 12, tzinfo=timezone.utc)
                     table = client.return_value.__enter__.return_value
                     table.list_entities.return_value = [
-                        {"RowKey": "recent", "timestamp_utc": "2026-11-04T12:00:00Z"},
+                        {"RowKey": "recent", "timestamp": "2026-11-03 05:00:00"},
                         {"RowKey": "older", "timestamp_utc": "2026-11-02T12:00:00Z"},
                     ]
 
                     export.main()
 
-                    credential = client.call_args.kwargs["credential"]
-                    self.assertEqual(credential.named_key.key, expected_key)
+                    config = client.call_args.kwargs
+                    self.assertEqual(config["endpoint"], "https://sampleaccount.table.core.windows.net")
+                    self.assertEqual(config["table_name"], "SampleTable")
+                    self.assertEqual(config["credential"].named_key.name, "sampleaccount")
+                    self.assertEqual(config["credential"].named_key.key, expected_key)
                     self.assertEqual(json.loads(output.getvalue())["RowKey"], "recent")

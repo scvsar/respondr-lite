@@ -1,4 +1,4 @@
-"""Export recent raw ResponderMessages rows as JSON Lines."""
+"""Export recent raw responder messages as JSON Lines."""
 
 import argparse
 import json
@@ -12,9 +12,10 @@ from azure.data.tables import TableClient
 from dotenv import load_dotenv
 
 
-ACCOUNT = "respondrlitesg5e55325b"
-TABLE = "ResponderMessages"
+ACCOUNT_ENV = "RESPONDR_STORAGE_ACCOUNT_NAME"
 KEY_ENV = "RESPONDR_STORAGE_ACCOUNT_KEY"
+TABLE_ENV = "RESPONDR_STORAGE_TABLE_NAME"
+TIMEZONE_ENV = "RESPONDR_MESSAGE_TIMEZONE"
 ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
@@ -50,15 +51,17 @@ def main() -> None:
         parser.error("--days is too large")
 
     load_dotenv(ENV_FILE, override=False)
-    key = os.environ.get(KEY_ENV)
-    if not key:
-        raise SystemExit(f"Set {KEY_ENV} in the repository root .env file or in the environment.")
+    required_vars = (ACCOUNT_ENV, KEY_ENV, TABLE_ENV, TIMEZONE_ENV)
+    missing = [name for name in required_vars if not os.environ.get(name)]
+    if missing:
+        parser.error(f"Set these variables in the repository root .env file: {', '.join(missing)}")
 
-    legacy_zone = ZoneInfo(os.environ.get("TIMEZONE", "America/Los_Angeles"))
+    account = os.environ[ACCOUNT_ENV]
+    legacy_zone = ZoneInfo(os.environ[TIMEZONE_ENV])
     with TableClient(
-        endpoint=f"https://{ACCOUNT}.table.core.windows.net",
-        table_name=TABLE,
-        credential=AzureNamedKeyCredential(ACCOUNT, key),
+        endpoint=f"https://{account}.table.core.windows.net",
+        table_name=os.environ[TABLE_ENV],
+        credential=AzureNamedKeyCredential(account, os.environ[KEY_ENV]),
         connection_timeout=10,
         read_timeout=30,
     ) as table:
